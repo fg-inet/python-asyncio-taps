@@ -41,12 +41,13 @@ class preconnection:
                 self.transportProperties = tProperties
                 self.securityParams = securityParams
 
-    def initiate(self):
-        loop = asyncio.get_event_loop()
+    async def initiate(self):
+        """ Initiates the preconnection, i.e. creates a connection object
+            and attempts to connect it to the specified remote endpoint.
+        """
         con = connection(self.localEndpoint, self.remoteEndpoint,
                          self.transportProperties, self.securityParams)
         print("Created connection Object. Connecting...")
-        loop.run_until_complete(con.connect())
+        await con.connect()
         print("Connected")
-        loop.close()
         return con
