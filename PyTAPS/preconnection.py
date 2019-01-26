@@ -22,32 +22,48 @@ class preconnection:
     def __init__(self, lEndpoint=None, rEndpoint=None,
                  tProperties=None, securityParams=None):
                 # Assertions
-                assert(isinstance(lEndpoint, localEndpoint) or
-                       lEndpoint is None), ("If given, lEndpoint "
-                                            "needs to be instance of "
-                                            "class localEndpoint.")
-                assert(isinstance(rEndpoint, remoteEndpoint) or
-                       rEndpoint is None), ("If given, rEndpoint "
-                                            "needs to be instance of "
-                                            "class remoteEndpoint.")
-                assert(not (lEndpoint is None and rEndpoint is None)), "You need to specify at least one endpoint"
-                assert(isinstance(tProperties, transportProperties) or
-                       tProperties is None), ("If given, tProperties "
-                                              "needs to be instance of "
-                                              "class transportProperties")
+                if lEndpoint is None and rEndpoint is None:
+                    raise Exception("At least one endpoint need "
+                                    "to be specified")
                 # Initializations
                 self.localEndpoint = lEndpoint
                 self.remoteEndpoint = rEndpoint
                 self.transportProperties = tProperties
                 self.securityParams = securityParams
+                self.loop = asyncio.get_event_loop()
 
-    async def initiate(self):
-        """ Initiates the preconnection, i.e. creates a connection object
-            and attempts to connect it to the specified remote endpoint.
-        """
+    async def initiate_helper(self, con):
+        # Helper function to allow for immediate return of
+        # Connection Object
+        asyncio.create_task(con.connect())
+
+    """ Initiates the preconnection, i.e. creates a connection object
+        and attempts to connect it to the specified remote endpoint.
+    """
+    def initiate(self):
         con = connection(self.localEndpoint, self.remoteEndpoint,
                          self.transportProperties, self.securityParams)
+        con.InitiateError(self.InitiateError)
+        con.Ready(self.Ready)
         print("Created connection Object. Connecting...")
-        await con.connect()
-        print("Connected")
+        # This is required because initiate isnt async and therefor
+        # there isnt necessarily a running eventloop
+        self.loop.run_until_complete(self.initiate_helper(con))
         return con
+
+    # Events for active open
+    def Ready(self, a):
+        self.Ready = a
+
+    def InitiateError(self, a):
+        self.InitiateError = a
+
+    # Events for passive open
+    def ConnectionReceived(self, a):
+        self.ConnectionReceived = a
+
+    def ListenError(self, a):
+        self.ListenError = a
+
+    def Stopped(self, a):
+        self.Stopped = a
