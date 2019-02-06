@@ -2,6 +2,8 @@ import asyncio
 from .connection import connection
 from .transportProperties import transportProperties
 from .endpoint import localEndpoint, remoteEndpoint
+from .utility import *
+color = "red"
 
 
 class preconnection:
@@ -20,7 +22,8 @@ class preconnection:
         securityParams (tbd): Security Parameters for the preconnection
     """
     def __init__(self, lEndpoint=None, rEndpoint=None,
-                 tProperties=None, securityParams=None):
+                 tProperties=None, securityParams=None,
+                 eventLoop=asyncio.get_event_loop()):
                 # Assertions
                 if lEndpoint is None and rEndpoint is None:
                     raise Exception("At least one endpoint need "
@@ -30,25 +33,30 @@ class preconnection:
                 self.remoteEndpoint = rEndpoint
                 self.transportProperties = tProperties
                 self.securityParams = securityParams
-                self.loop = asyncio.get_event_loop()
+                self.loop = eventLoop
 
     async def initiate_helper(self, con):
         # Helper function to allow for immediate return of
         # Connection Object
+        printTime("Created connect task.", color)
         asyncio.create_task(con.connect())
 
     """ Initiates the preconnection, i.e. creates a connection object
         and attempts to connect it to the specified remote endpoint.
     """
     def initiate(self):
+        printTime("Initiating connection.", color)
         con = connection(self.localEndpoint, self.remoteEndpoint,
                          self.transportProperties, self.securityParams)
         con.InitiateError(self.InitiateError)
         con.Ready(self.Ready)
-        print("Created connection Object. Connecting...")
         # This is required because initiate isnt async and therefor
         # there isnt necessarily a running eventloop
-        self.loop.run_until_complete(self.initiate_helper(con))
+        if self.loop.is_running():
+            self.loop.create_task(self.initiate_helper(con))
+        else:
+            self.loop.run_until_complete(self.initiate_helper(con))
+        printTime("Returning connection object.", color)
         return con
 
     # Events for active open

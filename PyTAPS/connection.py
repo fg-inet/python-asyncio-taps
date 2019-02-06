@@ -1,6 +1,8 @@
 import asyncio
 from .endpoint import localEndpoint, remoteEndpoint
 from .transportProperties import transportProperties
+from .utility import *
+color = "green"
 
 
 class connection:
@@ -19,7 +21,8 @@ class connection:
         securityParams (tbd): Security Parameters for the preconnection
     """
     def __init__(self, lEndpoint=None, rEndpoint=None,
-                 tProperties=None, securityParams=None):
+                 tProperties=None, securityParams=None,
+                 eventLoop=asyncio.get_event_loop()):
                 # Assertions
                 if lEndpoint is None and rEndpoint is None:
                     raise Exception("At least one endpoint need "
@@ -29,7 +32,7 @@ class connection:
                 self.remote = rEndpoint
                 self.transportProperties = tProperties
                 self.securityParams = securityParams
-                self.loop = asyncio.get_event_loop()
+                self.loop = eventLoop
                 self.MsgRefTop = 0
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
@@ -38,52 +41,69 @@ class connection:
     async def connect(self):
         try:
                 if(self.local is None):
+                    printTime("Connecting with unspecified localEP.", color)
                     self.reader, self.writer = await asyncio.open_connection(
                                         self.remote.address, self.remote.port)
                 else:
+                    printTime("Connecting with specified localEP.", color)
                     self.reader, self.writer = await asyncio.open_connection(
                                     self.remote.address, self.remote.port,
                                     local_addr=(self.local.interface,
                                                 self.local.port))
         except:
             if self.InitiateError:
+                printTime("Initiate Error occured.", color)
                 self.loop.call_soon(self.InitiateError)
+                printTime("Queued InitiateError cb.", color)
             return
         if self.Ready:
+            printTime("Connected successfully.", color)
             self.loop.call_soon(self.Ready)
+            printTime("Queued Ready cb.", color)
         return
 
     """ Tries to send the (string) stored in data
     """
     async def sendData(self, data):
+        printTime("Writing data.", color)
         try:
             self.writer.write(data.encode())
             await self.writer.drain()
         except:
             if self.SendError:
+                printTime("SendError occured.", color)
                 self.loop.call_soon(self.SendError)
+                printTime("Queued SendError cb.", color)
             return
         if self.Sent:
+            printTime("Data written successfully.", color)
             self.loop.call_soon(self.Sent)
+            printTime("Queued Sent cb..", color)
         return
 
     """ Helper function required to make sending
-        of messages non blocking
+        of messages asynchronous while keeping
+        sendMessage itself sync
     """
     async def sendDataHelper(self, data):
-        asyncio.create_task(self.sendData(data))
+        self.loop.create_task(self.sendData(data))
 
     """ Wrapper function that assigns MsgRef
         and then calls async helper function
         to send a message
     """
     def sendMessage(self, data):
-        self.loop.run_until_complete(self.sendDataHelper(data))
+        printTime("Sending data.", color)
+        if self.loop.is_running:
+            self.loop.create_task(self.sendData(data))
+        else:
+            self.loop.run_until_complete(self.sendDataHelper(data))
+        printTime("Returning MsgRef.", color)
         self.MsgRefTop += 1
-        return MsgRefTop
+        return self.MsgRefTop
 
     """ Queues reception of a message
-        TODO: Get this to work properly and as intended 
+        TODO: Get this to work properly and as intended
     """
     async def receive(self, minIncompleteLength=0, maxLength=float("inf")):
         try:
@@ -94,16 +114,28 @@ class connection:
             return
         if len(data) < minIncompleteLength:
             if self.ReceivedPartial:
-                self.loop.call_soon(self.ReceivedPartial, (data, "Context", False))
+                self.loop.call_soon(self.ReceivedPartial,
+                                    (data, "Context", False))
         elif self.Received:
             self.loop.call_soon(self.Received, (data, "Context"))
 
     """ Tries to close the connection
         TODO: Check why port isnt always freed
     """
-    async def close(self):
+    async def closeConnection(self):
+        printTime("Closing connection.", color)
         self.writer.close()
         await self.writer.wait_closed()
+        printTime("Connection closed.", color)
+
+    async def closeHelper(self):
+        self.loop.create_task(closeConnection())
+
+    def close(self):
+        if self.loop.is_running:
+            self.loop.create_task(self.closeConnection())
+        else:
+            self.loop.run_until_complete(self.closeHelper())
 
     # Events for active open
     def Ready(self, a):
