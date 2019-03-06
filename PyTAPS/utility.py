@@ -2,5 +2,5 @@ import datetime
 from termcolor import colored
 
 
-def printTime(msg="", color="red"):
+def print_time(msg="", color="red"):
     print(colored(str(datetime.datetime.now())+": "+msg, color))

@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class preferenceLevel(Enum):
+class PreferenceLevel(Enum):
     REQUIRE = 2
     PREFER = 1
     IGNORE = 0
@@ -9,7 +9,7 @@ class preferenceLevel(Enum):
     PROHIBIT = -2
 
 
-class transportProperties:
+class TransportProperties:
     """ Class to handle the TAPS transport properties
 
     """

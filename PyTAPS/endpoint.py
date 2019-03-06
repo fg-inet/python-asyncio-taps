@@ -1,7 +1,7 @@
 from socket import gethostbyname
 
 
-class localEndpoint:
+class LocalEndpoint:
     """ A local (TAPS) Endpoint with an interface
         (address for now) and port number.
     """
@@ -9,14 +9,14 @@ class localEndpoint:
         self.interface = None
         self.port = None
 
-    def withInterface(self, interface):
+    def with_interface(self, interface):
         self.interface = interface
 
-    def withPort(self, portNumber):
+    def with_port(self, portNumber):
         self.port = portNumber
 
 
-class remoteEndpoint:
+class RemoteEndpoint:
     """ A remote (TAPS) Endpoint with an address,
         that can either be given directly
         as an IPv4 or IPv6 or that can be given
@@ -26,11 +26,11 @@ class remoteEndpoint:
         self.address = None
         self.port = None
 
-    def withAddress(self, address):
+    def with_address(self, address):
         self.address = address
 
-    def withHostname(self, name):
+    def with_hostname(self, name):
         self.address = gethostbyname(name)
 
-    def withPort(self, portNumber):
+    def with_port(self, portNumber):
         self.port = portNumber

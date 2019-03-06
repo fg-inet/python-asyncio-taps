@@ -1,12 +1,12 @@
 import asyncio
-from .connection import connection
-from .transportProperties import transportProperties
-from .endpoint import localEndpoint, remoteEndpoint
+from .connection import Connection
+from .transportProperties import TransportProperties
+from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 color = "red"
 
 
-class preconnection:
+class Preconnection:
     """The TAPS preconnection class.
 
     Attributes:
@@ -17,61 +17,106 @@ class preconnection:
                         preconnection, required if a connection
                         will be initiated
         transportProperties (:obj:'transportProperties', optional): object with
-                             the transport properties
-                             with specified preferenceLevel
+                        the transport properties
+                        with specified preferenceLevel
         securityParams (tbd): Security Parameters for the preconnection
+        eventLoop (:obj: 'eventLoop', optional): event loop on which all
+                        coroutines will be scheduled, if none if given
+                        the one of the current thread is used by default
     """
-    def __init__(self, lEndpoint=None, rEndpoint=None,
-                 tProperties=None, securityParams=None,
-                 eventLoop=asyncio.get_event_loop()):
+    def __init__(self, local_endpoint=None, remote_endpoint=None,
+                 transport_properties=None, security_parameters=None,
+                 event_loop=asyncio.get_event_loop()):
                 # Assertions
-                if lEndpoint is None and rEndpoint is None:
+                if local_endpoint is None and remote_endpoint is None:
                     raise Exception("At least one endpoint need "
                                     "to be specified")
                 # Initializations
-                self.localEndpoint = lEndpoint
-                self.remoteEndpoint = rEndpoint
-                self.transportProperties = tProperties
-                self.securityParams = securityParams
-                self.loop = eventLoop
+                self.local_endpoint = local_endpoint
+                self.remote_endpoint = remote_endpoint
+                self.transport_properties = transport_properties
+                self.security_parameters = security_parameters
+                self.loop = event_loop
+                self.read = None
+                self.initiate_error = None
+                self.connection_received = None
+                self.listen_error = None
+                self.stopped = None
 
-    async def initiate_helper(self, con):
+    """async def initiate_helper(self, con):
         # Helper function to allow for immediate return of
         # Connection Object
-        printTime("Created connect task.", color)
-        asyncio.create_task(con.connect())
+        print_time("Created connect task.", color)
+        asyncio.create_task(con.connect())"""
 
     """ Initiates the preconnection, i.e. creates a connection object
         and attempts to connect it to the specified remote endpoint.
     """
     def initiate(self):
-        printTime("Initiating connection.", color)
-        con = connection(self.localEndpoint, self.remoteEndpoint,
-                         self.transportProperties, self.securityParams)
-        con.InitiateError(self.InitiateError)
-        con.Ready(self.Ready)
+        print_time("Initiating connection.", color)
+        connection = Connection(self.local_endpoint, self.remote_endpoint,
+                                self.transport_properties,
+                                self.security_parameters)
+        connection.on_initiate_error(self.initiate_error)
+        connection.on_ready(self.ready)
         # This is required because initiate isnt async and therefor
         # there isnt necessarily a running eventloop
-        if self.loop.is_running():
-            self.loop.create_task(self.initiate_helper(con))
-        else:
-            self.loop.run_until_complete(self.initiate_helper(con))
-        printTime("Returning connection object.", color)
-        return con
+        # if self.loop.is_running():
+        asyncio.create_task(connection.connect())
+        # else:
+        # self.loop.run_until_complete(self.initiate_helper(con))
+        print_time("Created connect task.", color)
+        print_time("Returning connection object.", color)
+        return connection
+
+    """Handles a new connection detected by listener
+    """
+    def handle_new_connection(self, reader, writer):
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        new_remote_endpoint.with_address(writer.get_extra_info("peername")[0])
+        new_remote_endpoint.with_port(writer.get_extra_info("peername")[1])
+        new_connection = Connection(self.local_endpoint, new_remote_endpoint,
+                                    self.transport_properties,
+                                    self.security_parameters)
+        new_connection.set_reader_writer(reader, writer)
+        print_time("Created new connection object.", color)
+        if self.connection_received:
+            self.loop.call_soon(self.connection_received, new_connection)
+            print_time("Called connection_received cb", color)
+        return
+
+    async def start_listener(self):
+        print_time("Starting Listener.", color)
+        try:
+            await asyncio.start_server(self.handle_new_connection,
+                                       self.local_endpoint.interface,
+                                       self.local_endpoint.port)
+        except:
+            print_time("Listen Error occured.", color)
+            if self.listen_error_:
+                self.loop.call_soon(self.listen_error)
+                print_time("Queued listen_error cb.", color)
+        return
+        print_time("Listening for new connections...", color)
+
+    def listen(self):
+        self.loop.create_task(self.start_listener())
+        return
 
     # Events for active open
-    def Ready(self, a):
-        self.Ready = a
+    def on_ready(self, a):
+        self.ready = a
 
-    def InitiateError(self, a):
-        self.InitiateError = a
+    def on_initiate_error(self, a):
+        self.initiate_error = a
 
     # Events for passive open
-    def ConnectionReceived(self, a):
-        self.ConnectionReceived = a
+    def on_connection_received(self, a):
+        self.connection_received = a
 
-    def ListenError(self, a):
-        self.ListenError = a
+    def on_listen_error(self, a):
+        self.listen_error = a
 
-    def Stopped(self, a):
-        self.Stopped = a
+    def on_stopped(self, a):
+        self.stopped = a

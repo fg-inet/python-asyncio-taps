@@ -1,11 +1,11 @@
 import asyncio
-from .endpoint import localEndpoint, remoteEndpoint
-from .transportProperties import transportProperties
+from .endpoint import LocalEndpoint, RemoteEndpoint
+from .transportProperties import TransportProperties
 from .utility import *
 color = "green"
 
 
-class connection:
+class Connection:
     """The TAPS connection class.
 
     Attributes:
@@ -20,146 +20,168 @@ class connection:
                              with specified preferenceLevel
         securityParams (tbd): Security Parameters for the preconnection
     """
-    def __init__(self, lEndpoint=None, rEndpoint=None,
-                 tProperties=None, securityParams=None,
-                 eventLoop=asyncio.get_event_loop()):
+    def __init__(self, local_endpoint=None, remote_endpoint=None,
+                 transport_properties=None, security_parameters=None):
                 # Assertions
-                if lEndpoint is None and rEndpoint is None:
+                if local_endpoint is None and remote_endpoint is None:
                     raise Exception("At least one endpoint need "
                                     "to be specified")
                 # Initializations
-                self.local = lEndpoint
-                self.remote = rEndpoint
-                self.transportProperties = tProperties
-                self.securityParams = securityParams
-                self.loop = eventLoop
-                self.MsgRefTop = 0
+                self.local_endpoint = local_endpoint
+                self.remote_endpoint = remote_endpoint
+                self.transport_properties = transport_properties
+                self.security_parameters = security_parameters
+                self.loop = asyncio.get_event_loop()
+                self.message_count = 0
+                self.ready = None
+                self.initiate_error = None
+                self.sent = None
+                self.send_error = None
+                self.expired = None
+                self.received = None
+                self.received_partial = None
+                self.receive_error = None
+                self.closed = None
+                self.reader = None
+                self.writer = None
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
     """
     async def connect(self):
         try:
-                if(self.local is None):
-                    printTime("Connecting with unspecified localEP.", color)
+                if(self.local_endpoint is None):
+                    print_time("Connecting with unspecified localEP.", color)
                     self.reader, self.writer = await asyncio.open_connection(
-                                        self.remote.address, self.remote.port)
+                                        self.remote_endpoint.address,
+                                        self.remote_endpoint.port)
                 else:
-                    printTime("Connecting with specified localEP.", color)
+                    print_time("Connecting with specified localEP.", color)
                     self.reader, self.writer = await asyncio.open_connection(
-                                    self.remote.address, self.remote.port,
-                                    local_addr=(self.local.interface,
-                                                self.local.port))
+                                    self.remote_endpoint.address,
+                                    self.remote_endpoint.port,
+                                    local_addr=(self.local_endpoint.interface,
+                                                self.local_endpoint.port))
         except:
-            if self.InitiateError:
-                printTime("Initiate Error occured.", color)
-                self.loop.call_soon(self.InitiateError)
-                printTime("Queued InitiateError cb.", color)
+            if self.initiate_error:
+                print_time("Initiate Error occured.", color)
+                self.loop.call_soon(self.initiate_error)
+                print_time("Queued InitiateError cb.", color)
             return
-        if self.Ready:
-            printTime("Connected successfully.", color)
-            self.loop.call_soon(self.Ready)
-            printTime("Queued Ready cb.", color)
+        if self.ready:
+            print_time("Connected successfully.", color)
+            self.loop.call_soon(self.ready)
+            print_time("Queued Ready cb.", color)
         return
 
     """ Tries to send the (string) stored in data
     """
-    async def sendData(self, data):
-        printTime("Writing data.", color)
+    async def send_data(self, data, message_count):
+        print_time("Writing data.", color)
         try:
             self.writer.write(data.encode())
             await self.writer.drain()
         except:
-            if self.SendError:
-                printTime("SendError occured.", color)
-                self.loop.call_soon(self.SendError)
-                printTime("Queued SendError cb.", color)
+            if self.send_error:
+                print_time("SendError occured.", color)
+                self.loop.call_soon(self.send_error, message_count)
+                print_time("Queued SendError cb.", color)
             return
-        if self.Sent:
-            printTime("Data written successfully.", color)
-            self.loop.call_soon(self.Sent)
-            printTime("Queued Sent cb..", color)
+        print_time("Data written successfully.", color)
+        if self.sent:
+            self.loop.call_soon(self.sent, message_count)
+            print_time("Queued Sent cb..", color)
         return
-
-    """ Helper function required to make sending
-        of messages asynchronous while keeping
-        sendMessage itself sync
-    """
-    async def sendDataHelper(self, data):
-        self.loop.create_task(self.sendData(data))
 
     """ Wrapper function that assigns MsgRef
         and then calls async helper function
         to send a message
     """
-    def sendMessage(self, data):
-        printTime("Sending data.", color)
-        if self.loop.is_running:
-            self.loop.create_task(self.sendData(data))
-        else:
-            self.loop.run_until_complete(self.sendDataHelper(data))
-        printTime("Returning MsgRef.", color)
-        self.MsgRefTop += 1
-        return self.MsgRefTop
+    def send_message(self, data):
+        print_time("Sending data.", color)
+        self.message_count += 1
+        self.loop.create_task(self.send_data(data, self.message_count))
+        print_time("Returning MsgRef.", color)
+        return self.message_count
 
     """ Queues reception of a message
-        TODO: Get this to work properly and as intended
     """
-    async def receive(self, minIncompleteLength=0, maxLength=float("inf")):
+    async def receive_message(self, min_incomplete_length,
+                              max_length):
         try:
-            data = self.reader.read(maxLength)
+            data = await self.reader.read(max_length)
         except:
-            if self.ReceiveError:
-                self.loop.call_soon(self.ReceiveError)
+            print_time("Reception Error", color)
+            if self.receive_error:
+                self.loop.call_soon(self.receive_error)
             return
-        if len(data) < minIncompleteLength:
-            if self.ReceivedPartial:
-                self.loop.call_soon(self.ReceivedPartial,
-                                    (data, "Context", False))
-        elif self.Received:
-            self.loop.call_soon(self.Received, (data, "Context"))
+        if self.reader.at_eof():
+            print_time("Received full message", color)
+            if self.received:
+                self.loop.call_soon(self.received, data, "Context")
+                print_time("Called received cb.", color)
+            return
 
+        elif len(data) > min_incomplete_length:
+            print_time("Received partial message.", color)
+            if self.received_partial:
+                self.loop.call_soon(self.received_partial, data, "Context",
+                                    False)
+                print_time("Called partial_receive cb.", color)
+    """ Wrapper function to make receive return immediately
+    """
+    def receive(self, min_incomplete_length=float("inf"), max_length=-1):
+        self.loop.create_task(self.receive_message(min_incomplete_length,
+                              max_length))
     """ Tries to close the connection
         TODO: Check why port isnt always freed
     """
-    async def closeConnection(self):
-        printTime("Closing connection.", color)
+    async def close_connection(self):
+        print_time("Closing connection.", color)
         self.writer.close()
         await self.writer.wait_closed()
-        printTime("Connection closed.", color)
+        print_time("Connection closed.", color)
+        if self.closed:
+            self.loop.call_soon(self.closed)
 
-    async def closeHelper(self):
-        self.loop.create_task(closeConnection())
-
+    """ Wrapper function for close_connection,
+        required to make close return immediately
+    """
     def close(self):
-        if self.loop.is_running:
-            self.loop.create_task(self.closeConnection())
-        else:
-            self.loop.run_until_complete(self.closeHelper())
+        self.loop.create_task(self.close_connection())
+    """ Function to set reader/writer for passive open
+    """
+    def set_reader_writer(self, reader, writer):
+        self.reader = reader
+        self.writer = writer
 
     # Events for active open
-    def Ready(self, a):
-        self.Ready = a
+    def on_ready(self, a):
+        self.ready = a
 
-    def InitiateError(self, a):
-        self.InitiateError = a
+    def on_initiate_error(self, a):
+        self.initiate_error = a
 
     # Events for sending messages
-    def Sent(self, a):
-        self.Sent = a
+    def on_sent(self, a):
+        self.sent = a
 
-    def SendError(self, a):
-        self.SendError = a
+    def on_send_error(self, a):
+        self.send_error = a
 
-    def Expired(self, a):
-        self.Expired = a
+    def on_expired(self, a):
+        self.expired = a
 
     # Events for receiving messages
-    def Received(self, a):
-        self.Received = a
+    def on_received(self, a):
+        self.received = a
 
-    def ReceivedPartial(self, a):
-        self.ReceivedPartial = a
+    def on_received_partial(self, a):
+        self.received_partial = a
 
-    def ReceiveError(self, a):
-        self.ReceiveError = a
+    def on_receive_error(self, a):
+        self.receive_error = a
+
+    # Events for closing a connection
+    def on_closed(self, a):
+        self.closed = a
