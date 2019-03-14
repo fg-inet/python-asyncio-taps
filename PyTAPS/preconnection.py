@@ -52,7 +52,7 @@ class Preconnection:
     """ Initiates the preconnection, i.e. creates a connection object
         and attempts to connect it to the specified remote endpoint.
     """
-    def initiate(self):
+    async def initiate(self):
         print_time("Initiating connection.", color)
         connection = Connection(self.local_endpoint, self.remote_endpoint,
                                 self.transport_properties,
@@ -82,7 +82,7 @@ class Preconnection:
         new_connection.set_reader_writer(reader, writer)
         print_time("Created new connection object.", color)
         if self.connection_received:
-            self.loop.call_soon(self.connection_received, new_connection)
+            self.loop.create_task(self.connection_received(new_connection))
             print_time("Called connection_received cb", color)
         return
 
@@ -95,12 +95,12 @@ class Preconnection:
         except:
             print_time("Listen Error occured.", color)
             if self.listen_error_:
-                self.loop.call_soon(self.listen_error)
+                self.loop.create_task(self.listen_error())
                 print_time("Queued listen_error cb.", color)
         return
         print_time("Listening for new connections...", color)
 
-    def listen(self):
+    async def listen(self):
         self.loop.create_task(self.start_listener())
         return
 

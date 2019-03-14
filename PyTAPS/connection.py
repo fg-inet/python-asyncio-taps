@@ -38,12 +38,14 @@ class Connection:
                 self.sent = None
                 self.send_error = None
                 self.expired = None
+                self.connection_error = None
                 self.received = None
                 self.received_partial = None
                 self.receive_error = None
                 self.closed = None
                 self.reader = None
                 self.writer = None
+                self.msg_buffer = None
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
@@ -65,12 +67,12 @@ class Connection:
         except:
             if self.initiate_error:
                 print_time("Initiate Error occured.", color)
-                self.loop.call_soon(self.initiate_error)
+                self.loop.create_task(self.initiate_error())
                 print_time("Queued InitiateError cb.", color)
             return
         if self.ready:
             print_time("Connected successfully.", color)
-            self.loop.call_soon(self.ready)
+            self.loop.create_task(self.ready())
             print_time("Queued Ready cb.", color)
         return
 
@@ -84,12 +86,14 @@ class Connection:
         except:
             if self.send_error:
                 print_time("SendError occured.", color)
-                self.loop.call_soon(self.send_error, message_count)
+                self.loop.create_task(self.send_error(message_count))
                 print_time("Queued SendError cb.", color)
             return
         print_time("Data written successfully.", color)
+
+        # Queue sent callback if there is one
         if self.sent:
-            self.loop.call_soon(self.sent, message_count)
+            self.loop.create_task(self.sent(message_count))
             print_time("Queued Sent cb..", color)
         return
 
@@ -97,7 +101,7 @@ class Connection:
         and then calls async helper function
         to send a message
     """
-    def send_message(self, data):
+    async def send_message(self, data):
         print_time("Sending data.", color)
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
@@ -110,27 +114,35 @@ class Connection:
                               max_length):
         try:
             data = await self.reader.read(max_length)
+            if self.msg_buffer is None:
+                self.msg_buffer = data
+            else:
+                self.msg_buffer = self.msg_buffer + data
         except:
-            print_time("Reception Error", color)
-            if self.receive_error:
-                self.loop.call_soon(self.receive_error)
+            print_time("Connection Error", color)
+            if self.connection_error is not None:
+                self.loop.create_task(self.connection_error())
             return
         if self.reader.at_eof():
             print_time("Received full message", color)
             if self.received:
-                self.loop.call_soon(self.received, data, "Context")
+                self.loop.create_task(self.received(self.msg_buffer,
+                                                    "Context"))
                 print_time("Called received cb.", color)
+            self.msg_buffer = None
             return
 
-        elif len(data) > min_incomplete_length:
+        elif len(self.msg_buffer) > min_incomplete_length:
             print_time("Received partial message.", color)
             if self.received_partial:
-                self.loop.call_soon(self.received_partial, data, "Context",
-                                    False)
+                self.loop.create_task(self.received_partial(self.msg_buffer,
+                                      "Context", False))
                 print_time("Called partial_receive cb.", color)
+                self.msg_buffer = None
+
     """ Wrapper function to make receive return immediately
     """
-    def receive(self, min_incomplete_length=float("inf"), max_length=-1):
+    async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
         self.loop.create_task(self.receive_message(min_incomplete_length,
                               max_length))
     """ Tries to close the connection
@@ -142,7 +154,7 @@ class Connection:
         await self.writer.wait_closed()
         print_time("Connection closed.", color)
         if self.closed:
-            self.loop.call_soon(self.closed)
+            self.loop.create_task(self.closed())
 
     """ Wrapper function for close_connection,
         required to make close return immediately
@@ -181,6 +193,9 @@ class Connection:
 
     def on_receive_error(self, a):
         self.receive_error = a
+
+    def on_connection_error(self, a):
+        self.connection_error = a
 
     # Events for closing a connection
     def on_closed(self, a):
