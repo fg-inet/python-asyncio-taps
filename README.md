@@ -12,8 +12,6 @@ TAPS is currently being standardized in the [IETF TAPS Working Group](https://da
 - [Implementation considerations](https://datatracker.ietf.org/doc/draft-ietf-taps-impl/)
 
 People interested in participating in TAPS can [join the mailing list](https://www.ietf.org/mailman/listinfo/taps).
-
-Full Documentation available at https://pytaps.readthedocs.io/en/latest/.
 ## Requirements:
 
 - Python 3.7 or above
