@@ -54,7 +54,8 @@ class Preconnection:
     """
     async def initiate(self):
         print_time("Initiating connection.", color)
-        connection = Connection(self.local_endpoint, self.remote_endpoint,
+        connection = Connection(self.local_endpoint,
+                                self.remote_endpoint,
                                 self.transport_properties,
                                 self.security_parameters)
         connection.on_initiate_error(self.initiate_error)

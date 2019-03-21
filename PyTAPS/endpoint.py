@@ -1,4 +1,3 @@
-from socket import gethostbyname
 
 
 class LocalEndpoint:
@@ -30,7 +29,7 @@ class RemoteEndpoint:
         self.address = address
 
     def with_hostname(self, name):
-        self.address = gethostbyname(name)
+        self.address = name
 
     def with_port(self, portNumber):
         self.port = portNumber

@@ -51,6 +51,12 @@ class Connection:
         it will be used.
     """
     async def connect(self):
+        # Resolve remote endpoint
+        remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
+                                                  self.remote_endpoint.port)
+        self.remote_endpoint.address = remote_info[0][4][0]
+
+        # Attempt connection
         try:
                 if(self.local_endpoint is None):
                     print_time("Connecting with unspecified localEP.", color)
@@ -72,7 +78,7 @@ class Connection:
             return
         if self.ready:
             print_time("Connected successfully.", color)
-            self.loop.create_task(self.ready())
+            self.loop.create_task(self.ready(self))
             print_time("Queued Ready cb.", color)
         return
 
@@ -114,6 +120,7 @@ class Connection:
                               max_length):
         try:
             data = await self.reader.read(max_length)
+            data = data.decode()
             if self.msg_buffer is None:
                 self.msg_buffer = data
             else:
@@ -121,13 +128,13 @@ class Connection:
         except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
-                self.loop.create_task(self.connection_error())
+                self.loop.create_task(self.connection_error(self))
             return
         if self.reader.at_eof():
             print_time("Received full message", color)
             if self.received:
                 self.loop.create_task(self.received(self.msg_buffer,
-                                                    "Context"))
+                                                    "Context", self))
                 print_time("Called received cb.", color)
             self.msg_buffer = None
             return
@@ -136,7 +143,7 @@ class Connection:
             print_time("Received partial message.", color)
             if self.received_partial:
                 self.loop.create_task(self.received_partial(self.msg_buffer,
-                                      "Context", False))
+                                      "Context", False, self))
                 print_time("Called partial_receive cb.", color)
                 self.msg_buffer = None
 

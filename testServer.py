@@ -15,22 +15,25 @@ class TestServer():
         self.connection = connection
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
-        await self.connection.receive(min_incomplete_length=1)
+        self.connection.on_sent(self.handle_sent)
+        await self.connection.receive(min_incomplete_length=1, max_length=5)
         # await self.connection.receive(min_incomplete_length=4, max_length=3)
         # self.connection.on_sent(handle_sent)
 
-    async def handle_received_partial(self, data, context, end_of_message):
+    async def handle_received_partial(self, data, context, end_of_message,
+                                      connection):
         taps.print_time("Received message " + str(data) + ".", color)
+        msgref = await self.connection.send_message(str(data))
 
-    async def handle_received(self, data, context):
+    async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
         # self.connection.send_message(data)
 
-    async def handle_listen_error(self):
+    async def handle_listen_error(self, connection):
         taps.print_time("Listen Error occured.", color)
         self.loop.stop()
 
-    async def handle_sent(self):
+    async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
         self.connection.close()

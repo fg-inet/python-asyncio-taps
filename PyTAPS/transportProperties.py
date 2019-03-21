@@ -14,7 +14,7 @@ class TransportProperties:
 
     """
     def __init__(self):
-        self.properties = {"Reliable_Data_Transfer": preferenceLevel.IGNORE}
+        self.properties = {"Reliable_Data_Transfer": PreferenceLevel.IGNORE}
 
     def add(self, prop, value):
         self.properties[prop] = value
