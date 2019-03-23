@@ -69,8 +69,10 @@ class TestServer():
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
         # taps.print_time("Created transportProperties object.", color)
 
-        self.preconnection = taps.Preconnection(local_endpoint=lp, security_parameters=sp)
-        self.preconnection.on_connection_received(self.handle_connection_received)
+        self.preconnection = taps.Preconnection(local_endpoint=lp,
+                                                security_parameters=sp)
+        self.preconnection.on_connection_received(
+                                            self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
 
@@ -81,11 +83,14 @@ if __name__ == "__main__":
     # Parse arguments
     ap = argparse.ArgumentParser(description='PyTAPS test server.')
     ap.add_argument('--interface', '-i', nargs=1, default=None)
-    ap.add_argument('--local-address', '--address', '-a', nargs='?', default='::1')
-    ap.add_argument('--local-port', '--port', '-l', type=int, nargs='?', default=6666)
+    ap.add_argument('--local-address', '--address', '-a', nargs='?',
+                    default='::1')
+    ap.add_argument('--local-port', '--port', '-l', type=int, nargs='?',
+                    default=6666)
     ap.add_argument('--local-identity', type=str, nargs=1, default=None)
     ap.add_argument('--trust-ca', type=str, default=None)
-    ap.add_argument('--secure', '-s', nargs='?', const=True, type=bool, default=False)
+    ap.add_argument('--secure', '-s', nargs='?', const=True, type=bool,
+                    default=False)
     args = ap.parse_args()
     print(args)
     # Start testserver

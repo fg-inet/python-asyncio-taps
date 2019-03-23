@@ -41,7 +41,12 @@ class TestClient():
         self.loop.stop()
 
     async def handle_ready(self, connection):
-        taps.print_time("Ready cb received from connection to " + connection.remote_endpoint.address + ":" + str(connection.remote_endpoint.port) + " (hostname: " + str(connection.remote_endpoint.hostname) + ")", color)
+        taps.print_time("Ready cb received from connection to "
+                        + connection.remote_endpoint.address + ":"
+                        + str(connection.remote_endpoint.port)
+                        + " (hostname: "
+                        + str(connection.remote_endpoint.hostname)
+                        + ")", color)
 
         # Set connection callbacks
         self.connection.on_sent(self.handle_sent)
@@ -67,7 +72,7 @@ class TestClient():
             ep.with_hostname(args.remote_host)
         if args.remote_port:
             ep.with_port(args.remote_port)
-        lp =  None
+        lp = None
         sp = None
         if args.interface or args.local_address or args.local_port:
             lp = taps.LocalEndpoint()
@@ -119,7 +124,8 @@ if __name__ == "__main__":
     ap.add_argument('--local-port', '-l', type=int, nargs=1, default=None)
     ap.add_argument('--local-identity', type=str, nargs=1, default=None)
     ap.add_argument('--trust-ca', type=str, default=None)
-    ap.add_argument('--secure', '-s', nargs='?', const=True, type=bool, default=False)
+    ap.add_argument('--secure', '-s', nargs='?', const=True,
+                    type=bool, default=False)
     args = ap.parse_args()
     print(args)
     # Start testclient
