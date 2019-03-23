@@ -1,6 +1,7 @@
 import asyncio
+import json
 from .endpoint import LocalEndpoint, RemoteEndpoint
-from .transportProperties import TransportProperties
+from .transportProperties import TransportProperties, get_protocols
 from .utility import *
 color = "green"
 
@@ -46,6 +47,7 @@ class Connection:
                 self.reader = None
                 self.writer = None
                 self.msg_buffer = None
+
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
@@ -55,7 +57,7 @@ class Connection:
         remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
                                                   self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
-
+        self.create_candidates()
         # Attempt connection
         try:
                 if(self.local_endpoint is None):
@@ -173,6 +175,10 @@ class Connection:
     def set_reader_writer(self, reader, writer):
         self.reader = reader
         self.writer = writer
+
+    def create_candidates(self):
+        available_protocols = get_protocols()
+        # print(available_protocols)
 
     # Events for active open
     def on_ready(self, a):

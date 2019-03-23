@@ -42,7 +42,7 @@ class Preconnection:
                 self.connection_received = None
                 self.listen_error = None
                 self.stopped = None
-
+    
     """async def initiate_helper(self, con):
         # Helper function to allow for immediate return of
         # Connection Object
