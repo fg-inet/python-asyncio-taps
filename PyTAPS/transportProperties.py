@@ -10,6 +10,8 @@ class PreferenceLevel(Enum):
     PROHIBIT = -2
 
 
+# TODO: Is this accurate? What properties
+#       are actually supported by this implementation
 def get_protocols():
     protocols = []
     tcp = """{
@@ -18,13 +20,12 @@ def get_protocols():
         "preserve-msg-boundaries": false,
         "per-msg-reliability": false,
         "preserve-order": true,
-        "zero-rtt-msg": true,
-        "multistreaming": false,
+        "zero-rtt-msg": "optional",
+        "multistreaming": "optional",
         "per-msg-checksum-len-send": false,
         "per-msg-checksum-len-recv": false,
         "congestion-control": true,
-        "multipath": false,
-        "direction": "Bidirectional",
+        "multipath": "optional",
         "retransmit-notify": true,
         "soft-error-notify": true
     }"""
@@ -40,12 +41,11 @@ def get_protocols():
         "per-msg-checksum-len-recv": false,
         "congestion-control": false,
         "multipath": false,
-        "direction": "Bidirectional",
         "retransmit-notify": false,
         "soft-error-notify": true
     }"""
-    tls = """{
-        "name": "tls",
+    tls_tcp = """{
+        "name": "tls-tcp",
         "reliability": true,
         "preserve-msg-boundaries": false,
         "per-msg-reliability": false,
@@ -56,12 +56,11 @@ def get_protocols():
         "per-msg-checksum-len-recv": false,
         "congestion-control": true,
         "multipath": false,
-        "direction": "Bidirectional",
         "retransmit-notify": false,
         "soft-error-notify": false
     }"""
-    dtls = """{
-        "name": "dtls",
+    dtls_udp = """{
+        "name": "dtls-udp",
         "reliability": false,
         "preserve-msg-boundaries": true,
         "per-msg-reliability": false,
@@ -72,23 +71,21 @@ def get_protocols():
         "per-msg-checksum-len-recv": false,
         "congestion-control": false,
         "multipath": false,
-        "direction": "Bidirectional",
         "retransmit-notify": false,
         "soft-error-notify": true
     }"""
     sctp = """{
         "name": "sctp",
-        "reliability": true,
+        "reliability": "optional",
         "preserve-msg-boundaries": true,
         "per-msg-reliability": true,
         "preserve-order": true,
         "zero-rtt-msg": false,
-        "multistreaming": true,
+        "multistreaming": "optional",
         "per-msg-checksum-len-send": false,
         "per-msg-checksum-len-recv": false,
         "congestion-control": true,
-        "multipath": true,
-        "direction": "Bidirectional",
+        "multipath": "optional",
         "retransmit-notify": true,
         "soft-error-notify": false
     }"""
@@ -98,13 +95,12 @@ def get_protocols():
         "preserve-msg-boundaries": false,
         "per-msg-reliability": false,
         "preserve-order": true,
-        "zero-rtt-msg": true,
-        "multistreaming": true,
+        "zero-rtt-msg": "optional",
+        "multistreaming": "optional",
         "per-msg-checksum-len-send": false,
         "per-msg-checksum-len-recv": false,
         "congestion-control": true,
         "multipath": false,
-        "direction": "Bidirectional",
         "retransmit-notify": false,
         "soft-error-notify": true
     }"""
@@ -120,7 +116,6 @@ def get_protocols():
         "per-msg-checksum-len-recv": false,
         "congestion-control": true,
         "multipath": true,
-        "direction": "Bidirectional",
         "retransmit-notify": true,
         "soft-error-notify": true
     }"""
@@ -132,6 +127,7 @@ def get_protocols():
     # protocols.append(json.loads(quic))
     # protocols.append(json.loads(mptcp))
     return protocols
+
 
 class TransportProperties:
     """ Class to handle the TAPS transport properties

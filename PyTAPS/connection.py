@@ -1,7 +1,7 @@
 import asyncio
 import json
 from .endpoint import LocalEndpoint, RemoteEndpoint
-from .transportProperties import TransportProperties, get_protocols
+from .transportProperties import *
 from .utility import *
 color = "green"
 
@@ -53,11 +53,13 @@ class Connection:
         it will be used.
     """
     async def connect(self):
+        # Create set of candidate protocols
+        self.create_candidates()
+
         # Resolve remote endpoint
         remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
                                                   self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
-        self.create_candidates()
         # Attempt connection
         try:
                 if(self.local_endpoint is None):
@@ -178,7 +180,29 @@ class Connection:
 
     def create_candidates(self):
         available_protocols = get_protocols()
-        # print(available_protocols)
+        candidate_protocols = dict([(row["name"], 0)
+                                   for row in available_protocols])
+        for protocol in available_protocols:
+            for transport_property in self.transport_properties.properties:
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PROHIBIT):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.REQUIRE):
+                    if (protocol[transport_property] is False and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PREFER):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]] += 1
+        sorted_candidates = sorted(candidate_protocols.items(),
+                                   key=lambda value: value[1], reverse=True)
+        # print(sorted_candidates)
+        # print(candidate_protocols)
 
     # Events for active open
     def on_ready(self, a):

@@ -59,7 +59,8 @@ class TestServer():
         # taps.print_time("Created transportProperties object.", color)
 
         self.preconnection = taps.Preconnection(local_endpoint=lp)
-        self.preconnection.on_connection_received(self.handle_connection_received)
+        self.preconnection.on_connection_received(
+            self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
 

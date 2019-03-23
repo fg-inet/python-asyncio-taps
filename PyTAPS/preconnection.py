@@ -25,7 +25,8 @@ class Preconnection:
                         the one of the current thread is used by default
     """
     def __init__(self, local_endpoint=None, remote_endpoint=None,
-                 transport_properties=None, security_parameters=None,
+                 transport_properties=TransportProperties(),
+                 security_parameters=None,
                  event_loop=asyncio.get_event_loop()):
                 # Assertions
                 if local_endpoint is None and remote_endpoint is None:
@@ -42,7 +43,7 @@ class Preconnection:
                 self.connection_received = None
                 self.listen_error = None
                 self.stopped = None
-    
+
     """async def initiate_helper(self, con):
         # Helper function to allow for immediate return of
         # Connection Object

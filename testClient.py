@@ -77,11 +77,8 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        print(tp.properties["reliability"])
         tp.ignore("reliability")
-        print(tp.properties["reliability"])
         tp.default("reliability")
-        print(tp.properties["reliability"])
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
         # taps.print_time("Created transportProperties object.", color)
 
