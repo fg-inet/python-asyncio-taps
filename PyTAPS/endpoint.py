@@ -7,9 +7,13 @@ class LocalEndpoint:
     def __init__(self):
         self.interface = None
         self.port = None
+        self.address = None
 
     def with_interface(self, interface):
         self.interface = interface
+
+    def with_address(self, address):
+        self.address = address
 
     def with_port(self, portNumber):
         self.port = portNumber

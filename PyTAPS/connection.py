@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import TransportProperties
 from .utility import *
@@ -18,7 +19,8 @@ class Connection:
         transportProperties (:obj:'transportProperties', optional): object with
                              the transport properties
                              with specified preferenceLevel
-        securityParams (tbd): Security Parameters for the preconnection
+        securityParams (:obj:'securityParameters', optional): Security
+                        Parameters for the connection
     """
     def __init__(self, local_endpoint=None, remote_endpoint=None,
                  transport_properties=None, security_parameters=None):
@@ -31,6 +33,7 @@ class Connection:
                 self.remote_endpoint = remote_endpoint
                 self.transport_properties = transport_properties
                 self.security_parameters = security_parameters
+                self.security_context = None
                 self.loop = asyncio.get_event_loop()
                 self.message_count = 0
                 self.ready = None
@@ -53,13 +56,17 @@ class Connection:
     async def connect(self):
         if self.remote_endpoint.hostname is not None:
             # Resolve remote endpoint
-            remote_info = await self.loop.getaddrinfo(self.remote_endpoint.hostname,
-                                                  self.remote_endpoint.port)
+            remote_info = await self.loop.getaddrinfo(
+                                                 self.remote_endpoint.hostname,
+                                                 self.remote_endpoint.port)
             self.remote_endpoint.address = remote_info[0][4][0]
-            print_time("Resolved hostname " + self.remote_endpoint.hostname + " to " + self.remote_endpoint.address, color)
+            print_time("Resolved hostname " + self.remote_endpoint.hostname
+                       + " to " + self.remote_endpoint.address, color)
 
         # Attempt connection
         try:
+            if self.security_parameters is None:
+                print_time("Connecting plain TCP.", color)
                 if(self.local_endpoint is None):
                     print_time("Connecting with unspecified localEP.", color)
                     self.reader, self.writer = await asyncio.open_connection(
@@ -72,6 +79,8 @@ class Connection:
                                     self.remote_endpoint.port,
                                     local_addr=(self.local_endpoint.interface,
                                                 self.local_endpoint.port))
+            else:
+                await self._connect_TLS_TCP()
         except:
             if self.initiate_error:
                 print_time("Initiate Error occured.", color)
@@ -83,6 +92,35 @@ class Connection:
             self.loop.create_task(self.ready(self))
             print_time("Queued Ready cb.", color)
         return
+
+    """ Tries to create a TLS (over TCP) connection to a remote endpoint
+        If a local endpoint was specified on connection class creation,
+        it will be used.
+    """
+    async def _connect_TLS_TCP(self):
+        print_time("Connecting TLS over TCP.", color)
+        self.security_context = ssl.create_default_context()
+        if self.security_parameters.identity:
+            self.security_context.load_cert_chain(
+                                self.security_parameters.identity)
+        for cert in self.security_parameters.trustedCA:
+            self.security_context.load_verify_locations(cert)
+
+        if(self.local_endpoint is None):
+            print_time("Connecting with unspecified localEP.", color)
+            self.reader, self.writer = await asyncio.open_connection(
+                                self.remote_endpoint.address,
+                                self.remote_endpoint.port,
+                                ssl=self.security_context,
+                                server_hostname=self.remote_endpoint.hostname)
+        else:
+            print_time("Connecting with specified localEP.", color)
+            self.reader, self.writer = await asyncio.open_connection(
+                            self.remote_endpoint.address,
+                            self.remote_endpoint.port,
+                            local_addr=(self.local_endpoint.interface,
+                                        self.local_endpoint.port),
+                            ssl=self.security_context)
 
     """ Tries to send the (string) stored in data
     """
