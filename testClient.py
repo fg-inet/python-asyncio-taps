@@ -68,6 +68,7 @@ class TestClient():
         if args.remote_port:
             ep.with_port(args.remote_port)
         lp =  None
+        sp = None
         if args.interface or args.local_address or args.local_port:
             lp = taps.LocalEndpoint()
             if args.interface:
@@ -79,6 +80,15 @@ class TestClient():
 
         taps.print_time("Created endpoint objects.", color)
 
+        if args.secure or args.trust_ca or args.local_identity:
+            # Use TLS
+            sp = taps.SecurityParameters()
+            if args.trust_ca:
+                sp.addTrustCA(args.trust_ca)
+            if args.local_identity:
+                sp.addIdentity(args.local_identity)
+            taps.print_time("Created SecurityParameters.", color)
+
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
@@ -87,7 +97,8 @@ class TestClient():
 
         # Create the preconnection object with the two prev created EPs
         self.preconnection = taps.Preconnection(remote_endpoint=ep,
-                                                local_endpoint=lp)
+                                                local_endpoint=lp,
+                                                security_parameters=sp)
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
         taps.print_time("Created preconnection object and set cbs.", color)
@@ -106,6 +117,9 @@ if __name__ == "__main__":
     ap.add_argument('--interface', '-i', nargs=1, default=None)
     ap.add_argument('--local-address', nargs=1, default=None)
     ap.add_argument('--local-port', '-l', type=int, nargs=1, default=None)
+    ap.add_argument('--local-identity', type=str, nargs=1, default=None)
+    ap.add_argument('--trust-ca', type=str, default=None)
+    ap.add_argument('--secure', '-s', nargs='?', const=True, type=bool, default=False)
     args = ap.parse_args()
     print(args)
     # Start testclient
