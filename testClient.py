@@ -1,6 +1,7 @@
 import PyTAPS as taps
 import asyncio
 import sys
+import argparse
 import ipaddress
 color = "yellow"
 
@@ -56,29 +57,27 @@ class TestClient():
         # msgref = await self.connection.send_message("There\n")
         taps.print_time("send_message called.", color)
 
-    async def main(self):
+    async def main(self, args):
+
         # Create endpoint objects
         ep = taps.RemoteEndpoint()
-        # Set default address and port
-        ep.with_address("127.0.0.1")
-        ep.with_port(6666)
-        lp = None
-        taps.print_time("Created endpoint objects.", color)
+        if args.remote_address:
+            ep.with_address(args.remote_address)
+        elif args.remote_host:
+            ep.with_hostname(args.remote_host)
+        if args.remote_port:
+            ep.with_port(args.remote_port)
+        lp =  None
+        if args.interface or args.local_address or args.local_port:
+            lp = taps.LocalEndpoint()
+            if args.interface:
+                lp.with_interface(args.interface)
+            if args.local_address:
+                lp.with_port(args.local_address)
+            if args.local_port:
+                lp.with_port(args.local_port)
 
-        # See if a remote and/or local address/port has been specified
-        if len(sys.argv) >= 3:
-            try:
-                ipaddress.ip_address(sys.argv[1])
-                ep.with_address(str(sys.argv[1]))
-            except ValueError:
-                taps.print_time("Not a valid IP address: " + sys.argv[1] + " - assuming it's a hostname", color)
-                ep.with_hostname(str(sys.argv[1]))
-            ep.with_port(int(sys.argv[2]))
-            if len(sys.argv) >= 4:
-                lp = taps.LocalEndpoint()
-                lp.with_interface(str(sys.argv[3]))
-                if len(sys.argv) == 5:
-                    lp.with_port(int(sys.argv[4]))
+        taps.print_time("Created endpoint objects.", color)
 
         # Create transportProperties Object and set properties
         # Does nothing yet
@@ -99,6 +98,17 @@ class TestClient():
 
 
 if __name__ == "__main__":
+    # Parse arguments
+    ap = argparse.ArgumentParser(description='PyTAPS test client.')
+    ap.add_argument('--remote-host', '--host', nargs='?', default="localhost")
+    ap.add_argument('--remote-address', nargs=1)
+    ap.add_argument('--remote-port', '--port', type=int, default=6666)
+    ap.add_argument('--interface', '-i', nargs=1, default=None)
+    ap.add_argument('--local-address', nargs=1, default=None)
+    ap.add_argument('--local-port', '-l', type=int, nargs=1, default=None)
+    args = ap.parse_args()
+    print(args)
+    # Start testclient
     client = TestClient()
-    client.loop.create_task(client.main())
+    client.loop.create_task(client.main(args))
     client.loop.run_forever()
