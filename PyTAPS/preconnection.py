@@ -20,8 +20,8 @@ class Preconnection:
         transportProperties (:obj:'transportProperties', optional): object with
                         the transport properties
                         with specified preferenceLevel
-        securityParams (:obj:'securityParameters', optional): Security Parameters
-                        for the preconnection
+        securityParams (:obj:'securityParameters', optional): Security
+                        Parameters for the preconnection
         eventLoop (:obj: 'eventLoop', optional): event loop on which all
                         coroutines will be scheduled, if none if given
                         the one of the current thread is used by default
@@ -84,19 +84,27 @@ class Preconnection:
                                     self.transport_properties,
                                     self.security_parameters)
         new_connection.set_reader_writer(reader, writer)
-        print_time("Created new connection object (from " + new_remote_endpoint.address + ":" + str(new_remote_endpoint.port) + ")", color)
+        print_time("Created new connection object (from "
+                   + new_remote_endpoint.address + ":"
+                   + str(new_remote_endpoint.port) + ")", color)
         if self.connection_received:
             self.loop.create_task(self.connection_received(new_connection))
             print_time("Called connection_received cb", color)
         return
 
     async def start_listener(self):
-        print_time("Starting Listener on " + (str(self.local_endpoint.address) if self.local_endpoint.address else "default") + ":" + str(self.local_endpoint.port), color)
+        print_time("Starting Listener on " +
+                   (str(self.local_endpoint.address) if
+                    self.local_endpoint.address else "default") + ":"
+                   + str(self.local_endpoint.port), color)
         if self.security_parameters:
-            self.security_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            self.security_context = ssl.create_default_context(
+                                                ssl.Purpose.CLIENT_AUTH)
             if self.security_parameters.identity:
-                print_time("Identity: " + str(self.security_parameters.identity))
-                self.security_context.load_cert_chain(self.security_parameters.identity)
+                print_time("Identity: "
+                           + str(self.security_parameters.identity))
+                self.security_context.load_cert_chain(
+                                        self.security_parameters.identity)
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
 

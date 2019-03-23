@@ -19,8 +19,8 @@ class Connection:
         transportProperties (:obj:'transportProperties', optional): object with
                              the transport properties
                              with specified preferenceLevel
-        securityParams (:obj:'securityParameters', optional): Security Parameters
-                            for the connection
+        securityParams (:obj:'securityParameters', optional): Security
+                        Parameters for the connection
     """
     def __init__(self, local_endpoint=None, remote_endpoint=None,
                  transport_properties=None, security_parameters=None):
@@ -56,10 +56,12 @@ class Connection:
     async def connect(self):
         if self.remote_endpoint.hostname is not None:
             # Resolve remote endpoint
-            remote_info = await self.loop.getaddrinfo(self.remote_endpoint.hostname,
-                                                  self.remote_endpoint.port)
+            remote_info = await self.loop.getaddrinfo(
+                                                 self.remote_endpoint.hostname,
+                                                 self.remote_endpoint.port)
             self.remote_endpoint.address = remote_info[0][4][0]
-            print_time("Resolved hostname " + self.remote_endpoint.hostname + " to " + self.remote_endpoint.address, color)
+            print_time("Resolved hostname " + self.remote_endpoint.hostname
+                       + " to " + self.remote_endpoint.address, color)
 
         # Attempt connection
         try:
@@ -99,7 +101,8 @@ class Connection:
         print_time("Connecting TLS over TCP.", color)
         self.security_context = ssl.create_default_context()
         if self.security_parameters.identity:
-            self.security_context.load_cert_chain(self.security_parameters.identity)
+            self.security_context.load_cert_chain(
+                                self.security_parameters.identity)
         for cert in self.security_parameters.trustedCA:
             self.security_context.load_verify_locations(cert)
 
