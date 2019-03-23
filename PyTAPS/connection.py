@@ -51,10 +51,12 @@ class Connection:
         it will be used.
     """
     async def connect(self):
-        # Resolve remote endpoint
-        remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
+        if self.remote_endpoint.hostname is not None:
+            # Resolve remote endpoint
+            remote_info = await self.loop.getaddrinfo(self.remote_endpoint.hostname,
                                                   self.remote_endpoint.port)
-        self.remote_endpoint.address = remote_info[0][4][0]
+            self.remote_endpoint.address = remote_info[0][4][0]
+            print_time("Resolved hostname " + self.remote_endpoint.hostname + " to " + self.remote_endpoint.address, color)
 
         # Attempt connection
         try:

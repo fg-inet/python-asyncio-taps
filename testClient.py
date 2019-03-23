@@ -1,6 +1,7 @@
 import PyTAPS as taps
 import asyncio
 import sys
+import ipaddress
 color = "yellow"
 
 
@@ -39,7 +40,7 @@ class TestClient():
         self.loop.stop()
 
     async def handle_ready(self, connection):
-        taps.print_time("Ready cb received.", color)
+        taps.print_time("Ready cb received from connection to " + connection.remote_endpoint.address + ":" + str(connection.remote_endpoint.port) + " (hostname: " + str(connection.remote_endpoint.hostname) + ")", color)
 
         # Set connection callbacks
         self.connection.on_sent(self.handle_sent)
@@ -66,7 +67,12 @@ class TestClient():
 
         # See if a remote and/or local address/port has been specified
         if len(sys.argv) >= 3:
-            ep.with_address(str(sys.argv[1]))
+            try:
+                ipaddress.ip_address(sys.argv[1])
+                ep.with_address(str(sys.argv[1]))
+            except ValueError:
+                taps.print_time("Not a valid IP address: " + sys.argv[1] + " - assuming it's a hostname", color)
+                ep.with_hostname(str(sys.argv[1]))
             ep.with_port(int(sys.argv[2]))
             if len(sys.argv) >= 4:
                 lp = taps.LocalEndpoint()
