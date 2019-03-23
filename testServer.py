@@ -49,7 +49,7 @@ class TestServer():
         if args.interface:
             lp.with_interface(args.interface)
         if args.local_address:
-            lp.with_port(args.local_address)
+            lp.with_address(args.local_address)
         if args.local_port:
             lp.with_port(args.local_port)
 

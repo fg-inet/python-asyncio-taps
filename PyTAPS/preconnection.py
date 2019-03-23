@@ -81,17 +81,17 @@ class Preconnection:
                                     self.transport_properties,
                                     self.security_parameters)
         new_connection.set_reader_writer(reader, writer)
-        print_time("Created new connection object.", color)
+        print_time("Created new connection object (from " + new_remote_endpoint.address + ":" + str(new_remote_endpoint.port) + ")", color)
         if self.connection_received:
             self.loop.create_task(self.connection_received(new_connection))
             print_time("Called connection_received cb", color)
         return
 
     async def start_listener(self):
-        print_time("Starting Listener.", color)
+        print_time("Starting Listener on " + (str(self.local_endpoint.address) if self.local_endpoint.address else "default") + ":" + str(self.local_endpoint.port), color)
         try:
             await asyncio.start_server(self.handle_new_connection,
-                                       self.local_endpoint.interface,
+                                       self.local_endpoint.address,
                                        self.local_endpoint.port)
         except:
             print_time("Listen Error occured.", color)
