@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
@@ -54,8 +55,14 @@ class Connection:
     """
     async def connect(self):
         # Create set of candidate protocols
-        self.create_candidates()
-
+        candidate_set = self.create_candidates()
+        if not candidate_set:
+            print_time("Empty candidate set", color)
+            if self.initiate_error:
+                print_time("Protocol selection Error occured.", color)
+                self.loop.create_task(self.initiate_error())
+                print_time("Queued InitiateError cb.", color)
+            return
         # Resolve remote endpoint
         remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
                                                   self.remote_endpoint.port)
@@ -180,7 +187,7 @@ class Connection:
 
     def create_candidates(self):
         available_protocols = get_protocols()
-        candidate_protocols = dict([(row["name"], 0)
+        candidate_protocols = dict([(row["name"], list((0, 0)))
                                    for row in available_protocols])
         for protocol in available_protocols:
             for transport_property in self.transport_properties.properties:
@@ -198,11 +205,18 @@ class Connection:
                         is PreferenceLevel.PREFER):
                     if (protocol[transport_property] is True and
                             protocol["name"] in candidate_protocols):
-                        candidate_protocols[protocol["name"]] += 1
+                        candidate_protocols[protocol["name"]][0] += 1
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.AVOID):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]][1] -= 1
+
         sorted_candidates = sorted(candidate_protocols.items(),
-                                   key=lambda value: value[1], reverse=True)
-        # print(sorted_candidates)
-        # print(candidate_protocols)
+                                   key=lambda value: (value[1][0],
+                                   value[1][1]), reverse=True)
+
+        return sorted_candidates
 
     # Events for active open
     def on_ready(self, a):
