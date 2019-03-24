@@ -53,8 +53,8 @@ class TestClient():
 
         # Send message
         msgref = await self.connection.send_message("Hello")
-        msgref = await self.connection.send_message("There\n")
-        msgref = await self.connection.send_message("Friend\n")
+        #msgref = await self.connection.send_message("There\n")
+        #msgref = await self.connection.send_message("Friend\n")
         taps.print_time("send_message called.", color)
 
     async def main(self):
@@ -79,7 +79,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        #tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)

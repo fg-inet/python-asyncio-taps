@@ -16,9 +16,10 @@ class TestServer():
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
         self.connection.on_sent(self.handle_sent)
-        await self.connection.receive(min_incomplete_length=1, max_length=5)
+        await self.connection.receive(min_incomplete_length=1, max_length=6)
         # await self.connection.receive(min_incomplete_length=4, max_length=3)
         # self.connection.on_sent(handle_sent)
+        print(self.connection)
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
@@ -31,7 +32,7 @@ class TestServer():
         await self.connection.receive(min_incomplete_length=1, max_length=5)
         self.connection.send_message(data)
 
-    async def handle_listen_error(self, connection):
+    async def handle_listen_error(self):
         taps.print_time("Listen Error occured.", color)
         self.loop.stop()
 
@@ -57,7 +58,7 @@ class TestServer():
             lp.with_port(int(sys.argv[2]))
 
         tp = taps.TransportProperties()
-        #tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
 

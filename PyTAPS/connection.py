@@ -59,6 +59,8 @@ class Connection(asyncio.Protocol):
                 preconnection.connection = self
                 if preconnection.waiter is not None:
                     preconnection.waiter.set_result(None)
+                if self.protocol == "udp" and not self.active:
+                    self.handler = preconnection.handler
                 # Assertions
                 if (self.local_endpoint is None and
                         self.remote_endpoint is None):
@@ -68,9 +70,6 @@ class Connection(asyncio.Protocol):
     # Asyncio Callbacks
     def connection_made(self, transport):
         if self.active is False:
-            if transport.get_extra_info('peername') is None:
-                print_time("New datagram connection", color)
-                return
             self.transport = transport
             new_remote_endpoint = RemoteEndpoint()
             print_time("Received new connection.", color)
@@ -94,6 +93,7 @@ class Connection(asyncio.Protocol):
             return
 
     def data_received(self, data):
+        print("RECEIVED NEW DATA")
         if self.recv_buffer is None:
             self.recv_buffer = data
         else:
@@ -109,6 +109,7 @@ class Connection(asyncio.Protocol):
         self.at_eof = True
 
     def datagram_received(self, data, addr):
+        print("RECEIVED NEW DATA")
         if self.connection_received:
             self.loop.create_task(self.connection_received(self))
             print_time("Called connection_received cb", color)
@@ -179,14 +180,18 @@ class Connection(asyncio.Protocol):
 
         elif self.protocol == 'udp':
             print_time("Writing UDP data.", color)
-            try:
+            #try:
+            if self.active:
                 self.transport.sendto(data.encode())
-            except:
+            else:
+                self.handler.send_to(self, data.encode())
+            """except:
+                print("ERRRRRRRRR")
                 if self.send_error:
                     print_time("SendError occured.", color)
                     self.loop.create_task(self.send_error(message_count))
                     print_time("Queued SendError cb.", color)
-                return
+                return"""
             print_time("Data written successfully.", color)
             # Queue sent callback if there is one
             if self.sent:
@@ -317,3 +322,40 @@ class Connection(asyncio.Protocol):
     # Events for closing a connection
     def on_closed(self, a):
         self.closed = a
+
+
+class DatagramHandler(asyncio.Protocol):
+
+    def __init__(self, preconnection):
+        self.preconnection = preconnection
+        self.remotes = dict()
+        self.preconnection.handler = self
+
+    def send_to(self, connection, data):
+        remote_address = connection.remote_endpoint.address
+        remote_port = connection.remote_endpoint.port
+        print(remote_address, remote_port)
+        self.transport.sendto(data, (remote_address, remote_port))
+
+    def connection_made(self, transport):
+        self.transport = transport
+        return
+
+    def datagram_received(self, data, addr):
+        if addr in self.remotes:
+            self.remotes[addr].data_received(data)
+            return
+        new_connection = Connection(self.preconnection)
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        new_remote_endpoint.with_address(addr[0])
+        new_remote_endpoint.with_port(addr[1])
+        new_connection.remote_endpoint = new_remote_endpoint
+        print_time("Created new connection object.", color)
+        if new_connection.connection_received:
+            new_connection.loop.create_task(
+                new_connection.connection_received(new_connection))
+            print_time("Called connection_received cb", color)
+        new_connection.data_received(data)
+        self.remotes[addr] = new_connection
+        return

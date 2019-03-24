@@ -1,5 +1,5 @@
 import asyncio
-from .connection import Connection
+from .connection import Connection, DatagramHandler
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
@@ -140,7 +140,7 @@ class Preconnection:
                 self.protocol = 'udp'
                 print_time("Starting UDP Listener.", color)
                 await self.loop.create_datagram_endpoint(
-                                lambda: Connection(self),
+                                lambda: DatagramHandler(self),
                                 local_addr=(self.local_endpoint.interface,
                                             self.local_endpoint.port))
             elif candidate_set[0][0] == 'tcp':
