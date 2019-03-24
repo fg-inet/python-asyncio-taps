@@ -33,6 +33,8 @@ class Connection(asyncio.Protocol):
                 self.security_context = None
                 self.loop = asyncio.get_event_loop()
                 self.message_count = 0
+                self.active = preconnection.active
+                self.protocol = preconnection.protocol
 
                 # Required for receiving data
                 self.msg_buffer = None
@@ -56,27 +58,43 @@ class Connection(asyncio.Protocol):
                 self.closed = None
                 self.reader = None
                 self.writer = None
+
+                preconnection.connection = self
+                if preconnection.waiter is not None:
+                    preconnection.waiter.set_result(None)
                 # Assertions
-                if self.local_endpoint is None and self.remote_endpoint is None:
+                if (self.local_endpoint is None and
+                        self.remote_endpoint is None):
                     raise Exception("At least one endpoint need "
                                     "to be specified")
 
     # Asyncio Callbacks
     def connection_made(self, transport):
-        if transport.get_extra_info('peername') is None:
-            print_time("New datagram connection", color)
+        if self.active is False:
+            if transport.get_extra_info('peername') is None:
+                print_time("New datagram connection", color)
+                return
+            self.transport = transport
+            new_remote_endpoint = RemoteEndpoint()
+            print_time("Received new connection.", color)
+            new_remote_endpoint.with_address(
+                                transport.get_extra_info("peername")[0])
+            new_remote_endpoint.with_port(
+                                transport.get_extra_info("peername")[1])
+            self.remote_endpoint = new_remote_endpoint
+            print_time("Created new connection object.", color)
+            if self.connection_received:
+                self.loop.create_task(self.connection_received(self))
+                print_time("Called connection_received cb", color)
             return
-        self.transport = transport
-        new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
-        new_remote_endpoint.with_address(transport.get_extra_info("peername")[0])
-        new_remote_endpoint.with_port(transport.get_extra_info("peername")[1])
-        self.remote_endpoint = new_remote_endpoint
-        print_time("Created new connection object.", color)
-        if self.connection_received:
-            self.loop.create_task(self.connection_received(self))
-            print_time("Called connection_received cb", color)
-        return
+        elif self.active:
+            self.transport = transport
+            print_time("New connection established", color)
+            if self.ready:
+                print_time("Connected successfully.", color)
+                self.loop.create_task(self.ready(self))
+                print_time("Queued Ready cb.", color)
+            return
 
     def data_received(self, data):
         if self.recv_buffer is None:
@@ -84,13 +102,27 @@ class Connection(asyncio.Protocol):
         else:
             self.recv_buffer = self.recv_buffer + data
             printtime("Received " + self.recv_buffer.decode(), color)
-        
+
         if self.waiter is not None:
             self.waiter.set_result(None)
         # print(self.recv_buffer)
 
+    def eof_received(self):
+        self.at_eof = True
+
     def datagram_received(self, data, addr):
-        print("Received data " + data.decode())
+        if self.connection_received:
+            self.loop.create_task(self.connection_received(self))
+            print_time("Called connection_received cb", color)
+        if self.recv_buffer is None:
+            self.recv_buffer = data
+        else:
+            self.recv_buffer = self.recv_buffer + data
+            printtime("Received " + self.recv_buffer.decode(), color)
+
+        if self.waiter is not None:
+            self.waiter.set_result(None)
+
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
@@ -167,23 +199,39 @@ class Connection(asyncio.Protocol):
     """ Tries to send the (string) stored in data
     """
     async def send_data(self, data, message_count):
-        print_time("Writing data.", color)
-        try:
-            self.writer.write(data.encode())
-            await self.writer.drain()
-        except:
-            if self.send_error:
-                print_time("SendError occured.", color)
-                self.loop.create_task(self.send_error(message_count))
-                print_time("Queued SendError cb.", color)
+        if self.protocol == 'tcp':
+            print_time("Writing TCP data.", color)
+            try:
+                self.transport.write(data.encode())
+            except:
+                if self.send_error:
+                    print_time("SendError occured.", color)
+                    self.loop.create_task(self.send_error(message_count))
+                    print_time("Queued SendError cb.", color)
+                return
+            print_time("Data written successfully.", color)
+            # Queue sent callback if there is one
+            if self.sent:
+                self.loop.create_task(self.sent(message_count))
+                print_time("Queued Sent cb..", color)
             return
-        print_time("Data written successfully.", color)
 
-        # Queue sent callback if there is one
-        if self.sent:
-            self.loop.create_task(self.sent(message_count))
-            print_time("Queued Sent cb..", color)
-        return
+        elif self.protocol == 'udp':
+            print_time("Writing UDP data.", color)
+            try:
+                self.transport.sendto(data.encode())
+            except:
+                if self.send_error:
+                    print_time("SendError occured.", color)
+                    self.loop.create_task(self.send_error(message_count))
+                    print_time("Queued SendError cb.", color)
+                return
+            print_time("Data written successfully.", color)
+            # Queue sent callback if there is one
+            if self.sent:
+                self.loop.create_task(self.sent(message_count))
+                print_time("Queued Sent cb..", color)
+            return
 
     """ Wrapper function that assigns MsgRef
         and then calls async helper function
@@ -205,34 +253,34 @@ class Connection(asyncio.Protocol):
             await self.waiter
         finally:
             self.waiter = None
-        
+
     async def read_buffer(self, max_length=-1):
         if self.recv_buffer is None:
             await self.await_data()
-        if max_length == -1:
+        if max_length == -1 or len(self.recv_buffer) <= max_length:
             data = self.recv_buffer
             self.recv_buffer = None
             return data
-        # if len(self.recv_buffer) > max_length:
-
+        if len(self.recv_buffer) > max_length:
+            data = self.recv_buffer[:max_length]
+            self.recv_buffer = self.recv_buffer[max_length:]
+            return data
     """ Queues reception of a message
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        #try:
-        data = await self.read_buffer(-1)
-        if data is None:
-            return
-        data = data.decode()
-        if self.msg_buffer is None:
-            self.msg_buffer = data
-        else:
-            self.msg_buffer = self.msg_buffer + data
-        """except:
+        try:
+            data = await self.read_buffer(max_length)
+            data = data.decode()
+            if self.msg_buffer is None:
+                self.msg_buffer = data
+            else:
+                self.msg_buffer = self.msg_buffer + data
+        except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
-            return"""
+            return
         if self.at_eof:
             print_time("Received full message", color)
             if self.received:
@@ -260,8 +308,7 @@ class Connection(asyncio.Protocol):
     """
     async def close_connection(self):
         print_time("Closing connection.", color)
-        self.writer.close()
-        await self.writer.wait_closed()
+        self.transport.close()
         print_time("Connection closed.", color)
         if self.closed:
             self.loop.create_task(self.closed())
@@ -271,11 +318,6 @@ class Connection(asyncio.Protocol):
     """
     def close(self):
         self.loop.create_task(self.close_connection())
-    """ Function to set reader/writer for passive open
-    """
-    def set_reader_writer(self, reader, writer):
-        self.reader = reader
-        self.writer = writer
 
     # Events for active open
     def on_ready(self, a):

@@ -24,7 +24,7 @@ class TestServer():
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
         taps.print_time("Received message " + str(data) + ".", color)
-        # msgref = await self.connection.send_message(str(data))
+        msgref = await self.connection.send_message(str(data))
 
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
@@ -65,17 +65,18 @@ class TestServer():
                 sp.addIdentity(args.local_identity)
             taps.print_time("Created SecurityParameters.", color)
 
-        # tp = taps.transportProperties()
-        # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
-        # taps.print_time("Created transportProperties object.", color)
+        tp = taps.TransportProperties()
+        #tp.prohibit("reliability")
+        tp.ignore("congestion-control")
+        tp.ignore("preserve-order")
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
+                                                transport_properties=tp,
                                                 security_parameters=sp)
         self.preconnection.on_connection_received(
                                             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
-        #taps.Connection(self.preconnection)
         await self.preconnection.listen()
 
 
