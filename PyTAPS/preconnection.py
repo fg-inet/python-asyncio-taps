@@ -1,8 +1,9 @@
 import asyncio
 from .connection import Connection
-from .transportProperties import TransportProperties
+from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
+from .factories import *
 color = "red"
 
 
@@ -43,22 +44,28 @@ class Preconnection:
                 self.connection_received = None
                 self.listen_error = None
                 self.stopped = None
-
-    """async def initiate_helper(self, con):
-        # Helper function to allow for immediate return of
-        # Connection Object
-        print_time("Created connect task.", color)
-        asyncio.create_task(con.connect())"""
+                self.ready = None
+                self.initiate_error = None
+                self.connection_received = None
+                self.listen_error = None
+                self.stopped = None
 
     """ Initiates the preconnection, i.e. creates a connection object
         and attempts to connect it to the specified remote endpoint.
     """
     async def initiate(self):
         print_time("Initiating connection.", color)
-        connection = Connection(self.local_endpoint,
-                                self.remote_endpoint,
-                                self.transport_properties,
-                                self.security_parameters)
+        # Create set of candidate protocols
+        candidate_set = self.create_candidates()
+        if not candidate_set:
+            print_time("Empty candidate set", color)
+            if self.initiate_error:
+                print_time("Protocol selection Error occured.", color)
+                self.loop.create_task(self.initiate_error())
+                print_time("Queued InitiateError cb.", color)
+            return
+
+        connection = Connection(self)
         connection.on_initiate_error(self.initiate_error)
         connection.on_ready(self.ready)
         # This is required because initiate isnt async and therefor
@@ -73,15 +80,15 @@ class Preconnection:
 
     """Handles a new connection detected by listener
     """
-    def handle_new_connection(self, reader, writer):
+    def handle_new_connection(self, transport):
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
-        new_remote_endpoint.with_address(writer.get_extra_info("peername")[0])
+        new_remote_endpoint.with_address(tra.get_extra_info("peername")[0])
         new_remote_endpoint.with_port(writer.get_extra_info("peername")[1])
         new_connection = Connection(self.local_endpoint, new_remote_endpoint,
                                     self.transport_properties,
                                     self.security_parameters)
-        new_connection.set_reader_writer(reader, writer)
+        # new_connection.set_reader_writer(reader, writer)
         print_time("Created new connection object.", color)
         if self.connection_received:
             self.loop.create_task(self.connection_received(new_connection))
@@ -91,12 +98,19 @@ class Preconnection:
     async def start_listener(self):
         print_time("Starting Listener.", color)
         try:
+            await self.loop.create_datagram_endpoint(lambda: Connection(self),
+                                                     local_addr = (self.local_endpoint.interface,
+                                                     self.local_endpoint.port))
+            server = await self.loop.create_server(lambda: Connection(self),
+                                                 self.local_endpoint.interface,
+                                                 self.local_endpoint.port)
+            """
             await asyncio.start_server(self.handle_new_connection,
                                        self.local_endpoint.interface,
-                                       self.local_endpoint.port)
+                                       self.local_endpoint.port)"""
         except:
             print_time("Listen Error occured.", color)
-            if self.listen_error_:
+            if self.listen_error:
                 self.loop.create_task(self.listen_error())
                 print_time("Queued listen_error cb.", color)
         return
@@ -105,6 +119,39 @@ class Preconnection:
     async def listen(self):
         self.loop.create_task(self.start_listener())
         return
+
+    def create_candidates(self):
+        available_protocols = get_protocols()
+        candidate_protocols = dict([(row["name"], list((0, 0)))
+                                   for row in available_protocols])
+        for protocol in available_protocols:
+            for transport_property in self.transport_properties.properties:
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PROHIBIT):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.REQUIRE):
+                    if (protocol[transport_property] is False and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PREFER):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]][0] += 1
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.AVOID):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]][1] -= 1
+
+        sorted_candidates = sorted(candidate_protocols.items(),
+                                   key=lambda value: (value[1][0],
+                                   value[1][1]), reverse=True)
+
+        return sorted_candidates
 
     # Events for active open
     def on_ready(self, a):

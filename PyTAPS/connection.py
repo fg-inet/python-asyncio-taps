@@ -7,7 +7,7 @@ from .utility import *
 color = "green"
 
 
-class Connection:
+class Connection(asyncio.Protocol):
     """The TAPS connection class.
 
     Attributes:
@@ -22,47 +22,77 @@ class Connection:
                              with specified preferenceLevel
         securityParams (tbd): Security Parameters for the preconnection
     """
-    def __init__(self, local_endpoint=None, remote_endpoint=None,
-                 transport_properties=None, security_parameters=None):
-                # Assertions
-                if local_endpoint is None and remote_endpoint is None:
-                    raise Exception("At least one endpoint need "
-                                    "to be specified")
+    def __init__(self, preconnection):
                 # Initializations
-                self.local_endpoint = local_endpoint
-                self.remote_endpoint = remote_endpoint
-                self.transport_properties = transport_properties
-                self.security_parameters = security_parameters
+                self.local_endpoint = preconnection.local_endpoint
+                self.remote_endpoint = preconnection.remote_endpoint
+                self.transport_properties = preconnection.transport_properties
+                self.security_parameters = preconnection.security_parameters
                 self.loop = asyncio.get_event_loop()
                 self.message_count = 0
-                self.ready = None
-                self.initiate_error = None
+
+                # Required for receiving data
+                self.msg_buffer = None
+                self.recv_buffer = None
+                self.at_eof = False
+                self.waiter = None
+
+                # Callbacks
+                self.ready = preconnection.ready
+                self.initiate_error = preconnection.initiate_error
                 self.sent = None
                 self.send_error = None
                 self.expired = None
                 self.connection_error = None
+                self.connection_received = preconnection.connection_received
+                self.listen_error = preconnection.listen_error
+                self.stopped = preconnection.stopped
                 self.received = None
                 self.received_partial = None
                 self.receive_error = None
                 self.closed = None
                 self.reader = None
                 self.writer = None
-                self.msg_buffer = None
+                # Assertions
+                if self.local_endpoint is None and self.remote_endpoint is None:
+                    raise Exception("At least one endpoint need "
+                                    "to be specified")
 
+    # Asyncio Callbacks
+    def connection_made(self, transport):
+        if transport.get_extra_info('peername') is None:
+            print_time("New datagram connection", color)
+            return
+        self.transport = transport
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        new_remote_endpoint.with_address(transport.get_extra_info("peername")[0])
+        new_remote_endpoint.with_port(transport.get_extra_info("peername")[1])
+        self.remote_endpoint = new_remote_endpoint
+        print_time("Created new connection object.", color)
+        if self.connection_received:
+            self.loop.create_task(self.connection_received(self))
+            print_time("Called connection_received cb", color)
+        return
+
+    def data_received(self, data):
+        if self.recv_buffer is None:
+            self.recv_buffer = data
+        else:
+            self.recv_buffer = self.recv_buffer + data
+            printtime("Received " + self.recv_buffer.decode(), color)
+        
+        if self.waiter is not None:
+            self.waiter.set_result(None)
+        # print(self.recv_buffer)
+
+    def datagram_received(self, data, addr):
+        print("Received data " + data.decode())
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
     """
     async def connect(self):
-        # Create set of candidate protocols
-        candidate_set = self.create_candidates()
-        if not candidate_set:
-            print_time("Empty candidate set", color)
-            if self.initiate_error:
-                print_time("Protocol selection Error occured.", color)
-                self.loop.create_task(self.initiate_error())
-                print_time("Queued InitiateError cb.", color)
-            return
         # Resolve remote endpoint
         remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
                                                   self.remote_endpoint.port)
@@ -125,23 +155,44 @@ class Connection:
         print_time("Returning MsgRef.", color)
         return self.message_count
 
+    async def await_data(self):
+        if self.waiter is not None:
+            print_time("Already waiting for data", color)
+            return
+        self.waiter = self.loop.create_future()
+        try:
+            await self.waiter
+        finally:
+            self.waiter = None
+        
+    async def read_buffer(self, max_length=-1):
+        if self.recv_buffer is None:
+            await self.await_data()
+        if max_length == -1:
+            data = self.recv_buffer
+            self.recv_buffer = None
+            return data
+        # if len(self.recv_buffer) > max_length:
+
     """ Queues reception of a message
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        try:
-            data = await self.reader.read(max_length)
-            data = data.decode()
-            if self.msg_buffer is None:
-                self.msg_buffer = data
-            else:
-                self.msg_buffer = self.msg_buffer + data
-        except:
+        #try:
+        data = await self.read_buffer(-1)
+        if data is None:
+            return
+        data = data.decode()
+        if self.msg_buffer is None:
+            self.msg_buffer = data
+        else:
+            self.msg_buffer = self.msg_buffer + data
+        """except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
-            return
-        if self.reader.at_eof():
+            return"""
+        if self.at_eof:
             print_time("Received full message", color)
             if self.received:
                 self.loop.create_task(self.received(self.msg_buffer,
@@ -184,39 +235,6 @@ class Connection:
     def set_reader_writer(self, reader, writer):
         self.reader = reader
         self.writer = writer
-
-    def create_candidates(self):
-        available_protocols = get_protocols()
-        candidate_protocols = dict([(row["name"], list((0, 0)))
-                                   for row in available_protocols])
-        for protocol in available_protocols:
-            for transport_property in self.transport_properties.properties:
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.PROHIBIT):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        del candidate_protocols[protocol["name"]]
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.REQUIRE):
-                    if (protocol[transport_property] is False and
-                            protocol["name"] in candidate_protocols):
-                        del candidate_protocols[protocol["name"]]
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.PREFER):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        candidate_protocols[protocol["name"]][0] += 1
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.AVOID):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        candidate_protocols[protocol["name"]][1] -= 1
-
-        sorted_candidates = sorted(candidate_protocols.items(),
-                                   key=lambda value: (value[1][0],
-                                   value[1][1]), reverse=True)
-
-        return sorted_candidates
 
     # Events for active open
     def on_ready(self, a):

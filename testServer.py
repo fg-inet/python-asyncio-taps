@@ -23,7 +23,7 @@ class TestServer():
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
         taps.print_time("Received message " + str(data) + ".", color)
-        msgref = await self.connection.send_message(str(data))
+        # msgref = await self.connection.send_message(str(data))
 
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
@@ -63,7 +63,7 @@ class TestServer():
             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
-
+        #taps.Connection(self.preconnection)
         await self.preconnection.listen()
 
 

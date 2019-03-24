@@ -50,7 +50,7 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send message
-        msgref = await self.connection.send_message("Hello\n")
+        msgref = await self.connection.send_message("Hello")
         await self.connection.receive(min_incomplete_length=1)
         # msgref = await self.connection.send_message("There\n")
         taps.print_time("send_message called.", color)
