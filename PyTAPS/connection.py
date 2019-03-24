@@ -102,7 +102,7 @@ class Connection(asyncio.Protocol):
 
         if self.waiter is not None:
             self.waiter.set_result(None)
-        # print(self.recv_buffer)
+        print(self.recv_buffer)
 
     def eof_received(self):
         print_time("EOF received", color)
@@ -206,12 +206,9 @@ class Connection(asyncio.Protocol):
         return self.message_count
 
     async def await_data(self):
-        while True:
-            if self.waiter is not None:
-                print_time("Already waiting for data", color)
-                await self.waiter
-            else:
-                break
+        if self.waiter is not None:
+            print_time("Already waiting for data", color)
+            await self.waiter
         self.waiter = self.loop.create_future()
         try:
             await self.waiter

@@ -29,7 +29,7 @@ class TestServer():
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
         await self.connection.receive(min_incomplete_length=1, max_length=5)
-        # self.connection.send_message(data)
+        self.connection.send_message(data)
 
     async def handle_listen_error(self, connection):
         taps.print_time("Listen Error occured.", color)
@@ -38,7 +38,7 @@ class TestServer():
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
-        self.connection.close()
+        #self.connection.close()
         taps.print_time("Queued closure of connection.", color)
 
     async def handle_stopped(self):
