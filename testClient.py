@@ -1,6 +1,8 @@
 import PyTAPS as taps
 import asyncio
 import sys
+import argparse
+import ipaddress
 color = "yellow"
 
 
@@ -39,7 +41,12 @@ class TestClient():
         self.loop.stop()
 
     async def handle_ready(self, connection):
-        taps.print_time("Ready cb received.", color)
+        taps.print_time("Ready cb received from connection to "
+                        + connection.remote_endpoint.address + ":"
+                        + str(connection.remote_endpoint.port)
+                        + " (hostname: "
+                        + str(connection.remote_endpoint.hostname)
+                        + ")", color)
 
         # Set connection callbacks
         self.connection.on_sent(self.handle_sent)
@@ -55,24 +62,37 @@ class TestClient():
         # msgref = await self.connection.send_message("There\n")
         taps.print_time("send_message called.", color)
 
-    async def main(self):
+    async def main(self, args):
+
         # Create endpoint objects
         ep = taps.RemoteEndpoint()
-        # Set default address and port
-        ep.with_address("127.0.0.1")
-        ep.with_port(6666)
+        if args.remote_address:
+            ep.with_address(args.remote_address)
+        elif args.remote_host:
+            ep.with_hostname(args.remote_host)
+        if args.remote_port:
+            ep.with_port(args.remote_port)
         lp = None
+        sp = None
+        if args.interface or args.local_address or args.local_port:
+            lp = taps.LocalEndpoint()
+            if args.interface:
+                lp.with_interface(args.interface)
+            if args.local_address:
+                lp.with_port(args.local_address)
+            if args.local_port:
+                lp.with_port(args.local_port)
+
         taps.print_time("Created endpoint objects.", color)
 
-        # See if a remote and/or local address/port has been specified
-        if len(sys.argv) >= 3:
-            ep.with_address(str(sys.argv[1]))
-            ep.with_port(int(sys.argv[2]))
-            if len(sys.argv) >= 4:
-                lp = taps.LocalEndpoint()
-                lp.with_interface(str(sys.argv[3]))
-                if len(sys.argv) == 5:
-                    lp.with_port(int(sys.argv[4]))
+        if args.secure or args.trust_ca or args.local_identity:
+            # Use TLS
+            sp = taps.SecurityParameters()
+            if args.trust_ca:
+                sp.addTrustCA(args.trust_ca)
+            if args.local_identity:
+                sp.addIdentity(args.local_identity)
+            taps.print_time("Created SecurityParameters.", color)
 
         # Create transportProperties Object and set properties
         # Does nothing yet
@@ -84,7 +104,8 @@ class TestClient():
 
         # Create the preconnection object with the two prev created EPs
         self.preconnection = taps.Preconnection(remote_endpoint=ep,
-                                                local_endpoint=lp)
+                                                local_endpoint=lp,
+                                                security_parameters=sp)
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
         taps.print_time("Created preconnection object and set cbs.", color)
@@ -95,6 +116,21 @@ class TestClient():
 
 
 if __name__ == "__main__":
+    # Parse arguments
+    ap = argparse.ArgumentParser(description='PyTAPS test client.')
+    ap.add_argument('--remote-host', '--host', nargs='?', default="localhost")
+    ap.add_argument('--remote-address', nargs=1)
+    ap.add_argument('--remote-port', '--port', type=int, default=6666)
+    ap.add_argument('--interface', '-i', nargs=1, default=None)
+    ap.add_argument('--local-address', nargs=1, default=None)
+    ap.add_argument('--local-port', '-l', type=int, nargs=1, default=None)
+    ap.add_argument('--local-identity', type=str, nargs=1, default=None)
+    ap.add_argument('--trust-ca', type=str, default=None)
+    ap.add_argument('--secure', '-s', nargs='?', const=True,
+                    type=bool, default=False)
+    args = ap.parse_args()
+    print(args)
+    # Start testclient
     client = TestClient()
-    client.loop.create_task(client.main())
+    client.loop.create_task(client.main(args))
     client.loop.run_forever()
