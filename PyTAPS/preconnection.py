@@ -38,6 +38,10 @@ class Preconnection:
                 self.transport_properties = transport_properties
                 self.security_parameters = security_parameters
                 self.loop = event_loop
+                self.connection = None
+                self.protocol = None
+                self.waiter = None
+
                 self.read = None
                 self.initiate_error = None
                 self.connection_received = None
@@ -48,12 +52,26 @@ class Preconnection:
                 self.connection_received = None
                 self.listen_error = None
                 self.stopped = None
+                self.active = False
 
+    async def await_connection(self):
+        if self.waiter is not None:
+            print_time("Already waiting for data", color)
+            return
+        self.waiter = self.loop.create_future()
+        try:
+            await self.waiter
+        finally:
+            self.waiter = None
+
+    async def inititate_helper(self):
+        return
     """ Initiates the preconnection, i.e. creates a connection object
         and attempts to connect it to the specified remote endpoint.
     """
     async def initiate(self):
         print_time("Initiating connection.", color)
+        self.active = True
         # Create set of candidate protocols
         candidate_set = self.create_candidates()
         if not candidate_set:
@@ -64,18 +82,27 @@ class Preconnection:
                 print_time("Queued InitiateError cb.", color)
             return
 
+        """
         connection = Connection(self)
         connection.on_initiate_error(self.initiate_error)
-        connection.on_ready(self.ready)
-        # This is required because initiate isnt async and therefor
-        # there isnt necessarily a running eventloop
-        # if self.loop.is_running():
-        asyncio.create_task(connection.connect())
+        connection.on_ready(self.ready) """
+        if candidate_set[0][0] == 'udp':
+            self.protocol = 'udp'
+            print_time("Creating UDP connect task.", color)
+            asyncio.create_task(self.loop.create_datagram_endpoint(lambda: Connection(self),
+            remote_addr=(self.remote_endpoint.address,
+                            self.remote_endpoint.port)))
+        elif candidate_set[0][0] == 'tcp':
+            self.protocol = 'tcp'
+            print_time("Creating TCP connect task.", color)
+            asyncio.create_task(self.loop.create_connection(lambda: Connection(self),
+                self.remote_endpoint.address,
+                self.remote_endpoint.port))
         # else:
         # self.loop.run_until_complete(self.initiate_helper(con))
-        print_time("Created connect task.", color)
+        await self.await_connection()
         print_time("Returning connection object.", color)
-        return connection
+        return self.connection
 
     """Handles a new connection detected by listener
     """
@@ -95,15 +122,25 @@ class Preconnection:
         return
 
     async def start_listener(self):
-        candidates = self.create_candidates()
+        candidate_set = self.create_candidates()
+        if not candidate_set:
+            print_time("Empty candidate set", color)
+            if self.initiate_error:
+                print_time("Protocol selection Error occured.", color)
+                self.loop.create_task(self.initiate_error())
+                print_time("Queued InitiateError cb.", color)
+            return
+
         try:
-            if candidates[0][0] == 'udp':
+            if candidate_set[0][0] == 'udp':
+                self.protocol = 'udp'
                 print_time("Starting UDP Listener.", color)
                 await self.loop.create_datagram_endpoint(
                                 lambda: Connection(self),
                                 local_addr=(self.local_endpoint.interface,
                                             self.local_endpoint.port))
-            elif candidates[0][0] == 'tcp':
+            elif candidate_set[0][0] == 'tcp':
+                self.protocol = 'tcp'
                 print_time("Starting TCP Listener.", color)
                 server = await self.loop.create_server(
                                 lambda: Connection(self),
@@ -122,6 +159,7 @@ class Preconnection:
         print_time("Listening for new connections...", color)
 
     async def listen(self):
+        self.active = False
         self.loop.create_task(self.start_listener())
         return
 

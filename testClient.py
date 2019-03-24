@@ -25,8 +25,8 @@ class TestClient():
         # self.connection.close()
         taps.print_time("Queued closure of connection.", color)
 
-    async def handle_send_error(self):
-        taps.print_time("SeSendError cb received.", color)
+    async def handle_send_error(self, msg):
+        taps.print_time("SendError cb received.", color)
         print("Error sending message")
 
     async def handle_initiate_error(self):
@@ -40,7 +40,7 @@ class TestClient():
 
     async def handle_ready(self, connection):
         taps.print_time("Ready cb received.", color)
-
+        #self.connection = connection
         # Set connection callbacks
         self.connection.on_sent(self.handle_sent)
         self.connection.on_send_error(self.handle_send_error)
@@ -77,15 +77,16 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        tp.ignore("reliability")
-        tp.default("reliability")
-        tp.prohibit("reliability")
+        #tp.prohibit("reliability")
+        tp.ignore("congestion-control")
+        tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
         # taps.print_time("Created transportProperties object.", color)
 
         # Create the preconnection object with the two prev created EPs
         self.preconnection = taps.Preconnection(remote_endpoint=ep,
-                                                local_endpoint=lp)
+                                                local_endpoint=lp,
+                                                transport_properties=tp)
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
         taps.print_time("Created preconnection object and set cbs.", color)
