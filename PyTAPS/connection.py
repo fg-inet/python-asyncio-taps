@@ -98,13 +98,14 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = data
         else:
             self.recv_buffer = self.recv_buffer + data
-            printtime("Received " + self.recv_buffer.decode(), color)
+            print_time("Received " + self.recv_buffer.decode(), color)
 
         if self.waiter is not None:
             self.waiter.set_result(None)
         # print(self.recv_buffer)
 
     def eof_received(self):
+        print_time("EOF received", color)
         self.at_eof = True
 
     def datagram_received(self, data, addr):
@@ -119,7 +120,8 @@ class Connection(asyncio.Protocol):
 
         if self.waiter is not None:
             self.waiter.set_result(None)
-
+    def connection_lost(self, exc):
+        print_time("Conenction lost", "magenta")
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
@@ -204,16 +206,21 @@ class Connection(asyncio.Protocol):
         return self.message_count
 
     async def await_data(self):
-        if self.waiter is not None:
-            print_time("Already waiting for data", color)
-            return
+        while True:
+            if self.waiter is not None:
+                print_time("Already waiting for data", color)
+                await self.waiter
+            else:
+                break
         self.waiter = self.loop.create_future()
         try:
             await self.waiter
         finally:
+            print_time("Waiter done", "magenta")
             self.waiter = None
 
     async def read_buffer(self, max_length=-1):
+        #print_time(self.recv_buffer.decode(), "magenta")
         if self.recv_buffer is None:
             await self.await_data()
         if max_length == -1 or len(self.recv_buffer) <= max_length:
@@ -241,6 +248,7 @@ class Connection(asyncio.Protocol):
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
             return
+        print("RECEIVING NOW")
         if self.at_eof:
             print_time("Received full message", color)
             if self.received:

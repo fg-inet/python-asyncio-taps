@@ -86,6 +86,10 @@ class Preconnection:
         connection = Connection(self)
         connection.on_initiate_error(self.initiate_error)
         connection.on_ready(self.ready) """
+        remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
+                                            self.remote_endpoint.port)
+        self.remote_endpoint.address = remote_info[0][4][0]
+
         if candidate_set[0][0] == 'udp':
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
