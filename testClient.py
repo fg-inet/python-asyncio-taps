@@ -22,10 +22,7 @@ class TestClient():
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
-        # self.connection.close()        
-        #await self.connection.receive(min_incomplete_length=1)
         await self.connection.receive(min_incomplete_length=1)
-        taps.print_time("Queued closure of connection.", color)
 
     async def handle_send_error(self, msg):
         taps.print_time("SendError cb received.", color)
@@ -79,7 +76,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        #tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
