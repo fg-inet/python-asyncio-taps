@@ -12,7 +12,7 @@ class TestClient():
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        taps.print_time("Received message " + str(data) + ".", color)
+        taps.print_time("Received partial message " + str(data) + ".", color)
         #self.loop.stop()
 
     async def handle_received(self, data, context, connection):
@@ -22,10 +22,7 @@ class TestClient():
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
-        # self.connection.close()        
-        #await self.connection.receive(min_incomplete_length=1)
         await self.connection.receive(min_incomplete_length=1)
-        taps.print_time("Queued closure of connection.", color)
 
     async def handle_send_error(self, msg):
         taps.print_time("SendError cb received.", color)
@@ -53,8 +50,8 @@ class TestClient():
 
         # Send message
         msgref = await self.connection.send_message("Hello")
-        #msgref = await self.connection.send_message("There\n")
-        #msgref = await self.connection.send_message("Friend\n")
+        msgref = await self.connection.send_message("There")
+        msgref = await self.connection.send_message("Friend")
         taps.print_time("send_message called.", color)
 
     async def main(self):

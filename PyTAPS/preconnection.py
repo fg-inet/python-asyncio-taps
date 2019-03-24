@@ -87,21 +87,23 @@ class Preconnection:
         connection.on_initiate_error(self.initiate_error)
         connection.on_ready(self.ready) """
         remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
-                                            self.remote_endpoint.port)
+                                                  self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
 
         if candidate_set[0][0] == 'udp':
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
-            asyncio.create_task(self.loop.create_datagram_endpoint(lambda: Connection(self),
-            remote_addr=(self.remote_endpoint.address,
-                            self.remote_endpoint.port)))
+            asyncio.create_task(self.loop.create_datagram_endpoint(
+                                lambda: Connection(self),
+                                remote_addr=(self.remote_endpoint.address,
+                                             self.remote_endpoint.port)))
         elif candidate_set[0][0] == 'tcp':
             self.protocol = 'tcp'
             print_time("Creating TCP connect task.", color)
-            asyncio.create_task(self.loop.create_connection(lambda: Connection(self),
-                self.remote_endpoint.address,
-                self.remote_endpoint.port))
+            asyncio.create_task(self.loop.create_connection(
+                                lambda: Connection(self),
+                                self.remote_endpoint.address,
+                                self.remote_endpoint.port))
         # else:
         # self.loop.run_until_complete(self.initiate_helper(con))
         await self.await_connection()
