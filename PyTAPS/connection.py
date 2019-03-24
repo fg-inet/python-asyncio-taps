@@ -86,6 +86,9 @@ class Connection(asyncio.Protocol):
             self.waiter.set_result(None)
         # print(self.recv_buffer)
 
+    def eof_received(self):
+        self.at_eof = True
+
     def datagram_received(self, data, addr):
         print("Received data " + data.decode())
     """ Tries to create a (TCP) connection to a remote endpoint
@@ -168,20 +171,20 @@ class Connection(asyncio.Protocol):
     async def read_buffer(self, max_length=-1):
         if self.recv_buffer is None:
             await self.await_data()
-        if max_length == -1:
+        if max_length == -1 or len(self.recv_buffer) == max_length:
             data = self.recv_buffer
             self.recv_buffer = None
             return data
-        # if len(self.recv_buffer) > max_length:
-
+        if len(self.recv_buffer) > max_length:
+            data = self.recv_buffer[:max_length]
+            self.recv_buffer = self.recv_buffer[max_length:]
+            return data
     """ Queues reception of a message
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
         #try:
-        data = await self.read_buffer(-1)
-        if data is None:
-            return
+        data = await self.read_buffer(2)
         data = data.decode()
         if self.msg_buffer is None:
             self.msg_buffer = data

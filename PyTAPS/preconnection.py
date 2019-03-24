@@ -3,7 +3,6 @@ from .connection import Connection
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
-from .factories import *
 color = "red"
 
 
