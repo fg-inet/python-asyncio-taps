@@ -60,10 +60,8 @@ class Connection(asyncio.Protocol):
                 # protocol specific stuff
                 if self.protocol == 'tcp':
                     self.message_based = False
-                    recv_buffer = None
                 elif self.protocol == 'udp':
                     self.message_based = True
-                    recv_buffer = list()
 
                 preconnection.connection = self
                 if preconnection.waiter is not None:
@@ -78,7 +76,7 @@ class Connection(asyncio.Protocol):
     def connection_made(self, transport):
         if self.active is False:
             if transport.get_extra_info('peername') is None:
-                print_time("New datagram connection", color)
+                print_time("New datagram Listener", color)
                 return
             self.transport = transport
             new_remote_endpoint = RemoteEndpoint()
@@ -118,12 +116,10 @@ class Connection(asyncio.Protocol):
         self.at_eof = True
 
     def datagram_received(self, data, addr):
-        if self.connection_received:
-            self.loop.create_task(self.connection_received(self))
-            print_time("Called connection_received cb", color)
+        if self.recv_buffer == None:
+            self.recv_buffer = list()
         self.recv_buffer.append(data)
-        printtime("Received " + data.decode(), color)
-
+        print_time("Received " + data.decode(), color)
         if self.waiter is not None:
             self.waiter.set_result(None)
 
@@ -229,8 +225,12 @@ class Connection(asyncio.Protocol):
         #print_time(self.recv_buffer.decode(), "magenta")
         if not self.recv_buffer:
             await self.await_data()
-        if self.message_based:
+        if self.message_based and len(recv_buffer[0])<= max_length:
             return popleft(recv_buffer)
+        elif self.message_based and len(recv_buffer[0])> max_length:
+            data = self.recv_buffer[0][:max_length]
+            self.recv_buffer = self.recv_buffer[0][max_length:]
+            return data
         elif max_length == -1 or len(self.recv_buffer) <= max_length:
             data = self.recv_buffer
             self.recv_buffer = None
