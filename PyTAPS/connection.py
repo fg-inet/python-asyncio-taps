@@ -228,6 +228,7 @@ class Connection(asyncio.Protocol):
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
+        print_time("Reading message", color)
         try:
             data = await self.read_buffer(max_length)
             data = data.decode()

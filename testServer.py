@@ -55,7 +55,7 @@ class TestServer():
             lp.with_port(int(sys.argv[2]))
 
         tp = taps.TransportProperties()
-        #tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
 
