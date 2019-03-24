@@ -95,14 +95,20 @@ class Preconnection:
         return
 
     async def start_listener(self):
-        print_time("Starting Listener.", color)
+        candidates = self.create_candidates()
         try:
-            await self.loop.create_datagram_endpoint(lambda: Connection(self),
-                                                     local_addr = (self.local_endpoint.interface,
-                                                     self.local_endpoint.port))
-            server = await self.loop.create_server(lambda: Connection(self),
-                                                 self.local_endpoint.interface,
-                                                 self.local_endpoint.port)
+            if candidates[0][0] == 'udp':
+                print_time("Starting UDP Listener.", color)
+                await self.loop.create_datagram_endpoint(
+                                lambda: Connection(self),
+                                local_addr=(self.local_endpoint.interface,
+                                            self.local_endpoint.port))
+            elif candidates[0][0] == 'tcp':
+                print_time("Starting TCP Listener.", color)
+                server = await self.loop.create_server(
+                                lambda: Connection(self),
+                                self.local_endpoint.interface,
+                                self.local_endpoint.port)
             """
             await asyncio.start_server(self.handle_new_connection,
                                        self.local_endpoint.interface,
@@ -145,7 +151,6 @@ class Preconnection:
                     if (protocol[transport_property] is True and
                             protocol["name"] in candidate_protocols):
                         candidate_protocols[protocol["name"]][1] -= 1
-
         sorted_candidates = sorted(candidate_protocols.items(),
                                    key=lambda value: (value[1][0],
                                    value[1][1]), reverse=True)

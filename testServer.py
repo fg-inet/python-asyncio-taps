@@ -54,16 +54,17 @@ class TestServer():
             lp.with_interface(str(sys.argv[1]))
             lp.with_port(int(sys.argv[2]))
 
-        # tp = taps.transportProperties()
-        # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
-        # taps.print_time("Created transportProperties object.", color)
+        tp = taps.TransportProperties()
+        tp.prohibit("reliability")
+        tp.ignore("congestion-control")
+        tp.ignore("preserve-order")
 
-        self.preconnection = taps.Preconnection(local_endpoint=lp)
+        self.preconnection = taps.Preconnection(local_endpoint=lp,
+                                                transport_properties=tp)
         self.preconnection.on_connection_received(
             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
-        #taps.Connection(self.preconnection)
         await self.preconnection.listen()
 
 

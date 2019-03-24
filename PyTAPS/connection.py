@@ -54,7 +54,8 @@ class Connection(asyncio.Protocol):
                 self.reader = None
                 self.writer = None
                 # Assertions
-                if self.local_endpoint is None and self.remote_endpoint is None:
+                if (self.local_endpoint is None and
+                        self.remote_endpoint is None):
                     raise Exception("At least one endpoint need "
                                     "to be specified")
 
@@ -66,7 +67,8 @@ class Connection(asyncio.Protocol):
         self.transport = transport
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
-        new_remote_endpoint.with_address(transport.get_extra_info("peername")[0])
+        new_remote_endpoint.with_address(
+                            transport.get_extra_info("peername")[0])
         new_remote_endpoint.with_port(transport.get_extra_info("peername")[1])
         self.remote_endpoint = new_remote_endpoint
         print_time("Created new connection object.", color)
@@ -81,7 +83,7 @@ class Connection(asyncio.Protocol):
         else:
             self.recv_buffer = self.recv_buffer + data
             printtime("Received " + self.recv_buffer.decode(), color)
-        
+
         if self.waiter is not None:
             self.waiter.set_result(None)
         # print(self.recv_buffer)
@@ -90,7 +92,18 @@ class Connection(asyncio.Protocol):
         self.at_eof = True
 
     def datagram_received(self, data, addr):
-        print("Received data " + data.decode())
+        if self.connection_received:
+            self.loop.create_task(self.connection_received(self))
+            print_time("Called connection_received cb", color)
+        if self.recv_buffer is None:
+            self.recv_buffer = data
+        else:
+            self.recv_buffer = self.recv_buffer + data
+            printtime("Received " + self.recv_buffer.decode(), color)
+
+        if self.waiter is not None:
+            self.waiter.set_result(None)
+
     """ Tries to create a (TCP) connection to a remote endpoint
         If a local endpoint was specified on connection class creation,
         it will be used.
@@ -167,11 +180,11 @@ class Connection(asyncio.Protocol):
             await self.waiter
         finally:
             self.waiter = None
-        
+
     async def read_buffer(self, max_length=-1):
         if self.recv_buffer is None:
             await self.await_data()
-        if max_length == -1 or len(self.recv_buffer) == max_length:
+        if max_length == -1 or len(self.recv_buffer) <= max_length:
             data = self.recv_buffer
             self.recv_buffer = None
             return data
@@ -183,18 +196,18 @@ class Connection(asyncio.Protocol):
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        #try:
-        data = await self.read_buffer(2)
-        data = data.decode()
-        if self.msg_buffer is None:
-            self.msg_buffer = data
-        else:
-            self.msg_buffer = self.msg_buffer + data
-        """except:
+        try:
+            data = await self.read_buffer(max_length)
+            data = data.decode()
+            if self.msg_buffer is None:
+                self.msg_buffer = data
+            else:
+                self.msg_buffer = self.msg_buffer + data
+        except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
-            return"""
+            return
         if self.at_eof:
             print_time("Received full message", color)
             if self.received:
