@@ -96,15 +96,16 @@ class Connection(asyncio.Protocol):
             return
 
     def data_received(self, data):
+        print("Received " + data.decode())
         if self.recv_buffer is None:
-            self.recv_buffer = data
+            self.recv_buffer = data.decode()
         else:
-            self.recv_buffer = self.recv_buffer + data
+            self.recv_buffer = self.recv_buffer + data.decode()
             print_time("Received " + self.recv_buffer.decode(), color)
 
         if self.waiter is not None:
             self.waiter.set_result(None)
-        print(self.recv_buffer)
+        #print(self.recv_buffer)
 
     def eof_received(self):
         print_time("EOF received", color)
@@ -113,12 +114,18 @@ class Connection(asyncio.Protocol):
     def datagram_received(self, data, addr):
         if self.recv_buffer is None:
             self.recv_buffer = list()
-        self.recv_buffer.append(data)
+        self.recv_buffer.append(data.decode())
         print_time("Received " + data.decode() + " from OS", color)
-        print(self.recv_buffer)
+        # print(self.recv_buffer)
         if self.waiter is not None:
             self.waiter.set_result(None)
-
+    
+    def error_received(self, err):
+        if type(err) is ConnectionRefusedError:
+            if self.connection_error:
+                print_time("Connection Error occured.", color)
+                self.loop.create_task(self.connection_error())
+            return
     def connection_lost(self, exc):
         print_time("Conenction lost", "magenta")
 
@@ -209,9 +216,12 @@ class Connection(asyncio.Protocol):
         return self.message_count
 
     async def await_data(self):
-        if self.waiter is not None:
-            print_time("Already waiting for data", color)
-            await self.waiter
+        while(True):
+            if self.waiter is not None:
+                print_time("Already waiting for data", color)
+                await self.waiter
+            else:
+                break
         self.waiter = self.loop.create_future()
         try:
             await self.waiter
@@ -222,13 +232,15 @@ class Connection(asyncio.Protocol):
     async def read_buffer(self, max_length=-1):
         if not self.recv_buffer:
             await self.await_data()
+        print(len(self.recv_buffer[0]))
         print(self.recv_buffer[0])
         if self.message_based:
             if len(self.recv_buffer[0]) <= max_length or max_length == -1:
-                return self.recv_buffer.pop(0)
+                data = self.recv_buffer.pop(0)
+                return data
             elif len(self.recv_buffer[0]) > max_length:
                 data = self.recv_buffer[0][:max_length]
-                self.recv_buffer = self.recv_buffer[0][max_length:]
+                self.recv_buffer[0] = self.recv_buffer[0][max_length:]
                 return data
         else:
             if max_length == -1 or len(self.recv_buffer) <= max_length:
@@ -244,10 +256,9 @@ class Connection(asyncio.Protocol):
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        print_time("Reading message", color)
+        print_time("Reading message", "red")
         #try:
         data = await self.read_buffer(max_length)
-        data = data.decode()
         if self.msg_buffer is None:
             self.msg_buffer = data
         else:
@@ -266,7 +277,7 @@ class Connection(asyncio.Protocol):
             self.msg_buffer = None
             return
 
-        elif len(self.msg_buffer) > min_incomplete_length:
+        elif len(self.msg_buffer) >= min_incomplete_length:
             print_time("Received partial message.", color)
             if self.received_partial:
                 self.loop.create_task(self.received_partial(self.msg_buffer,

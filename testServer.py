@@ -39,7 +39,6 @@ class TestServer():
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
         #self.connection.close()
-        taps.print_time("Queued closure of connection.", color)
 
     async def handle_stopped(self):
         taps.print_time("Listener has been stopped")
