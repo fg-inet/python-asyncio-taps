@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 from .connection import Connection, DatagramHandler
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
@@ -19,7 +20,8 @@ class Preconnection:
         transportProperties (:obj:'transportProperties', optional): object with
                         the transport properties
                         with specified preferenceLevel
-        securityParams (tbd): Security Parameters for the preconnection
+        securityParams (:obj:'securityParameters', optional): Security
+                        Parameters for the preconnection
         eventLoop (:obj: 'eventLoop', optional): event loop on which all
                         coroutines will be scheduled, if none if given
                         the one of the current thread is used by default
@@ -37,6 +39,7 @@ class Preconnection:
                 self.remote_endpoint = remote_endpoint
                 self.transport_properties = transport_properties
                 self.security_parameters = security_parameters
+                self.security_context = None
                 self.loop = event_loop
                 self.connection = None
                 self.protocol = None
@@ -81,7 +84,16 @@ class Preconnection:
                 self.loop.create_task(self.initiate_error())
                 print_time("Queued InitiateError cb.", color)
             return
-
+        if self.security_parameters:
+            self.security_context = ssl.create_default_context(
+                                                ssl.Purpose.CLIENT_AUTH)
+            if self.security_parameters.identity:
+                print_time("Identity: "
+                           + str(self.security_parameters.identity))
+                self.security_context.load_cert_chain(
+                                        self.security_parameters.identity)
+            for cert in self.security_parameters.trustedCA:
+                self.security_context.load_verify_locations(cert)
         """
         connection = Connection(self)
         connection.on_initiate_error(self.initiate_error)
@@ -103,7 +115,8 @@ class Preconnection:
             asyncio.create_task(self.loop.create_connection(
                                 lambda: Connection(self),
                                 self.remote_endpoint.address,
-                                self.remote_endpoint.port))
+                                self.remote_endpoint.port,
+                                ssl=self.security_context))
         # else:
         # self.loop.run_until_complete(self.initiate_helper(con))
         await self.await_connection()
@@ -121,7 +134,9 @@ class Preconnection:
                                     self.transport_properties,
                                     self.security_parameters)
         # new_connection.set_reader_writer(reader, writer)
-        print_time("Created new connection object.", color)
+        print_time("Created new connection object (from "
+                   + new_remote_endpoint.address + ":"
+                   + str(new_remote_endpoint.port) + ")", color)
         if self.connection_received:
             self.loop.create_task(self.connection_received(new_connection))
             print_time("Called connection_received cb", color)
@@ -137,6 +152,22 @@ class Preconnection:
                 print_time("Queued InitiateError cb.", color)
             return
 
+        print_time("Starting Listener on " +
+                   (str(self.local_endpoint.address) if
+                    self.local_endpoint.address else "default") + ":"
+                   + str(self.local_endpoint.port), color)
+        if self.security_parameters:
+            self.security_context = ssl.create_default_context(
+                                                ssl.Purpose.CLIENT_AUTH)
+            if self.security_parameters.identity:
+                print_time("Identity: "
+                           + str(self.security_parameters.identity))
+                self.security_context.load_cert_chain(
+                                        self.security_parameters.identity)
+            for cert in self.security_parameters.trustedCA:
+                self.security_context.load_verify_locations(cert)
+
+
         try:
             if candidate_set[0][0] == 'udp':
                 self.protocol = 'udp'
@@ -151,11 +182,13 @@ class Preconnection:
                 server = await self.loop.create_server(
                                 lambda: Connection(self),
                                 self.local_endpoint.interface,
-                                self.local_endpoint.port)
+                                self.local_endpoint.port,
+                                ssl = self.security_context)
             """
             await asyncio.start_server(self.handle_new_connection,
                                        self.local_endpoint.interface,
-                                       self.local_endpoint.port)"""
+                                       self.local_endpoint.port)
+                                       ssl=self.security_context)"""
         except:
             print_time("Listen Error occured.", color)
             if self.listen_error:
