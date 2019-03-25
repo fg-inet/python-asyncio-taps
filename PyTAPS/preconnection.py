@@ -98,10 +98,11 @@ class Preconnection:
         connection = Connection(self)
         connection.on_initiate_error(self.initiate_error)
         connection.on_ready(self.ready) """
-        remote_info = await self.loop.getaddrinfo(self.remote_endpoint.address,
+        remote_info = await self.loop.getaddrinfo(self.remote_endpoint.host_name,
                                                   self.remote_endpoint.port)
+        print(remote_info)
         self.remote_endpoint.address = remote_info[0][4][0]
-
+        print(self.remote_endpoint.address)
         if candidate_set[0][0] == 'udp':
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
@@ -116,7 +117,7 @@ class Preconnection:
                                 lambda: Connection(self),
                                 self.remote_endpoint.address,
                                 self.remote_endpoint.port,
-                                ssl=self.security_context))
+                                ssl=ssl.create_default_context()))
         # else:
         # self.loop.run_until_complete(self.initiate_helper(con))
         await self.await_connection()
@@ -168,33 +169,33 @@ class Preconnection:
                 self.security_context.load_verify_locations(cert)
 
 
-        try:
-            if candidate_set[0][0] == 'udp':
-                self.protocol = 'udp'
-                print_time("Starting UDP Listener.", color)
-                await self.loop.create_datagram_endpoint(
-                                lambda: DatagramHandler(self),
-                                local_addr=(self.local_endpoint.interface,
-                                            self.local_endpoint.port))
-            elif candidate_set[0][0] == 'tcp':
-                self.protocol = 'tcp'
-                print_time("Starting TCP Listener.", color)
-                server = await self.loop.create_server(
-                                lambda: Connection(self),
-                                self.local_endpoint.interface,
-                                self.local_endpoint.port,
-                                ssl = self.security_context)
+        #try:
+        if candidate_set[0][0] == 'udp':
+            self.protocol = 'udp'
+            print_time("Starting UDP Listener.", color)
+            await self.loop.create_datagram_endpoint(
+                            lambda: DatagramHandler(self),
+                            local_addr=(self.local_endpoint.interface,
+                                        self.local_endpoint.port))
+        elif candidate_set[0][0] == 'tcp':
+            self.protocol = 'tcp'
+            print_time("Starting TCP Listener.", color)
+            server = await self.loop.create_server(
+                            lambda: Connection(self),
+                            self.local_endpoint.interface,
+                            self.local_endpoint.port,
+                            ssl=self.security_context)
             """
             await asyncio.start_server(self.handle_new_connection,
                                        self.local_endpoint.interface,
                                        self.local_endpoint.port)
                                        ssl=self.security_context)"""
-        except:
+        """except:
             print_time("Listen Error occured.", color)
             if self.listen_error:
                 self.loop.create_task(self.listen_error())
                 print_time("Queued listen_error cb.", color)
-        return
+        return"""
         print_time("Listening for new connections...", color)
 
     async def listen(self):
