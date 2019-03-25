@@ -98,9 +98,9 @@ class Connection(asyncio.Protocol):
     def data_received(self, data):
         print("Received " + data.decode())
         if self.recv_buffer is None:
-            self.recv_buffer = data.decode()
+            self.recv_buffer = data
         else:
-            self.recv_buffer = self.recv_buffer + data.decode()
+            self.recv_buffer = self.recv_buffer + data
             print_time("Received " + self.recv_buffer.decode(), color)
 
         if self.waiter is not None:
@@ -114,7 +114,7 @@ class Connection(asyncio.Protocol):
     def datagram_received(self, data, addr):
         if self.recv_buffer is None:
             self.recv_buffer = list()
-        self.recv_buffer.append(data.decode())
+        self.recv_buffer.append(data)
         print_time("Received " + data.decode() + " from OS", color)
         # print(self.recv_buffer)
         if self.waiter is not None:
@@ -212,13 +212,11 @@ class Connection(asyncio.Protocol):
         print_time("Sending data.", color)
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
-        print_time("Returning MsgRef.", color)
         return self.message_count
 
     async def await_data(self):
         while(True):
             if self.waiter is not None:
-                print_time("Already waiting for data", color)
                 await self.waiter
             else:
                 break
@@ -226,14 +224,11 @@ class Connection(asyncio.Protocol):
         try:
             await self.waiter
         finally:
-            print_time("Waiter done", "magenta")
             self.waiter = None
 
     async def read_buffer(self, max_length=-1):
         if not self.recv_buffer:
             await self.await_data()
-        print(len(self.recv_buffer[0]))
-        print(self.recv_buffer[0])
         if self.message_based:
             if len(self.recv_buffer[0]) <= max_length or max_length == -1:
                 data = self.recv_buffer.pop(0)
@@ -260,9 +255,9 @@ class Connection(asyncio.Protocol):
         #try:
         data = await self.read_buffer(max_length)
         if self.msg_buffer is None:
-            self.msg_buffer = data
+            self.msg_buffer = data.decode()
         else:
-            self.msg_buffer = self.msg_buffer + data
+            self.msg_buffer = self.msg_buffer + data.decode()
         """except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
