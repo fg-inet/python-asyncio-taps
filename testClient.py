@@ -25,7 +25,6 @@ class TestClient():
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
         await self.connection.receive(min_incomplete_length=1)
-        await self.connection.receive(min_incomplete_length=1)
 
     async def handle_send_error(self, msg):
         taps.print_time("SendError cb received.", color)
@@ -57,14 +56,14 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send message
-        msgref = await self.connection.send_message("Hello")
-        msgref = await self.connection.send_message("There")
-        msgref = await self.connection.send_message("Friend")
-        msgref = await self.connection.send_message("How")
-        msgref = await self.connection.send_message("Are")
-        msgref = await self.connection.send_message("Youuuuu\n")
-        msgref = await self.connection.send_message("Today?\n")
-        msgref = await self.connection.send_message("343536")
+        msgref = await self.connection.send_message("Hello\n")
+        # msgref = await self.connection.send_message("There")
+        # msgref = await self.connection.send_message("Friend")
+        # msgref = await self.connection.send_message("How")
+        # msgref = await self.connection.send_message("Are")
+        # msgref = await self.connection.send_message("Youuuuu\n")
+        # msgref = await self.connection.send_message("Today?\n")
+        # msgref = await self.connection.send_message("343536")
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
@@ -102,7 +101,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        tp.prohibit("reliability")
+        # tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
