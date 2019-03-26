@@ -42,6 +42,7 @@ class Preconnection:
                 self.remote_endpoint = remote_endpoint
                 self.transport_properties = transport_properties
                 self.security_parameters = security_parameters
+                self.security_context = None
                 self.loop = event_loop
 
                 # Callbacks of the appliction
@@ -164,7 +165,6 @@ class Preconnection:
                                         self.security_parameters.identity)
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
-
         # Attempt to set up the appropriate listener for the candidate protocol
         try:
             if candidate_set[0][0] == 'udp':

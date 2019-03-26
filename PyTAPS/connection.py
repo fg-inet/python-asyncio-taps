@@ -101,7 +101,6 @@ class Connection(asyncio.Protocol):
         elif self.active:
             self.transport = transport
             print_time("Connected successfully.", color)
-
             if self.ready:
                 self.loop.create_task(self.ready(self))
             return
