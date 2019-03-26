@@ -117,7 +117,7 @@ class Preconnection:
                                 lambda: Connection(self),
                                 self.remote_endpoint.address,
                                 self.remote_endpoint.port,
-                                ssl=ssl.create_default_context()))
+                                ssl=self.security_context))
         # else:
         # self.loop.run_until_complete(self.initiate_helper(con))
         await self.await_connection()

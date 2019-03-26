@@ -292,7 +292,7 @@ class Connection(asyncio.Protocol):
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        print_time("Reading message", "red")
+        print_time("Reading message", color)
         #try:
         data = await self.read_buffer(max_length)
         if self.msg_buffer is None:
@@ -312,14 +312,27 @@ class Connection(asyncio.Protocol):
                 print_time("Called received cb.", color)
             self.msg_buffer = None
             return
-
-        elif len(self.msg_buffer) >= min_incomplete_length:
+        else: 
+            while(len(self.msg_buffer) < min_incomplete_length):
+                data = await self.read_buffer(max_length)
+                self.msg_buffer = self.msg_buffer + data.decode()
+            
             print_time("Received partial message.", color)
             if self.received_partial:
                 self.loop.create_task(self.received_partial(self.msg_buffer,
                                       "Context", False, self))
                 print_time("Called partial_receive cb.", color)
                 self.msg_buffer = None
+        
+        """elif len(self.msg_buffer) >= min_incomplete_length:
+            print_time("Received partial message.", color)
+            if self.received_partial:
+                self.loop.create_task(self.received_partial(self.msg_buffer,
+                                      "Context", False, self))
+                print_time("Called partial_receive cb.", color)
+                self.msg_buffer = None
+        else:
+            while len(self.msg_buffer) < min_incomplete_length: """
 
     """ Wrapper function to make receive return immediately
     """

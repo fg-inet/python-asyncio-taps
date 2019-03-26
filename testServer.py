@@ -17,7 +17,7 @@ class TestServer():
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
         self.connection.on_sent(self.handle_sent)
-        await self.connection.receive(min_incomplete_length=1, max_length=-1)
+        await self.connection.receive(min_incomplete_length=7, max_length=-1)
         # await self.connection.receive(min_incomplete_length=4, max_length=3)
         # self.connection.on_sent(handle_sent)
 
@@ -67,7 +67,7 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        # tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
 

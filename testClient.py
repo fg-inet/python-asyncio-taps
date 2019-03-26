@@ -45,7 +45,7 @@ class TestClient():
                         + connection.remote_endpoint.address + ":"
                         + str(connection.remote_endpoint.port)
                         + " (hostname: "
-                        + str(connection.remote_endpoint.hostname)
+                        + str(connection.remote_endpoint.host_name)
                         + ")", color)
 
         # Set connection callbacks
@@ -102,7 +102,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        # tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
