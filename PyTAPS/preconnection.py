@@ -72,7 +72,6 @@ class Preconnection:
     """
     async def await_connection(self):
         if self.waiter is not None:
-            print_time("Already waiting for data", color)
             return
         self.waiter = self.loop.create_future()
         try:
@@ -95,11 +94,9 @@ class Preconnection:
 
         # If the candidate set is empty issue an InitiateError cb
         if not candidate_set:
-            print_time("Empty candidate set", color)
+            print_time("Protocol selection Error occured.", color)
             if self.initiate_error:
-                print_time("Protocol selection Error occured.", color)
                 self.loop.create_task(self.initiate_error())
-                print_time("Queued InitiateError cb.", color)
             return
 
         # If security_parameters were given, initialize ssl context
@@ -144,17 +141,16 @@ class Preconnection:
         then tries to establish it with the appropriate asyncio function
     """
     async def start_listener(self):
+        print_time("Starting listener.", color)
 
         # Create set of candidate protocols
         candidate_set = self.create_candidates()
 
         # If the candidate set is empty issue an InitiateError cb
         if not candidate_set:
-            print_time("Empty candidate set", color)
+            print_time("Protocol selection Error occured.", color)
             if self.initiate_error:
-                print_time("Protocol selection Error occured.", color)
                 self.loop.create_task(self.initiate_error())
-                print_time("Queued InitiateError cb.", color)
             return
 
         # If security_parameters were given, initialize ssl context
@@ -169,36 +165,31 @@ class Preconnection:
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
 
-        print_time("Starting Listener on " +
-                   (str(self.local_endpoint.address) if
-                    self.local_endpoint.address else "default") + ":" +
-                   str(self.local_endpoint.port), color)
-
         # Attempt to set up the appropriate listener for the candidate protocol
         try:
             if candidate_set[0][0] == 'udp':
                 self.protocol = 'udp'
-                print_time("Starting UDP Listener.", color)
                 await self.loop.create_datagram_endpoint(
                                 lambda: DatagramHandler(self),
                                 local_addr=(self.local_endpoint.interface,
                                             self.local_endpoint.port))
             elif candidate_set[0][0] == 'tcp':
                 self.protocol = 'tcp'
-                print_time("Starting TCP Listener.", color)
                 server = await self.loop.create_server(
                                 lambda: Connection(self),
                                 self.local_endpoint.interface,
                                 self.local_endpoint.port,
                                 ssl=self.security_context)
-        # Issue an listen_error if listner couldnt be established
         except:
             print_time("Listen Error occured.", color)
             if self.listen_error:
                 self.loop.create_task(self.listen_error())
-                print_time("Queued listen_error cb.", color)
+
+        print_time("Starting " + self.protocol + " Listener on " +
+                   (str(self.local_endpoint.address) if
+                    self.local_endpoint.address else "default") + ":" +
+                   str(self.local_endpoint.port), color)
         return
-        print_time("Listening for new connections...", color)
 
     """ Wrapper function for start_listener task
     """

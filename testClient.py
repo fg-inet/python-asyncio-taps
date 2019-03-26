@@ -57,13 +57,13 @@ class TestClient():
 
         # Send message
         msgref = await self.connection.send_message("Hello\n")
-        # msgref = await self.connection.send_message("There")
-        # msgref = await self.connection.send_message("Friend")
-        # msgref = await self.connection.send_message("How")
-        # msgref = await self.connection.send_message("Are")
-        # msgref = await self.connection.send_message("Youuuuu\n")
-        # msgref = await self.connection.send_message("Today?\n")
-        # msgref = await self.connection.send_message("343536")
+        msgref = await self.connection.send_message("There")
+        msgref = await self.connection.send_message("Friend")
+        msgref = await self.connection.send_message("How")
+        msgref = await self.connection.send_message("Are")
+        msgref = await self.connection.send_message("Youuuuu\n")
+        msgref = await self.connection.send_message("Today?\n")
+        msgref = await self.connection.send_message("343536")
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
