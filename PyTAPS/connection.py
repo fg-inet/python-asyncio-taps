@@ -1,43 +1,49 @@
 import asyncio
+import json
+import sys
 import ssl
 from .endpoint import LocalEndpoint, RemoteEndpoint
-from .transportProperties import TransportProperties
+from .transportProperties import *
 from .utility import *
 color = "green"
 
 
-class Connection:
+class Connection(asyncio.Protocol):
     """The TAPS connection class.
 
     Attributes:
-        localEndpoint (:obj:'localEndpoint', optional): LocalEndpoint of the
-                       preconnection, required if the connection
-                       will be used to listen
-        remoteEndpoint (:obj:'remoteEndpoint', optional): RemoteEndpoint of the
-                        preconnection, required if a connection
-                        will be initiated
-        transportProperties (:obj:'transportProperties', optional): object with
-                             the transport properties
-                             with specified preferenceLevel
-        securityParams (:obj:'securityParameters', optional): Security
-                        Parameters for the connection
+        preconnection (:obj:'preconnection'):
+                Preconnection object that was involved in
+                creating this connection object
     """
-    def __init__(self, local_endpoint=None, remote_endpoint=None,
-                 transport_properties=None, security_parameters=None):
-                # Assertions
-                if local_endpoint is None and remote_endpoint is None:
-                    raise Exception("At least one endpoint need "
-                                    "to be specified")
+    def __init__(self, preconnection):
                 # Initializations
-                self.local_endpoint = local_endpoint
-                self.remote_endpoint = remote_endpoint
-                self.transport_properties = transport_properties
-                self.security_parameters = security_parameters
-                self.security_context = None
-                self.loop = asyncio.get_event_loop()
+                self.local_endpoint = preconnection.local_endpoint
+                self.remote_endpoint = preconnection.remote_endpoint
+                self.transport_properties = preconnection.transport_properties
+                self.loop = preconnection.loop
+                self.active = preconnection.active
+                self.protocol = preconnection.protocol
+
+                # Keeping track of how many messages have been sent for msgref
                 self.message_count = 0
-                self.ready = None
-                self.initiate_error = None
+                # Determines if the protocol is message based or not (needed?)
+                self.message_based = True
+                # Message buffer, probably no longer required
+                self.msg_buffer = None
+                # Reception buffer, holding data returned from the OS
+                self.recv_buffer = None
+                # Boolean to indicate that EOF has been reached
+                self.at_eof = False
+                # Waiter required to stop receive requests until data arrives
+                self.waiter = None
+
+                # Callbacks
+                self.ready = preconnection.ready
+                self.initiate_error = preconnection.initiate_error
+                self.connection_received = preconnection.connection_received
+                self.listen_error = preconnection.listen_error
+                self.stopped = preconnection.stopped
                 self.sent = None
                 self.send_error = None
                 self.expired = None
@@ -48,143 +54,231 @@ class Connection:
                 self.closed = None
                 self.reader = None
                 self.writer = None
-                self.msg_buffer = None
-    """ Tries to create a (TCP) connection to a remote endpoint
-        If a local endpoint was specified on connection class creation,
-        it will be used.
-    """
-    async def connect(self):
-        if self.remote_endpoint.hostname is not None:
-            # Resolve remote endpoint
-            remote_info = await self.loop.getaddrinfo(
-                                                 self.remote_endpoint.hostname,
-                                                 self.remote_endpoint.port)
-            self.remote_endpoint.address = remote_info[0][4][0]
-            print_time("Resolved hostname " + self.remote_endpoint.hostname
-                       + " to " + self.remote_endpoint.address, color)
 
-        # Attempt connection
-        try:
-            if self.security_parameters is None:
-                print_time("Connecting plain TCP.", color)
-                if(self.local_endpoint is None):
-                    print_time("Connecting with unspecified localEP.", color)
-                    self.reader, self.writer = await asyncio.open_connection(
-                                        self.remote_endpoint.address,
-                                        self.remote_endpoint.port)
-                else:
-                    print_time("Connecting with specified localEP.", color)
-                    self.reader, self.writer = await asyncio.open_connection(
-                                    self.remote_endpoint.address,
-                                    self.remote_endpoint.port,
-                                    local_addr=(self.local_endpoint.interface,
-                                                self.local_endpoint.port))
-            else:
-                await self._connect_TLS_TCP()
-        except:
-            if self.initiate_error:
-                print_time("Initiate Error occured.", color)
-                self.loop.create_task(self.initiate_error())
-                print_time("Queued InitiateError cb.", color)
+                # Decide if protocol is message based
+                if self.protocol == 'tcp':
+                    self.message_based = False
+                elif self.protocol == 'udp':
+                    self.message_based = True
+
+                # Assign this connection to the preconnection and trigger
+                # the conenction waiter
+                if self.active:
+                    preconnection.connection = self
+                    if preconnection.waiter is not None:
+                        preconnection.waiter.set_result(None)
+                    if self.protocol == "udp" and not self.active:
+                        self.handler = preconnection.handler
+
+                # Assertions
+                if (self.local_endpoint is None and
+                        self.remote_endpoint is None):
+                    raise Exception("At least one endpoint need "
+                                    "to be specified")
+
+    # Asyncio Callbacks
+
+    """ ASYNCIO function that gets called when a new
+        connection has been made, similar to TAPS ready callback.
+    """
+    def connection_made(self, transport):
+        # Check if its an incoming or outgoing connection
+        if self.active is False:
+            self.transport = transport
+            new_remote_endpoint = RemoteEndpoint()
+            print_time("Received new connection.", color)
+            # Get information about the newly connected endpoint
+            new_remote_endpoint.with_address(
+                                transport.get_extra_info("peername")[0])
+            new_remote_endpoint.with_port(
+                                transport.get_extra_info("peername")[1])
+            self.remote_endpoint = new_remote_endpoint
+
+            if self.connection_received:
+                self.loop.create_task(self.connection_received(self))
             return
-        if self.ready:
+
+        elif self.active:
+            self.transport = transport
             print_time("Connected successfully.", color)
-            self.loop.create_task(self.ready(self))
-            print_time("Queued Ready cb.", color)
-        return
-
-    """ Tries to create a TLS (over TCP) connection to a remote endpoint
-        If a local endpoint was specified on connection class creation,
-        it will be used.
+            if self.ready:
+                self.loop.create_task(self.ready(self))
+            return
+    """ ASYNCIO function that gets called when new data is made available
+        by the OS. Stores new data in buffer and triggers the receive waiter
     """
-    async def _connect_TLS_TCP(self):
-        print_time("Connecting TLS over TCP.", color)
-        self.security_context = ssl.create_default_context()
-        if self.security_parameters.identity:
-            self.security_context.load_cert_chain(
-                                self.security_parameters.identity)
-        for cert in self.security_parameters.trustedCA:
-            self.security_context.load_verify_locations(cert)
+    def data_received(self, data):
+        print_time("Received " + data.decode(), color)
 
-        if(self.local_endpoint is None):
-            print_time("Connecting with unspecified localEP.", color)
-            self.reader, self.writer = await asyncio.open_connection(
-                                self.remote_endpoint.address,
-                                self.remote_endpoint.port,
-                                ssl=self.security_context,
-                                server_hostname=self.remote_endpoint.hostname)
+        # See if we already have so data buffered
+        if self.recv_buffer is None:
+            self.recv_buffer = data
         else:
-            print_time("Connecting with specified localEP.", color)
-            self.reader, self.writer = await asyncio.open_connection(
-                            self.remote_endpoint.address,
-                            self.remote_endpoint.port,
-                            local_addr=(self.local_endpoint.interface,
-                                        self.local_endpoint.port),
-                            ssl=self.security_context)
+            self.recv_buffer = self.recv_buffer + data
 
-    """ Tries to send the (string) stored in data
+        # If there is already a receive queued by the connection,
+        # trigger its waiter to let it know new data has arrived
+        if self.waiter is not None:
+            self.waiter.set_result(None)
+    """ ASYNCIO function that gets called when EOF is received
+    """
+    def eof_received(self):
+        print_time("EOF received", color)
+        self.at_eof = True
+    """ ASYNCIO function that gets called when a new datagram
+        is received. It stores the datagram in the recv_buffer
+    """
+    def datagram_received(self, data, addr):
+        if self.recv_buffer is None:
+            self.recv_buffer = list()
+        self.recv_buffer.append(data)
+        print_time("Received " + data.decode(), color)
+        if self.waiter is not None:
+            self.waiter.set_result(None)
+    """ ASYNCIO function that gets called when the connection has
+        an error.
+        TODO: proper error handling
+    """
+    def error_received(self, err):
+        if type(err) is ConnectionRefusedError:
+            print_time("Connection Error occured.", color)
+            if self.connection_error:
+                self.loop.create_task(self.connection_error())
+            return
+
+    """ ASNYCIO function that gets called when the connection
+        is lost
+    """
+    def connection_lost(self, exc):
+        print_time("Conenction lost", color)
+
+    """ Function responsible for sending data. It decides which
+        protocol is used and then uses the appropriate functions
     """
     async def send_data(self, data, message_count):
-        print_time("Writing data.", color)
-        try:
-            self.writer.write(data.encode())
-            await self.writer.drain()
-        except:
-            if self.send_error:
+        # Check what protocol we are using
+        if self.protocol == 'tcp':
+            print_time("Writing TCP data.", color)
+            try:
+                # Attempt to write data
+                self.transport.write(data.encode())
+            except:
                 print_time("SendError occured.", color)
-                self.loop.create_task(self.send_error(message_count))
-                print_time("Queued SendError cb.", color)
+                if self.send_error:
+                    self.loop.create_task(self.send_error(message_count))
+                return
+            print_time("Data written successfully.", color)
+            if self.sent:
+                self.loop.create_task(self.sent(message_count))
             return
-        print_time("Data written successfully.", color)
 
-        # Queue sent callback if there is one
-        if self.sent:
-            self.loop.create_task(self.sent(message_count))
-            print_time("Queued Sent cb..", color)
-        return
+        elif self.protocol == 'udp':
+            print_time("Writing UDP data.", color)
+            try:
+                # See if the udp flow was the result of passive or active open
+                if self.active:
+                    # Write the data
+                    self.transport.sendto(data.encode())
+                else:
+                    # Delegate sending to the datagram handler
+                    self.handler.send_to(self, data.encode())
+            except:
+                print_time("SendError occured.", color)
+                if self.send_error:
+                    self.loop.create_task(self.send_error(message_count))
+                return
+            print_time("Data written successfully.", color)
+            if self.sent:
+                self.loop.create_task(self.sent(message_count))
+            return
 
     """ Wrapper function that assigns MsgRef
         and then calls async helper function
         to send a message
     """
     async def send_message(self, data):
-        print_time("Sending data.", color)
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
-        print_time("Returning MsgRef.", color)
         return self.message_count
 
-    """ Queues reception of a message
+    """ Function that blocks until new data has arrived
+    """
+    async def await_data(self):
+        while(True):
+            if self.waiter is not None:
+                await self.waiter
+            else:
+                break
+        self.waiter = self.loop.create_future()
+        try:
+            await self.waiter
+        finally:
+            self.waiter = None
+
+    """ Function that reads and manages the buffer and returns data
+    """
+    async def read_buffer(self, max_length=-1):
+        # If the buffer is empty, wait for new data
+        if not self.recv_buffer:
+            await self.await_data()
+        # See if we have to deal datagrams or stream data
+        if self.message_based:
+            if len(self.recv_buffer[0]) <= max_length or max_length == -1:
+                data = self.recv_buffer.pop(0)
+                return data
+            elif len(self.recv_buffer[0]) > max_length:
+                data = self.recv_buffer[0][:max_length]
+                self.recv_buffer[0] = self.recv_buffer[0][max_length:]
+                return data
+        else:
+            if max_length == -1 or len(self.recv_buffer) <= max_length:
+                data = self.recv_buffer
+                self.recv_buffer = None
+                return data
+            elif len(self.recv_buffer) > max_length:
+                data = self.recv_buffer[:max_length]
+                self.recv_buffer = self.recv_buffer[max_length:]
+                return data
+
+    """ Queues reception of a message. Will block until message that
+        is at least min_incomplete_length long is in the msg_buffer
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
+        print_time("Reading message", color)
+
+        # Try to read data from the recv_buffer
         try:
-            data = await self.reader.read(max_length)
-            data = data.decode()
+            data = await self.read_buffer(max_length)
             if self.msg_buffer is None:
-                self.msg_buffer = data
+                self.msg_buffer = data.decode()
             else:
-                self.msg_buffer = self.msg_buffer + data
+                self.msg_buffer = self.msg_buffer + data.decode()
         except:
             print_time("Connection Error", color)
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
             return
-        if self.reader.at_eof():
+
+        # If we are at EOF or message based, issue a full message received cb
+        if self.message_based or self.at_eof:
             print_time("Received full message", color)
             if self.received:
                 self.loop.create_task(self.received(self.msg_buffer,
                                                     "Context", self))
-                print_time("Called received cb.", color)
             self.msg_buffer = None
             return
 
-        elif len(self.msg_buffer) > min_incomplete_length:
+        else:
+            # Wait until message is equal or longer than min_incomplete length
+            while(len(self.msg_buffer) < min_incomplete_length):
+                data = await self.read_buffer(max_length)
+                self.msg_buffer = self.msg_buffer + data.decode()
+
             print_time("Received partial message.", color)
             if self.received_partial:
                 self.loop.create_task(self.received_partial(self.msg_buffer,
                                       "Context", False, self))
-                print_time("Called partial_receive cb.", color)
                 self.msg_buffer = None
 
     """ Wrapper function to make receive return immediately
@@ -192,14 +286,13 @@ class Connection:
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
         self.loop.create_task(self.receive_message(min_incomplete_length,
                               max_length))
+
     """ Tries to close the connection
         TODO: Check why port isnt always freed
     """
     async def close_connection(self):
         print_time("Closing connection.", color)
-        self.writer.close()
-        await self.writer.wait_closed()
-        print_time("Connection closed.", color)
+        self.transport.close()
         if self.closed:
             self.loop.create_task(self.closed())
 
@@ -208,11 +301,6 @@ class Connection:
     """
     def close(self):
         self.loop.create_task(self.close_connection())
-    """ Function to set reader/writer for passive open
-    """
-    def set_reader_writer(self, reader, writer):
-        self.reader = reader
-        self.writer = writer
 
     # Events for active open
     def on_ready(self, a):
@@ -247,3 +335,41 @@ class Connection:
     # Events for closing a connection
     def on_closed(self, a):
         self.closed = a
+
+""" Class required to handle incoming datagram flows
+"""
+class DatagramHandler(asyncio.Protocol):
+
+    def __init__(self, preconnection):
+        self.preconnection = preconnection
+        self.remotes = dict()
+        self.preconnection.handler = self
+
+    def send_to(self, connection, data):
+        remote_address = connection.remote_endpoint.address
+        remote_port = connection.remote_endpoint.port
+        self.transport.sendto(data, (remote_address, remote_port))
+
+    def connection_made(self, transport):
+        self.transport = transport
+        return
+
+    def datagram_received(self, data, addr):
+        print("Receied new dgram")
+        if addr in self.remotes:
+            self.remotes[addr].datagram_received(data, addr)
+            return
+        new_connection = Connection(self.preconnection)
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        new_remote_endpoint.with_address(addr[0])
+        new_remote_endpoint.with_port(addr[1])
+        new_connection.remote_endpoint = new_remote_endpoint
+        print_time("Created new connection object.", color)
+        if new_connection.connection_received:
+            new_connection.loop.create_task(
+                new_connection.connection_received(new_connection))
+            print_time("Called connection_received cb", color)
+        new_connection.datagram_received(data, addr)
+        self.remotes[addr] = new_connection
+        return

@@ -28,13 +28,13 @@ class RemoteEndpoint:
     def __init__(self):
         self.address = None
         self.port = None
-        self.hostname = None
+        self.host_name = None
 
     def with_address(self, address):
         self.address = address
 
     def with_hostname(self, name):
-        self.hostname = name
+        self.host_name = name
 
     def with_port(self, portNumber):
         self.port = portNumber

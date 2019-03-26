@@ -17,28 +17,29 @@ class TestServer():
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
         self.connection.on_sent(self.handle_sent)
-        await self.connection.receive(min_incomplete_length=1, max_length=5)
+        await self.connection.receive(min_incomplete_length=7, max_length=-1)
         # await self.connection.receive(min_incomplete_length=4, max_length=3)
         # self.connection.on_sent(handle_sent)
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        taps.print_time("Received message " + str(data) + ".", color)
+        taps.print_time("Received partial message " + str(data) + ".", color)
+        await self.connection.receive(min_incomplete_length=1, max_length=5)
         msgref = await self.connection.send_message(str(data))
 
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
-        # self.connection.send_message(data)
+        await self.connection.receive(min_incomplete_length=1, max_length=5)
+        await self.connection.send_message(data)
 
-    async def handle_listen_error(self, connection):
+    async def handle_listen_error(self):
         taps.print_time("Listen Error occured.", color)
         self.loop.stop()
 
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
-        self.connection.close()
-        taps.print_time("Queued closure of connection.", color)
+        #self.connection.close()
 
     async def handle_stopped(self):
         taps.print_time("Listener has been stopped")
@@ -65,17 +66,18 @@ class TestServer():
                 sp.addIdentity(args.local_identity)
             taps.print_time("Created SecurityParameters.", color)
 
-        # tp = taps.transportProperties()
-        # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
-        # taps.print_time("Created transportProperties object.", color)
+        tp = taps.TransportProperties()
+        # tp.prohibit("reliability")
+        tp.ignore("congestion-control")
+        tp.ignore("preserve-order")
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
+                                                transport_properties=tp,
                                                 security_parameters=sp)
         self.preconnection.on_connection_received(
                                             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
-
         await self.preconnection.listen()
 
 

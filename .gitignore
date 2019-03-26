@@ -1,2 +1,6 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+.DS_Store
 *.pyc
-__pycache__
+docs/build
+
