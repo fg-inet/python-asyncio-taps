@@ -12,7 +12,7 @@ default_ca = local_ca
 #
 [ local_ca ]
 dir = .
-certificate = ca.cert
+certificate = ca.crt
 database = ca.index
 new_certs_dir = .
 private_key = ca.key
@@ -81,14 +81,14 @@ basicConstraints = CA:true
 EOF
 
 export OPENSSL_CONF=$(pwd)/ca.cnf
-openssl req -x509 -newkey rsa:4096 -out ca.cert -outform PEM -days 90 -nodes
+openssl req -x509 -newkey rsa:4096 -out ca.crt -outform PEM -days 90 -nodes
 
 touch ca.index
 echo '01' > ca.serial
 
-cat > localhost.cnf <<EOF
+cat > server.cnf <<EOF
 #
-# localhost.cnf
+# server.cnf
 #
 
 [ req ]
@@ -111,10 +111,11 @@ DNS.0 = localhost
 
 EOF
 
-export OPENSSL_CONF=$(pwd)/localhost.cnf
+export OPENSSL_CONF=$(pwd)/server.cnf
 openssl req -newkey rsa:4096 -keyout server.key -keyform PEM -out server.req -outform PEM -nodes
 
 export OPENSSL_CONF=$(pwd)/ca.cnf
 openssl ca -in server.req -out server.crt
 
+cat ca.crt >> server.crt
 cat server.crt >> server.key
