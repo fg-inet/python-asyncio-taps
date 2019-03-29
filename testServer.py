@@ -67,7 +67,7 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        # tp.prohibit("reliability")
+        tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
 
