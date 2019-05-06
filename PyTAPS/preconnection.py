@@ -66,7 +66,8 @@ class Preconnection:
                 self.protocol = None
                 # Waiter required to get the correct connection object
                 self.waiter = None
-
+                # Framer object
+                self.framer = None
     """ Waits until it receives signal from new connection object
         to indicate it has been correctly initialized. Required because
         initiate returns the connection object.
@@ -246,6 +247,16 @@ class Preconnection:
                                    value[1][1]), reverse=True)
 
         return sorted_candidates
+
+    async def resolve(self):
+        # Resolve address
+        remote_info = await self.loop.getaddrinfo(
+            self.remote_endpoint.host_name, self.remote_endpoint.port)
+        self.remote_endpoint.address = remote_info[0][4][0]
+
+    # Set the framer
+    def frame_with(self, a):
+        self.framer = a
 
     # Events for active open
     def on_ready(self, a):

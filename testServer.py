@@ -39,7 +39,7 @@ class TestServer():
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
-        #self.connection.close()
+        # self.connection.close()
 
     async def handle_stopped(self):
         taps.print_time("Listener has been stopped")
@@ -67,7 +67,7 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        tp.prohibit("reliability")
+        # tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
 
@@ -78,6 +78,7 @@ class TestServer():
                                             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
+        # self.preconnection.frame_with(taps.TlvFramer())
         await self.preconnection.listen()
 
 

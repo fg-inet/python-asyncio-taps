@@ -8,6 +8,13 @@ from .utility import *
 color = "green"
 
 
+class ConnectionState(Enum):
+    ESTABLISHING = 0
+    ESTABLISHED = 1
+    CLOSING = 2
+    CLOSED = 3
+
+
 class Connection(asyncio.Protocol):
     """The TAPS connection class.
 
@@ -24,6 +31,7 @@ class Connection(asyncio.Protocol):
                 self.loop = preconnection.loop
                 self.active = preconnection.active
                 self.protocol = preconnection.protocol
+                self.framer = preconnection.framer
 
                 # Keeping track of how many messages have been sent for msgref
                 self.message_count = 0
@@ -37,7 +45,8 @@ class Connection(asyncio.Protocol):
                 self.at_eof = False
                 # Waiter required to stop receive requests until data arrives
                 self.waiter = None
-
+                # Current state of the connection object
+                self.state = ConnectionState.ESTABLISHING
                 # Callbacks
                 self.ready = preconnection.ready
                 self.initiate_error = preconnection.initiate_error
@@ -67,13 +76,13 @@ class Connection(asyncio.Protocol):
                     preconnection.connection = self
                     if preconnection.waiter is not None:
                         preconnection.waiter.set_result(None)
-                    if self.protocol == "udp" and not self.active:
-                        self.handler = preconnection.handler
+                if self.protocol == "udp" and not self.active:
+                    self.handler = preconnection.handler
 
                 # Assertions
                 if (self.local_endpoint is None and
                         self.remote_endpoint is None):
-                    raise Exception("At least one endpoint need "
+                    raise Exception("At least one endpoint needs "
                                     "to be specified")
 
     # Asyncio Callbacks
@@ -93,7 +102,7 @@ class Connection(asyncio.Protocol):
             new_remote_endpoint.with_port(
                                 transport.get_extra_info("peername")[1])
             self.remote_endpoint = new_remote_endpoint
-
+            self.state = ConnectionState.ESTABLISHED
             if self.connection_received:
                 self.loop.create_task(self.connection_received(self))
             return
@@ -101,6 +110,7 @@ class Connection(asyncio.Protocol):
         elif self.active:
             self.transport = transport
             print_time("Connected successfully.", color)
+            self.state = ConnectionState.ESTABLISHED
             if self.ready:
                 self.loop.create_task(self.ready(self))
             return
@@ -156,6 +166,9 @@ class Connection(asyncio.Protocol):
         protocol is used and then uses the appropriate functions
     """
     async def send_data(self, data, message_count):
+        # Frame the data
+        if self.framer:
+            data = self.framer.frame(data)
         # Check what protocol we are using
         if self.protocol == 'tcp':
             print_time("Writing TCP data.", color)
@@ -260,6 +273,24 @@ class Connection(asyncio.Protocol):
                 self.loop.create_task(self.connection_error(self))
             return
 
+        if self.framer:
+            print_time("Deframing", color)
+            new_buf, message = self.framer.deframe(self.msg_buffer)
+            print_time("New buffer is " + new_buf, "red")
+            if message != -1:
+                print_time("Received full deframed message", color)
+                self.msg_buffer = new_buf
+                if self.received:
+                    self.loop.create_task(self.received(message,
+                                                        "Context", self))
+                return
+            elif message == -1:
+                print_time("Deframing incomplete", color)
+                await self.receive_message(min_incomplete_length, max_length)
+                return
+            else: 
+                print_time("Deframing error", "rec")
+
         # If we are at EOF or message based, issue a full message received cb
         if self.message_based or self.at_eof:
             print_time("Received full message", color)
@@ -268,7 +299,6 @@ class Connection(asyncio.Protocol):
                                                     "Context", self))
             self.msg_buffer = None
             return
-
         else:
             # Wait until message is equal or longer than min_incomplete length
             while(len(self.msg_buffer) < min_incomplete_length):
@@ -293,6 +323,7 @@ class Connection(asyncio.Protocol):
     async def close_connection(self):
         print_time("Closing connection.", color)
         self.transport.close()
+        self.ConnectionState.CLOSED
         if self.closed:
             self.loop.create_task(self.closed())
 
@@ -301,6 +332,7 @@ class Connection(asyncio.Protocol):
     """
     def close(self):
         self.loop.create_task(self.close_connection())
+        self.state = ConnectionState.CLOSING
 
     # Events for active open
     def on_ready(self, a):
@@ -336,10 +368,10 @@ class Connection(asyncio.Protocol):
     def on_closed(self, a):
         self.closed = a
 
-""" Class required to handle incoming datagram flows
-"""
-class DatagramHandler(asyncio.Protocol):
 
+class DatagramHandler(asyncio.Protocol):
+    """ Class required to handle incoming datagram flows
+    """
     def __init__(self, preconnection):
         self.preconnection = preconnection
         self.remotes = dict()

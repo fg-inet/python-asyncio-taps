@@ -15,11 +15,11 @@ class TestClient():
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
         taps.print_time("Received partial message " + str(data) + ".", color)
-        #self.loop.stop()
+        # self.loop.stop()
 
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)
-        #self.loop.stop()
+        # self.loop.stop()
 
     async def handle_sent(self, message_ref):
         taps.print_time("Sent cb received, message " + str(message_ref) +
@@ -40,12 +40,12 @@ class TestClient():
         # self.loop.stop()
 
     async def handle_ready(self, connection):
-        taps.print_time("Ready cb received from connection to "
-                        + connection.remote_endpoint.address + ":"
-                        + str(connection.remote_endpoint.port)
-                        + " (hostname: "
-                        + str(connection.remote_endpoint.host_name)
-                        + ")", color)
+        taps.print_time("Ready cb received from connection to " +
+                        connection.remote_endpoint.address + ":" +
+                        str(connection.remote_endpoint.port) +
+                        " (hostname: " +
+                        str(connection.remote_endpoint.host_name) +
+                        ")", color)
 
         # Set connection callbacks
         self.connection.on_sent(self.handle_sent)
@@ -56,13 +56,17 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send message
+        msgref = await self.connection.send_message(("STR", "Hello there"))
+        msgref = await self.connection.send_message(("STR", "This is a test"))
+        msgref = await self.connection.send_message(("INT", 334353))
+        msgref = await self.connection.send_message(("STR", "Hope it worked"))
         """
         msgref = await self.connection.send_message("Hello\n")
         msgref = await self.connection.send_message("There")
         msgref = await self.connection.send_message("Friend")
         msgref = await self.connection.send_message("How")
         msgref = await self.connection.send_message("Are")
-        msgref = await self.connection.send_message("Youuuuu\n")
+        msgref = await self.connection.send_message("You\n")
         msgref = await self.connection.send_message("Today?\n")
         msgref = await self.connection.send_message("343536")"""
         taps.print_time("send_message called.", color)
@@ -106,20 +110,21 @@ class TestClient():
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
-        # taps.print_time("Created transportProperties object.", color)
 
         # Create the preconnection object with the two prev created EPs
         self.preconnection = taps.Preconnection(remote_endpoint=ep,
                                                 local_endpoint=lp,
                                                 transport_properties=tp,
                                                 security_parameters=sp)
+        # Set callbacks
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
+        # Set the framer
+        self.preconnection.frame_with(taps.TlvFramer())
         taps.print_time("Created preconnection object and set cbs.", color)
-
         # Initiate the connection
         self.connection = await self.preconnection.initiate()
-        msgref = await self.connection.send_message("Hello\n")
+        # msgref = await self.connection.send_message("Hello\n")
         taps.print_time("Called initiate, connection object created.", color)
 
 
