@@ -1,0 +1,21 @@
+{
+  "ietf-taps-api:preconnection":{
+    "local-endpoints":[
+      {
+        "id":"1",
+        "local-address":"::1",
+        "local-port":"6661"
+      }
+    ],
+    "transport-properties":[
+      {
+        "type":"congestion-control",
+        "preference":"ignore"
+      },
+      {
+        "type":"preserve-order",
+        "preference":"ignore"
+      }
+    ]
+  }
+}

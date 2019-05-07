@@ -1,6 +1,9 @@
 import asyncio
 import ssl
+from .yang_validate import validate, convert, YangException, YANG_FMT_XML, YANG_FMT_JSON
+import xml.etree.ElementTree as ET
 from .connection import Connection, DatagramHandler
+from .securityParameters import SecurityParameters
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
@@ -68,6 +71,103 @@ class Preconnection:
                 self.waiter = None
                 # Framer object
                 self.framer = None
+
+    def from_yang(frmat, text):
+        if frmat == YANG_FMT_XML:
+            validate(frmat, text)
+            xml_text = text
+        else:
+            xml_text = convert(frmat, text, YANG_FMT_XML)
+
+        root = ET.fromstring(xml_text)
+        ns = {'taps':'urn:ietf:params:xml:ns:yang:ietf-taps-api'}
+
+        # jake 2019-05-02: *sigh* thanks for all the hate, xml...
+        if root.tag != '{urn:ietf:params:xml:ns:yang:ietf-taps-api}preconnection':
+            print_time("warning: unexpected root of instance: %s (instead of ietf-taps-api:preconnection" % (root.tag))
+        precon = root
+
+        # TBD: jake 2019-05-02: this api accepts only one endpoint, but the spec
+        # talks about accepting multiple endpoints.  not clear what to do?  yang
+        # and implementation api ideally would match tho...
+        # current behavior is to just take the first and stop.
+
+        lp = None
+        for node in precon.findall('taps:local-endpoints', namespaces=ns):
+            if not lp:
+                lp = LocalEndpoint()
+            # TBD: jake 2019-05-02: mapping from ifref to interface name?
+            interface_ref = node.findtext('taps:ifref', namespaces=ns)
+            local_address = node.findtext('taps:local-address', namespaces=ns)
+            local_port = node.findtext('taps:local-port', namespaces=ns)
+            if interface_ref:
+                lp.with_interface(interface_ref)
+            if local_address:
+                lp.with_address(local_address)
+            if local_port:
+                lp.with_port(local_port)
+            break
+
+        rp = None
+        for node in precon.findall('taps:remote-endpoints', namespaces=ns):
+            if not rp:
+                rp = RemoteEndpoint()
+            remote_host = node.findtext('taps:remote-host', namespaces=ns)
+            remote_port = node.findtext('taps:remote-port', namespaces=ns)
+            if remote_host:
+                rp.with_hostname(remote_host)
+            if remote_port:
+                rp.with_port(remote_port)
+            break
+
+        sp = None
+        security = precon.find('taps:security', namespaces=ns)
+        if security:
+            sp = SecurityParameters()
+            for cred in security.findall('taps:credentials', namespaces=ns):
+                trust_ca = cred.findtext('taps:trust-ca', namespaces=ns)
+                local_identity = cred.findtext('taps:identity', namespaces=ns)
+                if trust_ca:
+                    sp.addTrustCA(trust_ca)
+                if local_identity:
+                    sp.addIdentity(local_identity)
+
+        tp = TransportProperties()
+        fn_mapping = {
+            'ignore': TransportProperties.ignore,
+            'prohibit': TransportProperties.prohibit,
+            'require': TransportProperties.require,
+            'prefer': TransportProperties.prefer,
+            'avoid': TransportProperties.avoid,
+        }
+        for node in precon.findall('taps:transport-properties', namespaces=ns):
+            prop_name = node.findtext('taps:type', namespaces=ns)
+            pref = node.findtext('taps:preference', namespaces=ns)
+            fn = fn_mapping.get(pref)
+            if not fn:
+                raise Exception('unknown transport preference: %s' % pref)
+            fn(tp, prop_name)
+
+        return Preconnection(remote_endpoint=rp,
+                local_endpoint=lp,
+                transport_properties=tp,
+                security_parameters=sp)
+
+    def from_yangfile(fname):
+        with open(fname) as infile:
+            text = infile.read()
+
+        if fname.endswith('.xml'):
+            return Preconnection.from_yang(YANG_FMT_XML, text)
+        elif fname.endswith('.json'):
+            return Preconnection.from_yang(YANG_FMT_JSON, text)
+        else:
+            try:
+                check = Preconnection.from_yang(YANG_FMT_JSON, text)
+                return check
+            except YangException as ye:
+                return Preconnection.from_yang(YANG_FMT_XML, text)
+
     """ Waits until it receives signal from new connection object
         to indicate it has been correctly initialized. Required because
         initiate returns the connection object.
