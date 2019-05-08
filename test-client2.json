@@ -7,15 +7,10 @@
         "remote-port":"6661"
       }
     ],
-    "transport-properties":[
-      {
-        "type":"congestion-control",
-        "preference":"ignore"
-      },
-      {
-        "type":"preserve-order",
-        "preference":"ignore"
-      }
-    ]
+    "transport-properties": {
+      "congestion-control":"ignore",
+      "reliability":"ignore",
+      "preserve-order":"ignore"
+    }
   }
 }

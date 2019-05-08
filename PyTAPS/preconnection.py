@@ -133,20 +133,26 @@ class Preconnection:
                     sp.addIdentity(local_identity)
 
         tp = TransportProperties()
-        fn_mapping = {
-            'ignore': TransportProperties.ignore,
-            'prohibit': TransportProperties.prohibit,
-            'require': TransportProperties.require,
-            'prefer': TransportProperties.prefer,
-            'avoid': TransportProperties.avoid,
-        }
-        for node in precon.findall('taps:transport-properties', namespaces=ns):
-            prop_name = node.findtext('taps:type', namespaces=ns)
-            pref = node.findtext('taps:preference', namespaces=ns)
-            fn = fn_mapping.get(pref)
-            if not fn:
-                raise Exception('unknown transport preference: %s' % pref)
-            fn(tp, prop_name)
+        transport = precon.find('taps:transport-properties', namespaces=ns)
+        if transport:
+            fn_mapping = {
+                'ignore': TransportProperties.ignore,
+                'prohibit': TransportProperties.prohibit,
+                'require': TransportProperties.require,
+                'prefer': TransportProperties.prefer,
+                'avoid': TransportProperties.avoid,
+            }
+            stupid_xml_prefix = '{' + ns['taps'] + '}'
+            for node in transport:
+                if node.text in fn_mapping:
+                    fn = fn_mapping.get(node.text)
+                    prop_name = str(node.tag)
+                    if prop_name.startswith(stupid_xml_prefix):
+                        prop_name = prop_name[len(stupid_xml_prefix):]
+                    fn(tp, prop_name)
+                else:
+                    # TBD jake 2019-05-07: interface name/type, pvd
+                    pass
 
         return Preconnection(remote_endpoint=rp,
                 local_endpoint=lp,

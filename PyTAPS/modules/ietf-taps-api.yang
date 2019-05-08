@@ -83,38 +83,6 @@ module ietf-taps-api {
     description "Base identity for transport properties";
   }
 
-  identity reliable {
-    base transport-property-type;
-    description "Reliable Transport";
-  }
-  identity per-message-reliable {
-    base transport-property-type;
-    description "Per-message Reliable Transport";
-  }
-  identity preserve-order {
-    base transport-property-type;
-    description "Per-message Reliable Transport";
-  }
-  identity zero-rtt-establishment {
-    base transport-property-type;
-    description
-      "Use 0-RTT session establishment with an idempotent Message";
-  }
-  identity multistream-connections-in-group {
-    base transport-property-type;
-    description "Multistream Connections in Group";
-  }
-  identity control-checksum-coverage {
-    base transport-property-type;
-    description "Control checksum coverage on sending or receiving
-        TBD: draft-ietf-taps-interface-02#section-5.2.6 seems to
-             indicate some parameters are in order with this type,
-             not sure exactly what it should look like? Use case?";
-  }
-  identity congestion-control {
-    base transport-property-type;
-    description "Congestion control";
-  }
   identity provisioning-domain {
     base transport-property-type;
     description "Base for provisioning domain.
@@ -272,7 +240,7 @@ module ietf-taps-api {
 
       leaf id {
         type string;
-        description "id of the local endpoint within the yang instance";
+        description "id of the local endpoint";
       }
 
       leaf local-address {
@@ -282,22 +250,6 @@ module ietf-taps-api {
       leaf local-port {
         type inet:port-number;
         description "port value of an endpoint port";
-      }
-      leaf iftype {
-        type identityref {
-          base "ianaift:iana-interface-type";
-        }
-        description "interface type constraint for local
-          interface selection";
-        reference "RFC 7224 Section 2";
-      }
-
-      leaf ifref {
-        type if:interface-ref {
-          require-instance false;
-        }
-        description "specific interface constraint for local
-          interface selection.";
       }
 
       container stun-info {
@@ -321,7 +273,7 @@ module ietf-taps-api {
 
       leaf id {
         type string;
-        description "id of the remote endpoint within the yang instance";
+        description "id of the remote endpoint";
       }
 
       leaf remote-host {
@@ -335,22 +287,127 @@ module ietf-taps-api {
       }
     }
 
-    list transport-properties {
-      key "type preference";
-      description "list of transport property constraints.";
+    container transport-properties {
+      description "transport property constraints";
 
-      leaf type {
-        type identityref {
-          base transport-property-type;
-        }
+      leaf reliability {
+        type preference-level;
+        default "require";
+        description "Section 5.2.1 of draft-ietf-taps-interface-03";
       }
 
-      leaf preference {
+      leaf preserve-msg-boundaries {
         type preference-level;
-        /* TBD: would be nice if i could set default and have
-           less verbose config file.
-           default require; */
-        description "preference level for the property";
+        default "prefer";
+        description "Section 5.2.2 of draft-ietf-taps-interface-03";
+      }
+
+      leaf per-message-reliability {
+        type preference-level;
+        default "ignore";
+        description "Section 5.2.3 of draft-ietf-taps-interface-03";
+      }
+
+      leaf preserve-order {
+        type preference-level;
+        default "require";
+        description "Section 5.2.4 of draft-ietf-taps-interface-03";
+      }
+
+      leaf zero-rtt-msg {
+        type preference-level;
+        default "prefer";
+        description "Section 5.2.5 of draft-ietf-taps-interface-03";
+      }
+
+      leaf multistreaming {
+        type preference-level;
+        default "prefer";
+        description "Section 5.2.6 of draft-ietf-taps-interface-03";
+      }
+
+      leaf per-msg-checksum-len-send {
+        type preference-level;
+        default "ignore";
+        description "Section 5.2.7 of draft-ietf-taps-interface-03";
+      }
+
+      leaf per-msg-checksum-len-recv {
+        type preference-level;
+        default "ignore";
+        description "Section 5.2.8 of draft-ietf-taps-interface-03";
+      }
+
+      leaf congestion-control {
+        type preference-level;
+        default "require";
+        description "Section 5.2.9 of draft-ietf-taps-interface-03";
+      }
+
+      list interface {
+        key "preference value";
+        leaf preference {
+          type preference-level;
+          description "preference for this interface or interface type";
+        }
+        leaf value {
+          type union {
+            type identityref {
+              base "ianaift:iana-interface-type";
+            }
+            type if:interface-ref {
+              require-instance false;
+            }
+          }
+          description "name or type of interface constraint";
+          reference "RFC 7224 Section 2";
+        }
+
+        description "Section 5.2.10 of draft-ietf-taps-interface-03";
+      }
+
+      list pvd {
+        key "preference value";
+        leaf preference {
+          type preference-level;
+          description "preference for this pvd";
+        }
+        leaf value {
+          type identityref {
+            base "provisioning-domain";
+          }
+          description "the provisioning domain constraint";
+        }
+
+        description "Section 5.2.11 of draft-ietf-taps-interface-03";
+      }
+
+      leaf multipath {
+        type preference-level;
+        default "prefer";
+        description "Section 5.2.12 of draft-ietf-taps-interface-03";
+      }
+
+      leaf direction {
+        type enumeration {
+          enum "bidirectional";
+          enum "unidirection-send";
+          enum "unidirection-receive";
+        }
+        default "bidirectional";
+        description "Section 5.2.13 of draft-ietf-taps-interface-03";
+      }
+
+      leaf retransmit-notify {
+        type preference-level;
+        default "ignore";
+        description "Section 5.2.14 of draft-ietf-taps-interface-03";
+      }
+
+      leaf soft-error-notify {
+        type preference-level;
+        default "ignore";
+        description "Section 5.2.15 of draft-ietf-taps-interface-03";
       }
     }
 
