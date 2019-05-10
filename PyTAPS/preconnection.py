@@ -70,7 +70,7 @@ class Preconnection:
                 # Waiter required to get the correct connection object
                 self.waiter = None
                 # Framer object
-                self.framer = None
+                self.framer = []
 
     def from_yang(frmat, text):
         if frmat == YANG_FMT_XML:
@@ -155,9 +155,9 @@ class Preconnection:
                     pass
 
         return Preconnection(remote_endpoint=rp,
-                local_endpoint=lp,
-                transport_properties=tp,
-                security_parameters=sp)
+                             local_endpoint=lp,
+                             transport_properties=tp,
+                             security_parameters=sp)
 
     def from_yangfile(fname):
         with open(fname) as infile:
@@ -361,9 +361,9 @@ class Preconnection:
         self.remote_endpoint.address = remote_info[0][4][0]
 
     # Set the framer
-    def frame_with(self, a):
-        self.framer = a
-
+    def add_framer(self, a):
+        self.framer.append(a)
+        print(self.framer)
     # Events for active open
     def on_ready(self, a):
         self.ready = a

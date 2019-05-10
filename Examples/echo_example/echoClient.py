@@ -122,7 +122,8 @@ class TestClient():
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
         # Set the framer
-        self.preconnection.frame_with(taps.TlvFramer())
+        framer = taps.TlvFramer()
+        self.preconnection.add_framer(framer)
         taps.print_time("Created preconnection object and set cbs.", color)
         # Initiate the connection
         self.connection = await self.preconnection.initiate()

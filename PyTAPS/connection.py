@@ -167,7 +167,7 @@ class Connection(asyncio.Protocol):
     """
     async def send_data(self, data, message_count):
         # Frame the data
-        if self.framer:
+        if len(self.framer):
             data = self.framer.frame(data)
         # Check what protocol we are using
         if self.protocol == 'tcp':
