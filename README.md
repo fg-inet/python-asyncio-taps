@@ -16,3 +16,37 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 - Python 3.7 or above
 - termcolor (pip install termcolor)
+
+##Yang support:
+### Installation
+ Install libyang:
+	1. git clone https://github.com/CESNET/libyang
+	2. mkdir libyang/build
+	3. cd libyang/build
+	4. cmake -DCMAKE_INSTALL_PREFIX=$HOME/local-installs ..
+	5. make && make install
+
+Build the shared library:
+
+  On Linux/FreeBSD/Solaris:
+  
+	  cd PyTAPS
+	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o
+	  g++ validate_yang.o -shared -L $HOME/local-installs/lib -lyang -Wl,-soname,libyangcheck.so -o libyangcheck.so
+	  export LD_LIBRARY_PATH=$HOME/local-installs/lib
+
+On MacOS:
+
+	  cd PyTAPS
+	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o
+	  g++ validate_yang.o -shared -lyang -dynamiclib -o libyangcheck.so
+	  export LD_LIBRARY_PATH=$HOME/local-installs/lib
+
+### Use
+
+To run a server with a yang model specified in `yang_model_server.json` run
+
+	python yangServer.py -f ./yang_mode_server.json
+For a client with a model specified in `yang_model_client.json` run
+
+	python yangClient.py -f ./yang_model_client.json

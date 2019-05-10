@@ -9,6 +9,7 @@ global _lib_load_err, _lib
 _lib_load_err = None
 _lib = None
 
+
 def _pull_error_msgs():
     global _lib_load_err, _lib
     if _lib_load_err is not None:
@@ -20,12 +21,14 @@ def _pull_error_msgs():
         msgs.append(str(_lib.errmsg(i)))
     done_errcount = _lib.errmsg_count()
     if errcount != done_errcount:
-        msgs.append('error: libyangcheck error count changed (%d to %d) while enumerating' % (errcount, done_errcount))
+        msgs.append('error: libyangcheck error count changed (%d to %d)' +
+                    'while enumerating' % (errcount, done_errcount))
         if done_errcount > errcount:
             for i in range(errcount, done_errcount):
                 msgs.append(str(_lib.errmsg(i)))
     _lib.clear_errors()
     return msgs
+
 
 class YangException(Exception):
     def __init__(self, base_msg=None):
@@ -34,6 +37,7 @@ class YangException(Exception):
             msgs = [base_msg] + msgs
         msg_text = '\n'.join(msgs)
         super().__init__(msg_text)
+
 
 def validate(frmat, text):
     global _lib_load_err, _lib
@@ -47,7 +51,8 @@ def validate(frmat, text):
         err_msg = '\n'.join(errs)
         start_errs = 0
 
-    retval = _lib.validate(c_int(frmat), c_char_p(bytes(text, encoding='utf8')))
+    retval = _lib.validate(c_int(frmat),
+                           c_char_p(bytes(text, encoding='utf8')))
     done_errs = _lib.errmsg_count()
     if retval != 0:
         if done_errs != start_errs:
@@ -57,14 +62,17 @@ def validate(frmat, text):
                 err_msg += '\n'
             else:
                 err_msg = ''
-            err_msg += 'error: libyangcheck validation failed without error message'
+            err_msg += ("error: libyangcheck validation"
+                        "failed without error message")
             raise YangException(err_msg)
         return False
 
     if done_errs != start_errs:
-        print('warning: yang errors with passed validation:\n%s' % ('\n'.join(_pull_error_msgs())), file=sys.stderr)
+        print('warning: yang errors with passed validation:\n%s' %
+              ('\n'.join(_pull_error_msgs())), file=sys.stderr)
 
     return True
+
 
 def convert(from_frmat, text, to_frmat):
     global _lib_load_err, _lib
@@ -79,7 +87,9 @@ def convert(from_frmat, text, to_frmat):
         err_msg = '\n'.join(errs)
         start_errs = 0
 
-    retval = _lib.convert(c_int(from_frmat), c_char_p(bytes(text, encoding='utf8')), c_int(to_frmat))
+    retval = _lib.convert(c_int(from_frmat),
+                          c_char_p(bytes(text, encoding='utf8')),
+                          c_int(to_frmat))
     done_errs = _lib.errmsg_count()
     if not retval:
         if done_errs != start_errs:
@@ -89,14 +99,17 @@ def convert(from_frmat, text, to_frmat):
                 err_msg += '\n'
             else:
                 err_msg = ''
-            err_msg += 'error: libyangcheck validation failed without error message'
+            err_msg += ("error: libyangcheck validation"
+                        "failed without error message")
             raise YangException(err_msg)
         return None
 
     if done_errs != start_errs:
-        print('warning: yang errors with passed validation:\n%s' % ('\n'.join(_pull_error_msgs())), file=sys.stderr)
+        print('warning: yang errors with passed validation:\n%s' %
+              ('\n'.join(_pull_error_msgs())), file=sys.stderr)
 
     return retval.decode('utf-8')
+
 
 def _on_load():
     global _lib_load_err, _lib
