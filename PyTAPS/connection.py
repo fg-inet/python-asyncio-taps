@@ -19,9 +19,9 @@ class Connection(asyncio.Protocol):
     """The TAPS connection class.
 
     Attributes:
-        preconnection (:obj:'preconnection'):
-                Preconnection object that was involved in
-                creating this connection object
+        preconnection (Preconnection, required):
+                Preconnection object from which this Connection
+                object was created.
     """
     def __init__(self, preconnection):
                 # Initializations
@@ -205,11 +205,12 @@ class Connection(asyncio.Protocol):
                 self.loop.create_task(self.sent(message_count))
             return
 
-    """ Wrapper function that assigns MsgRef
-        and then calls async helper function
-        to send a message
-    """
     async def send_message(self, data):
+        """ Attempts to send data on the connection.
+            Attributes:
+                data (string, required):
+                    Data to be send.
+        """
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
         return self.message_count
@@ -253,11 +254,10 @@ class Connection(asyncio.Protocol):
                 self.recv_buffer = self.recv_buffer[max_length:]
                 return data
 
-    """ Queues reception of a message. Will block until message that
-        is at least min_incomplete_length long is in the msg_buffer
-    """
     async def receive_message(self, min_incomplete_length,
                               max_length):
+        """ Function wrapped by receive.
+        """
         print_time("Reading message", color)
 
         # Try to read data from the recv_buffer
@@ -288,7 +288,7 @@ class Connection(asyncio.Protocol):
                 print_time("Deframing incomplete", color)
                 await self.receive_message(min_incomplete_length, max_length)
                 return
-            else: 
+            else:
                 print_time("Deframing error", "rec")
 
         # If we are at EOF or message based, issue a full message received cb
@@ -311,62 +311,138 @@ class Connection(asyncio.Protocol):
                                       "Context", False, self))
                 self.msg_buffer = None
 
-    """ Wrapper function to make receive return immediately
-    """
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
+        """ Queues the reception of a message.
+
+        Attributes:
+            min_incomplete_length (integer, optional):
+                The minimum length an incomplete message
+                needs to have.
+
+            max_length (integer, optional):
+                The maximum length a message can have.
+        """
         self.loop.create_task(self.receive_message(min_incomplete_length,
                               max_length))
 
-    """ Tries to close the connection
-        TODO: Check why port isnt always freed
-    """
     async def close_connection(self):
+        """ Function wrapped by close
+        """
         print_time("Closing connection.", color)
         self.transport.close()
         self.ConnectionState.CLOSED
         if self.closed:
             self.loop.create_task(self.closed())
 
-    """ Wrapper function for close_connection,
-        required to make close return immediately
-    """
     def close(self):
+        """ Attempts to close the connection, issues a closed event
+        on success.
+        """
         self.loop.create_task(self.close_connection())
         self.state = ConnectionState.CLOSING
 
     # Events for active open
-    def on_ready(self, a):
-        self.ready = a
+    def on_ready(self, callback):
+        """ Set callback for ready events that get thrown once the connection is ready
+        to send and receive data.
 
-    def on_initiate_error(self, a):
-        self.initiate_error = a
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.ready = callback
+
+    def on_initiate_error(self, callback):
+        """ Set callback for initiate error events that get thrown if an error occurs
+        during initiation.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.initiate_error = callback
 
     # Events for sending messages
-    def on_sent(self, a):
-        self.sent = a
+    def on_sent(self, callback):
+        """ Set callback for sent events that get thrown if a message has been
+        succesfully sent.
 
-    def on_send_error(self, a):
-        self.send_error = a
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.sent = callback
 
-    def on_expired(self, a):
-        self.expired = a
+    def on_send_error(self, callback):
+        """ Set callback for send error events that get thrown if an error occurs
+        during sending of a message.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.send_error = callback
+
+    def on_expired(self, callback):
+        """ Set callback for expired events that get thrown if a message expires.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.expired = callback
 
     # Events for receiving messages
-    def on_received(self, a):
-        self.received = a
+    def on_received(self, callback):
+        """ Set callback for received events that get thrown if a new message
+        has been received.
 
-    def on_received_partial(self, a):
-        self.received_partial = a
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.received = callback
 
-    def on_receive_error(self, a):
-        self.receive_error = a
+    def on_received_partial(self, callback):
+        """ Set callback for partial received events that get thrown if a new partial
+        message has been received.
 
-    def on_connection_error(self, a):
-        self.connection_error = a
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.received_partial = callback
+
+    def on_receive_error(self, callback):
+        """ Set callback for receive error events that get thrown if an error occurs
+        during reception of a message.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.receive_error = callback
+
+    def on_connection_error(self, callback):
+        """ Set callback for connection error events that get thrown if an error occurs
+        while the connection is open.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.connection_error = callback
 
     # Events for closing a connection
-    def on_closed(self, a):
-        self.closed = a
+    def on_closed(self, callback):
+        """ Set callback for on closed events that get thrown if the
+        connection has been closed succesfully.
+
+        Attributes:
+            callback (callback, required): Function that implements the
+                callback.
+        """
+        self.closed = callback
 
 
 class DatagramHandler(asyncio.Protocol):

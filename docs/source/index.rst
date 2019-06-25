@@ -10,12 +10,22 @@ PyTAPS is an implementation of a **transport system** as described by the **TAPS
 
 PyTAPS provides an asynchronous programming interface which allows applications to transmit and receive messages over transport protocols and network paths dynamically selected at runtime.
 
+As of right now, PyTAPS supports the following features:
+
+    - Creating Preconnection, Endpoint and Connection Objects
+    - Protocol selection based on specified transport properties (UDP, TCP and TLS)
+    - Actively initiating connections 
+    - Passively listening for new connections
+    - Configuring Preconnections and Connections with YANG
+
+
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
 
    api
    design
+   reference
    license
 
 

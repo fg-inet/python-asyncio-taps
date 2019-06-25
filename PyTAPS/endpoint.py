@@ -10,12 +10,28 @@ class LocalEndpoint:
         self.address = None
 
     def with_interface(self, interface):
+        """Specifies which interface the local endpoint should use.
+
+        Attributes:
+            interface (interface, required): Interface identifier.
+        """
         self.interface = interface
 
     def with_address(self, address):
+        """Specifies which address the local endpoint should use.
+
+        Attributes:
+            address (string, required): Address in the form of an IPv4
+                or IPv6 address.
+        """
         self.address = address
 
     def with_port(self, portNumber):
+        """Specifies which port the local endpoint should use.
+
+        Attributes:
+            portNumber (integer, required): Port number.
+        """
         self.port = portNumber
 
 
@@ -31,10 +47,26 @@ class RemoteEndpoint:
         self.host_name = None
 
     def with_address(self, address):
+        """Specifies which address the remote endpoint should have.
+
+        Attributes:
+            address (string, required): Address in the form of an IPv4
+                or IPv6 address.
+        """
         self.address = address
 
-    def with_hostname(self, name):
-        self.host_name = name
+    def with_hostname(self, hostname):
+        """Specifies which hostname the remote endpoint should have.
+
+        Attributes:
+            hostname (string, required): Host name.
+        """
+        self.host_name = hostname
 
     def with_port(self, portNumber):
+        """Specifies which port the remote endpoint should have.
+
+        Attributes:
+            portNumber (integer, required): Port number.
+        """
         self.port = portNumber
