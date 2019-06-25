@@ -17,7 +17,7 @@ People interested in participating in TAPS can [join the mailing list](https://w
 - Python 3.7 or above
 - termcolor (pip install termcolor)
 
-##Yang support:
+## Yang support:
 
 ### Installation
  Install libyang:
@@ -30,7 +30,7 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 Build the shared library:
 
-On Linux/FreeBSD/Solaris:
+giOn Linux/FreeBSD/Solaris:
   
 	  cd PyTAPS
 	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o
