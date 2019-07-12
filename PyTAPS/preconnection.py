@@ -70,7 +70,7 @@ class Preconnection:
                 # Waiter required to get the correct connection object
                 self.waiter = None
                 # Framer object
-                self.framer = []
+                self.framer = None
 
     def from_yang(frmat, text):
         if frmat == YANG_FMT_XML:
@@ -362,7 +362,7 @@ class Preconnection:
 
     # Set the framer
     def add_framer(self, a):
-        self.framer.append(a)
+        self.framer = a
         print(self.framer)
     # Events for active open
     def on_ready(self, a):
