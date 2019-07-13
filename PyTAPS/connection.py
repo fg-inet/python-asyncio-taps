@@ -44,7 +44,7 @@ class Connection(asyncio.Protocol):
                 # Boolean to indicate that EOF has been reached
                 self.at_eof = False
                 # Waiter required to stop receive requests until data arrives
-                self.waiter = None
+                self.waiters = []
                 # Current state of the connection object
                 self.state = ConnectionState.ESTABLISHING
                 # Callbacks
@@ -89,16 +89,12 @@ class Connection(asyncio.Protocol):
     """ Function that blocks until new data has arrived
     """
     async def await_data(self):
-        while(True):
-            if self.waiter is not None:
-                await self.waiter
-            else:
-                break
-        self.waiter = self.loop.create_future()
+        waiter = self.loop.create_future()
+        self.waiters.append(waiter)
         try:
-            await self.waiter
+            await waiter
         finally:
-            self.waiter = None
+            del self.waiters[0]
 
     async def active_open(self, transport):
         self.transport = transport
@@ -146,12 +142,13 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = data
         else:
             self.recv_buffer = self.recv_buffer + data
-        if self.active_framers > 0:
-            self.loop.create_task(self.handle_waiting_framers())
+        for i in range(self.active_framers):
+            self.loop.create_task(self.framer.handle_received_data(self))
         # If there is already a receive queued by the connection,
         # trigger its waiter to let it know new data has arrived
-        if self.waiter is not None:
-            self.waiter.set_result(None)
+        if len(self.waiters) > 0:
+            for i in self.waiters:
+                i.set_result(None)
     """ ASYNCIO function that gets called when EOF is received
     """
     def eof_received(self):
@@ -165,8 +162,8 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = list()
         self.recv_buffer.append(data)
         print_time("Received " + data.decode(), color)
-        if self.active_framers > 0:
-            self.loop.create_task(self.handle_waiting_framers())
+        for i in range(self.active_framers):
+            self.loop.create_task(self.framer.handle_received_data(self))
         if self.waiter is not None:
             self.waiter.set_result(None)
     """ ASYNCIO function that gets called when the connection has
@@ -237,7 +234,7 @@ class Connection(asyncio.Protocol):
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
         return self.message_count
-
+    """
     async def handle_waiting_framers(self):
         try:
             data = await self.read_buffer()
@@ -251,7 +248,7 @@ class Connection(asyncio.Protocol):
                 self.loop.create_task(self.connection_error(self))
             return
         await self.framer.handle_received_data(self)
-
+    """
     """ Function that reads and manages the buffer and returns data
     """
     async def read_buffer(self, max_length=-1):
@@ -277,16 +274,32 @@ class Connection(asyncio.Protocol):
                 self.recv_buffer = self.recv_buffer[max_length:]
                 return data
 
-    """ Queues reception of a message. Will block until message that
-        is at least min_incomplete_length long is in the msg_buffer
+    """ Receive handling if a framer is in use
+    """
+    async def receive_framed(self, min_incomplete_length,
+                             max_length):
+        print_time("Ready to read message with framer", color)
+        # If the buffer is empty, wait for new data
+        if not self.recv_buffer:
+            await self.await_data()
+        print_time("Deframing", color)
+        self.active_framers += 1
+        context, message, eom = await self.framer.handle_received(self)
+        if self.received:
+            self.loop.create_task(self.received(message,
+                                                "Context", self))
+        self.active_framers -= 1
+        return
+    """ Queues reception of a message if there is no framer. Will block until
+        message that is at least min_incomplete_length long is in the
+        msg_buffer
     """
     async def receive_message(self, min_incomplete_length,
                               max_length):
         print_time("Ready to read message", color)
-
         # Try to read data from the recv_buffer
         try:
-            data = await self.read_buffer(max_length)
+            data = await self.read_buffer()
             if self.msg_buffer is None:
                 self.msg_buffer = data.decode()
             else:
@@ -297,15 +310,6 @@ class Connection(asyncio.Protocol):
                 self.loop.create_task(self.connection_error(self))
             return
 
-        if self.framer:
-            print_time("Deframing", color)
-            self.active_framers += 1
-            context, message, eom = await self.framer.handle_received(self)
-            if self.received:
-                self.loop.create_task(self.received(message,
-                                                    "Context", self))
-            self.active_framers -= 1
-            return
         # If we are at EOF or message based, issue a full message received cb
         if self.message_based or self.at_eof:
             print_time("Received full message", color)
@@ -329,8 +333,12 @@ class Connection(asyncio.Protocol):
     """ Wrapper function to make receive return immediately
     """
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
-        self.loop.create_task(self.receive_message(min_incomplete_length,
-                              max_length))
+        if self.framer:
+            self.loop.create_task(self.receive_framed(min_incomplete_length,
+                                  max_length))
+        else:
+            self.loop.create_task(self.receive_message(min_incomplete_length,
+                                  max_length))
 
     """ Tries to close the connection
         TODO: Check why port isnt always freed

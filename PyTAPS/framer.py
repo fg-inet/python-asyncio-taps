@@ -99,10 +99,10 @@ class Framer():
         return
 
     def parse(self, connection, min_incomplete_length, max_length):
-        return connection.msg_buffer, None, False
+        return connection.recv_buffer.decode(), None, False
 
     def advance_receive_cursor(self, connection, length):
-        connection.msg_buffer = connection.msg_buffer[length:]
+        connection.recv_buffer = connection.recv_buffer[length:]
         return
 
     def deliver_and_advance_receive_cursor(self, context, length, eom):

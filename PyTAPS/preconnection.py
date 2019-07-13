@@ -363,7 +363,7 @@ class Preconnection:
     # Set the framer
     def add_framer(self, a):
         self.framer = a
-        print(self.framer)
+
     # Events for active open
     def on_ready(self, a):
         self.ready = a
