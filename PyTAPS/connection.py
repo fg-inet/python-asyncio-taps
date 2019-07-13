@@ -146,9 +146,11 @@ class Connection(asyncio.Protocol):
             self.loop.create_task(self.framer.handle_received_data(self))
         # If there is already a receive queued by the connection,
         # trigger its waiter to let it know new data has arrived
-        if len(self.waiters) > 0:
+        if self.framer:
             for i in self.waiters:
                 i.set_result(None)
+        elif len(self.waiters) > 0:
+            self.waiters[0].set_result(None)
     """ ASYNCIO function that gets called when EOF is received
     """
     def eof_received(self):
@@ -164,8 +166,11 @@ class Connection(asyncio.Protocol):
         print_time("Received " + data.decode(), color)
         for i in range(self.active_framers):
             self.loop.create_task(self.framer.handle_received_data(self))
-        if self.waiter is not None:
-            self.waiter.set_result(None)
+        if self.framer:
+            for i in self.waiters:
+                i.set_result(None)
+        elif len(self.waiters) > 0:
+            self.waiters[0].set_result(None)
     """ ASYNCIO function that gets called when the connection has
         an error.
         TODO: proper error handling
@@ -173,6 +178,7 @@ class Connection(asyncio.Protocol):
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
             print_time("Connection Error occured.", color)
+            print(err)
             if self.connection_error:
                 self.loop.create_task(self.connection_error())
             return
@@ -187,6 +193,12 @@ class Connection(asyncio.Protocol):
         protocol is used and then uses the appropriate functions
     """
     async def send_data(self, data, message_count):
+        if self.state is not ConnectionState.ESTABLISHED:
+                print_time("SendError occured, connection is not established.",
+                           color)
+                if self.send_error:
+                    self.loop.create_task(self.send_error(message_count))
+                return
         # Frame the data
         if self.framer:
             data = await self.framer.handle_new_sent_message(data, None, False)
@@ -235,26 +247,10 @@ class Connection(asyncio.Protocol):
         self.message_count += 1
         self.loop.create_task(self.send_data(data, self.message_count))
         return self.message_count
-    """
-    async def handle_waiting_framers(self):
-        try:
-            data = await self.read_buffer()
-            if self.msg_buffer is None:
-                self.msg_buffer = data.decode()
-            else:
-                self.msg_buffer = self.msg_buffer + data.decode()
-        except:
-            print_time("Connection Error", color)
-            if self.connection_error is not None:
-                self.loop.create_task(self.connection_error(self))
-            return
-        await self.framer.handle_received_data(self)
-    """
-    """ Function that reads and manages the buffer and returns data
-    """
+
     async def read_buffer(self, max_length=-1):
         # If the buffer is empty, wait for new data
-        if not self.recv_buffer:
+        if self.recv_buffer is None or len(self.recv_buffer) == 0:
             await self.await_data()
         # See if we have to deal datagrams or stream data
         if self.message_based:
@@ -312,7 +308,6 @@ class Connection(asyncio.Protocol):
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
             return
-
         # If we are at EOF or message based, issue a full message received cb
         if self.message_based or self.at_eof:
             print_time("Received full message", color)
@@ -486,14 +481,16 @@ class DatagramHandler(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
+        print_time("New UDP flow", color)
         return
 
     def datagram_received(self, data, addr):
-        print("Receied new dgram")
+        print_time("Received new datagram", color)
         if addr in self.remotes:
             self.remotes[addr].datagram_received(data, addr)
             return
         new_connection = Connection(self.preconnection)
+        new_connection.state = ConnectionState.ESTABLISHED
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
         new_remote_endpoint.with_address(addr[0])
