@@ -12,11 +12,11 @@ Using the PyTAPS API, an application can do the following:
 * To receive data, call Receive()
 * Close the Connection
 
-
 Creating a Preconnection
 ------------------------
 
-Before an application can create a Connection, first it has to create a *Preconnection*::
+Before an application can create a Connection, first it has to create a *Preconnection*.
+A Preconnection consists of the local and remote endpoints as well as the Transport properties and security security parameters::
 
 	import PyTAPS as taps
 
@@ -27,13 +27,23 @@ Before an application can create a Connection, first it has to create a *Preconn
 	local_endpoint = taps.LocalEndpoint()
 	local_endpoint.with_port("6666")
 
+TransProperties specify which behavior and properties an application expects a new connection to have. This has also an impact on which transport protocol gets choosen by the TAPS system.
+The default TransportProperties will result in an TCP conncetion: 
+	
 	properties = taps.TransportProperties()
-	# Reliable Data Transfer and Preserve Order are Required by default
+	
+Applications are also able to use security parameters in the preconnection as an optional argument. These allow the application to specify a certificate to be trusted as well as a local identity::
+
+	security = taps.SecurityParameters()
+	security.addTrustCA(args.trust_ca)
+	security.addIdentity(args.local_identity)
+
+After all the prerequisite and optional objects have been configured, the preconnection itself can finally be created::
 
 	preconnection = taps.Preconnection(remote_endpoint=endpoint,
 					local_endpoint=None,
 					transport_properties=properties,
-					security_parameters=None)
+					security_parameters=security)
 
 
 Initiating a Connection
@@ -49,6 +59,7 @@ Then the application needs to set a callback on the Preconnection, which will be
 	preconnection.on_ready(handle_ready)
 
 Note that the callback function has to be defined as an *async* function, i.e., a Python asyncio *coroutine*. See `Design decisions <design.rst>`_ for more information on coroutines and for our reasoning why PyTAPS functions and callbacks are coroutines.
+There are several other callbacks that can be set on the preconnection, see the full `API reference <reference.rst>`_
 
 After setting the callback, the application can call Initiate. Note that Initiate is a *coroutine* and not a regular function, so it cannot be called directly.
 
@@ -68,6 +79,27 @@ Alternatively, a coroutine can be called using *await* from within another corou
 
 	loop = asyncio.get_event_loop()
 	loop.create_task(initiate_connection(preconnection))
+	loop.run_forever()
+
+Listening for a Connection
+--------------------------
+
+Passively listening for new connections is done in a similar way.
+
+First, the application will have to create a Preconnection.
+
+Once this is done, the application will have to set a callback on the Preconnection that gets called once a new connection has been received::
+
+	async def handle_connection_received():
+		print("A new connection has been received.")
+	
+	preconnection.on_connection_received(handle_connection_received)
+
+Similar to an active initiate, the callback is a Python *coroutine* and not a regular function. 
+Now the application can get the event loop, call the listen the coroutine and then start to run the event loop::
+
+	loop = asyncio.get_event_loop()
+	loop.create_task(preconnection.listen())
 	loop.run_forever()
 
 Sending data
@@ -121,3 +153,32 @@ An application can set a callback to be executed after the Connection has been c
 
 	connection.on_closed(handle_closed)
 	connection.close()
+
+Using YANG to configure Preconnections and Endpoints
+------------------------------------------------------
+
+PyTAPS allows developers to load configurations from a JSON file that specifies them according to the TAPS YANG model.
+To do so, the application calls the from_yangfile function on the preconnection and passes a YANG/JSON file containing the configuration::
+
+	preconnection = taps.Preconnection.from_yangfile(fname)
+
+This will configure the preconnection and endpoints according to the provided YANG file. The application can now continue as usual by setting callbacks and calling initiate/listen.
+
+To achieve a preconnection that is configured the same as the one created in the earlier example, the yang configuration file would have to look like this::
+
+	{
+		"ietf-taps-api:preconnection":{
+			"remote-endpoints":[
+			{
+				"id":"1",
+				"remote-host":"example.org",
+				"remote-port":"80"
+			}
+			],    "local-endpoints":[
+			{
+				"id":"1",
+				"local-port":"6666"
+			}
+			]
+		}
+	}

@@ -1,6 +1,6 @@
 # python-asyncio-taps
 
-This is an implementation of a transport system as described by the **TAPS (Transport Services) Working Group** in the IETF in [draft-ietf-taps-interface-03](https://tools.ietf.org/html/draft-ietf-taps-interface-03).
+This is an implementation of a transport system as described by the **TAPS (Transport Services) Working Group** in the IETF in [draft-ietf-taps-interface-03](https://tools.ietf.org/html/draft-ietf-taps-interface-03). The full documentation can be found on [readthedocs.io](https://pytaps.readthedocs.io/en/latest/index.html)
 
 A **transport system** is a novel way to offer transport layer services to the application layer.
 It provides an interface on top of multiple different transport protocols, such as TCP, SCTP, UDP, or QUIC. Instead of having to choose a transport protocol itself, the application only provides abstract requirements (*Transport Properties*), e.g., *Reliable Data Transfer*. The transport system maps then maps these properties to specific transport protocols, possibly trying out multiple different protocols in parallel. Furthermore, it can select between multiple local interfaces and remote IP addresses.
@@ -17,9 +17,11 @@ People interested in participating in TAPS can [join the mailing list](https://w
 - Python 3.7 or above
 - termcolor (pip install termcolor)
 
-##Yang support:
+## Yang support:
+
 ### Installation
  Install libyang:
+
 	1. git clone https://github.com/CESNET/libyang
 	2. mkdir libyang/build
 	3. cd libyang/build
@@ -28,7 +30,7 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 Build the shared library:
 
-  On Linux/FreeBSD/Solaris:
+giOn Linux/FreeBSD/Solaris:
   
 	  cd PyTAPS
 	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o

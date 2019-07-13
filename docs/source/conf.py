@@ -12,21 +12,21 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
+import os
+import sys
+sys.path.insert(0, os.path.abspath('../..'))
 
 
 # -- Project information -----------------------------------------------------
 
 project = 'PyTAPS'
-copyright = '2019, Max Franke, Theresa Enghardt, Philipp S. Tiesel'
-author = 'Max Franke, Theresa Enghardt, Philipp S. Tiesel'
+copyright = '2019, Max Franke, Theresa Enghardt, Philipp S. Tiesel, Jake Holland'
+author = 'Max Franke, Theresa Enghardt, Philipp S. Tiesel, Jake Holland'
 
 # The short X.Y version
 version = ''
 # The full version, including alpha/beta/rc tags
-release = '0.1'
+release = '0.2'
 
 
 # -- General configuration ---------------------------------------------------
@@ -40,6 +40,7 @@ release = '0.1'
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.napoleon'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
