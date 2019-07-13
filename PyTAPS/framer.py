@@ -7,26 +7,22 @@ class Framer():
 
     def __init__(self, event_loop=asyncio.get_event_loop()):
         self.loop = event_loop
-
-        # Callbacks of the framer implementation
-        # self.new_sent_message = None
-        # self.handle_received_data = None
-        # self.start = None
-        # self.stop = None
-    
         # Waiters for framers
         self.start_waiter = None
         self.send_waiter_list = []
         self.receive_waiter_list = []
-        
+
     """ Function that blocks until framer is after start event
     """
     async def await_framer_ready(self):
+        """ Not required for now since there is only
+            one start event per framer
         while(True):
             if self.start_waiter is not None:
                 await self.start_waiter
             else:
                 break
+        """
         self.start_waiter = self.loop.create_future()
         try:
             await self.start_waiter
@@ -55,6 +51,8 @@ class Framer():
             receive_waiter = None
             return context, data, eom
 
+    """ Empty functions, to be implemented by the framer implementation
+    """
     async def start(self, connection):
         pass
     async def new_sent_message(self, data, context, eom):
@@ -63,7 +61,7 @@ class Framer():
         pass
     async def stop(self):
         pass
-    
+
     # Fire start event and the wait until framer replies
     async def handle_start(self, connection):
         self.loop.create_task(self.start(connection))
@@ -79,13 +77,14 @@ class Framer():
         self.loop.create_task(self.handle_received_data(connection))
         context, data, eom = await self.await_framer_receive()
         return context, data, eom
+
+    #  Declare a connection ready
     def make_connection_ready(self, connection):
         if self.start_waiter is not None:
             self.start_waiter.set_result(None)
         return
 
     def fail_connection(self, error):
-        # 
         return
 
     def prepend_protocol(self, framer):
@@ -125,6 +124,7 @@ class Framer():
 
     def on_handle_received_data(self, a):
         self.new_sent_message = a
+
 
 class MessageContext():
 

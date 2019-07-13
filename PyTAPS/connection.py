@@ -85,7 +85,7 @@ class Connection(asyncio.Protocol):
                         self.remote_endpoint is None):
                     raise Exception("At least one endpoint needs "
                                     "to be specified")
-    
+
     """ Function that blocks until new data has arrived
     """
     async def await_data(self):

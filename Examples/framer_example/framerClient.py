@@ -7,6 +7,7 @@ import PyTAPS as taps  # noqa: E402
 
 color = "yellow"
 
+
 class testFramer(taps.Framer):
     async def start(self, connection):
         taps.print_time("Framer got new connection", color)
@@ -14,16 +15,16 @@ class testFramer(taps.Framer):
     async def new_sent_message(self, data, context, eom):
         taps.print_time("Framing new message " + str(data), color)
         tlv = (data[0] + "/" + str(len(str(data[1]))) + "/" +
-        str(data[1]))
+               str(data[1]))
         self.send(tlv)
     async def handle_received_data(self, connection):
-        byte_stream, context, eom = self.parse(connection, 0,0)
+        byte_stream, context, eom = self.parse(connection, 0, 0)
         taps.print_time("Deframing " + byte_stream, color)
         try:
             tlv = byte_stream.split("/")
         except:
             taps.print_time("Error splitting", color)
-            return 
+            return
 
         if len(tlv) < 3:
             taps.print_time("Not enough parameters", color)
@@ -31,11 +32,12 @@ class testFramer(taps.Framer):
 
         if (len(tlv[2]) < int(tlv[1])):
             taps.print_time("Didnt receive full message", color)
-            return 
+            return
         len_message = len(tlv[0]) + len(tlv[1]) + int(tlv[1]) + 2
         message = (str(tlv[0]), str(tlv[2][0:int(tlv[1])]))
         self.advance_receive_cursor(connection, len_message)
         self.deliver(connection, context, message, eom)
+
 
 class TestClient():
     def __init__(self):
