@@ -63,7 +63,7 @@ class Connection(asyncio.Protocol):
                 self.closed = None
                 self.reader = None
                 self.writer = None
-                self.active_framers = 0
+                self.open_receives = 0
 
                 # Decide if protocol is message based
                 if self.protocol == 'tcp':
@@ -142,7 +142,7 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = data
         else:
             self.recv_buffer = self.recv_buffer + data
-        for i in range(self.active_framers):
+        for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
         # If there is already a receive queued by the connection,
         # trigger its waiter to let it know new data has arrived
@@ -164,7 +164,7 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = list()
         self.recv_buffer.append(data)
         print_time("Received " + data.decode(), color)
-        for i in range(self.active_framers):
+        for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
         if self.framer:
             for i in self.waiters:
@@ -280,12 +280,12 @@ class Connection(asyncio.Protocol):
         if not self.recv_buffer:
             await self.await_data()
         print_time("Deframing", color)
-        self.active_framers += 1
+        self.open_receives += 1
         context, message, eom = await self.framer.handle_received(self)
         if self.received:
             self.loop.create_task(self.received(message,
                                                 "Context", self))
-        self.active_framers -= 1
+        self.open_receives -= 1
         return
 
     async def receive_message(self, min_incomplete_length,

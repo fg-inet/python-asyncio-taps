@@ -54,10 +54,47 @@ class Framer():
     """ Empty functions, to be implemented by the framer implementation
     """
     async def start(self, connection):
+        """ Function that gets called when a new connection
+            has been created by the TAPS system. The framer
+            implementation should execute any code required
+            during connection establishment here.
+
+        Attributes:
+            connection (connection, required):
+                The connection object that is to be
+                handled by the framer.
+        """
         pass
     async def new_sent_message(self, data, context, eom):
+        """ Function that gets called when a new message
+            has been queued for sending by the application.
+            The framer should frame the message and then call
+            the send() function on itself.
+
+        Attributes:
+            data (string, required):
+                The data that is to be framed.
+            context (context, required):
+                The message context.
+            eom (boolean, required):
+                Marks wether or not this was marked
+                as end of message by the application.
+        """
         pass
     async def handle_received_data(self, connection):
+        """ Function that gets called when a new message
+            has arrived on the connection. The framer should
+            call parse() to get access to the buffer. After it
+            has sufficient data to deframe a message, it should
+            either call advance_receive_cursor() and deliver() or
+            deliver_and_advance_receive_cursor() which combines
+            both functions.
+
+        Attributes:
+            connection (connection, required):
+                The connection object on which new data has
+                arrived.
+        """
         pass
     async def stop(self):
         pass
@@ -80,6 +117,14 @@ class Framer():
 
     #  Declare a connection ready
     def make_connection_ready(self, connection):
+        """ Tells the connection object that the
+            framer is done with handling the start event.
+
+        Attributes:
+            connection (connection, required):
+                The connection object that was handled
+                by the framer.
+        """
         if self.start_waiter is not None:
             self.start_waiter.set_result(None)
         return
@@ -91,23 +136,83 @@ class Framer():
         return
 
     def send(self, data):
-        # Send
+        """ Should be called with framed data after a
+            new_sent_message() event.
+
+        Attributes:
+            data (string, required):
+                The framed message.
+        """
         if len(self.send_waiter_list) > 0:
             self.send_waiter_list[0].set_result(data)
             del self.send_waiter_list[0]
         return
 
     def parse(self, connection, min_incomplete_length, max_length):
+        """ Returns the message buffer of the
+            connection.
+
+        Attributes:
+            connection (connection, required):
+                The connection object from which the
+                buffer should be returned.
+        """
         return connection.recv_buffer.decode(), None, False
 
     def advance_receive_cursor(self, connection, length):
+        """ Deletes the first length number of
+            elements from the buffer of connection.
+
+        Attributes:
+            connection (connection, required):
+                The connection object from which the
+                buffer should be modified.
+            length (integer, required):
+                Number of elements to delete from
+                the buffer.
+        """      
         connection.recv_buffer = connection.recv_buffer[length:]
         return
 
-    def deliver_and_advance_receive_cursor(self, context, length, eom):
+    def deliver_and_advance_receive_cursor(self, connection, context, data,
+                                           length, eom):
+        """ Combines the functionallity of advance_receive_cursor and
+            deliver.
+        Attributes:
+            connection (connection, required):
+                The connection object from which the
+                buffer should be modified.
+            length (integer, required):
+                Number of elements to delete from
+                the buffer.
+            context (context, required):
+                The message context.
+            data (string, required):
+                Message to be delivered.
+            eom (boolean, required):
+                Wether or not this should
+                be marked as end of Message.
+        """
+        connection.recv_buffer = connection.recv_buffer[length:]
+        if len(self.receive_waiter_list) > 0:
+            self.receive_waiter_list[0].set_result((context, data, eom))
+            del self.receive_waiter_list[0]
         return
 
     def deliver(self, conenction, context, data, eom):
+        """ Delivers data to the application via a received event.
+        Attributes:
+            connection (connection, required):
+                The connection object which should issue
+                a received event.
+            context (context, required):
+                The message context.
+            data (string, required):
+                Message to be delivered.
+            eom (boolean, required):
+                Wether or not this should
+                be marked as end of Message.
+        """
         if len(self.receive_waiter_list) > 0:
             self.receive_waiter_list[0].set_result((context, data, eom))
             del self.receive_waiter_list[0]
