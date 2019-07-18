@@ -44,7 +44,7 @@ class Connection(asyncio.Protocol):
                 # Boolean to indicate that EOF has been reached
                 self.at_eof = False
                 # Waiter required to stop receive requests until data arrives
-                self.waiter = None
+                self.waiters = []
                 # Current state of the connection object
                 self.state = ConnectionState.ESTABLISHING
                 # Callbacks
@@ -63,6 +63,7 @@ class Connection(asyncio.Protocol):
                 self.closed = None
                 self.reader = None
                 self.writer = None
+                self.open_receives = 0
 
                 # Decide if protocol is message based
                 if self.protocol == 'tcp':
@@ -84,6 +85,27 @@ class Connection(asyncio.Protocol):
                         self.remote_endpoint is None):
                     raise Exception("At least one endpoint needs "
                                     "to be specified")
+
+    """ Function that blocks until new data has arrived
+    """
+    async def await_data(self):
+        waiter = self.loop.create_future()
+        self.waiters.append(waiter)
+        try:
+            await waiter
+        finally:
+            del self.waiters[0]
+
+    async def active_open(self, transport):
+        self.transport = transport
+        print_time("Connected successfully.", color)
+        self.state = ConnectionState.ESTABLISHED
+        if self.framer:
+            # Send a start even to the framer and wait for a reply
+            await self.framer.handle_start(self)
+        if self.ready:
+            self.loop.create_task(self.ready(self))
+        return
 
     # Asyncio Callbacks
 
@@ -108,12 +130,7 @@ class Connection(asyncio.Protocol):
             return
 
         elif self.active:
-            self.transport = transport
-            print_time("Connected successfully.", color)
-            self.state = ConnectionState.ESTABLISHED
-            if self.ready:
-                self.loop.create_task(self.ready(self))
-            return
+            self.loop.create_task(self.active_open(transport))
     """ ASYNCIO function that gets called when new data is made available
         by the OS. Stores new data in buffer and triggers the receive waiter
     """
@@ -125,11 +142,15 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = data
         else:
             self.recv_buffer = self.recv_buffer + data
-
+        for i in range(self.open_receives):
+            self.loop.create_task(self.framer.handle_received_data(self))
         # If there is already a receive queued by the connection,
         # trigger its waiter to let it know new data has arrived
-        if self.waiter is not None:
-            self.waiter.set_result(None)
+        if self.framer:
+            for i in self.waiters:
+                i.set_result(None)
+        elif len(self.waiters) > 0:
+            self.waiters[0].set_result(None)
     """ ASYNCIO function that gets called when EOF is received
     """
     def eof_received(self):
@@ -143,8 +164,13 @@ class Connection(asyncio.Protocol):
             self.recv_buffer = list()
         self.recv_buffer.append(data)
         print_time("Received " + data.decode(), color)
-        if self.waiter is not None:
-            self.waiter.set_result(None)
+        for i in range(self.open_receives):
+            self.loop.create_task(self.framer.handle_received_data(self))
+        if self.framer:
+            for i in self.waiters:
+                i.set_result(None)
+        elif len(self.waiters) > 0:
+            self.waiters[0].set_result(None)
     """ ASYNCIO function that gets called when the connection has
         an error.
         TODO: proper error handling
@@ -152,6 +178,7 @@ class Connection(asyncio.Protocol):
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
             print_time("Connection Error occured.", color)
+            print(err)
             if self.connection_error:
                 self.loop.create_task(self.connection_error())
             return
@@ -166,9 +193,15 @@ class Connection(asyncio.Protocol):
         protocol is used and then uses the appropriate functions
     """
     async def send_data(self, data, message_count):
+        if self.state is not ConnectionState.ESTABLISHED:
+                print_time("SendError occured, connection is not established.",
+                           color)
+                if self.send_error:
+                    self.loop.create_task(self.send_error(message_count))
+                return
         # Frame the data
         if self.framer:
-            data = self.framer.frame(data)
+            data = await self.framer.handle_new_sent_message(data, None, False)
         # Check what protocol we are using
         if self.protocol == 'tcp':
             print_time("Writing TCP data.", color)
@@ -215,25 +248,9 @@ class Connection(asyncio.Protocol):
         self.loop.create_task(self.send_data(data, self.message_count))
         return self.message_count
 
-    """ Function that blocks until new data has arrived
-    """
-    async def await_data(self):
-        while(True):
-            if self.waiter is not None:
-                await self.waiter
-            else:
-                break
-        self.waiter = self.loop.create_future()
-        try:
-            await self.waiter
-        finally:
-            self.waiter = None
-
-    """ Function that reads and manages the buffer and returns data
-    """
     async def read_buffer(self, max_length=-1):
         # If the buffer is empty, wait for new data
-        if not self.recv_buffer:
+        if self.recv_buffer is None or len(self.recv_buffer) == 0:
             await self.await_data()
         # See if we have to deal datagrams or stream data
         if self.message_based:
@@ -254,15 +271,34 @@ class Connection(asyncio.Protocol):
                 self.recv_buffer = self.recv_buffer[max_length:]
                 return data
 
+    """ Receive handling if a framer is in use
+    """
+    async def receive_framed(self, min_incomplete_length,
+                             max_length):
+        print_time("Ready to read message with framer", color)
+        # If the buffer is empty, wait for new data
+        if not self.recv_buffer:
+            await self.await_data()
+        print_time("Deframing", color)
+        self.open_receives += 1
+        context, message, eom = await self.framer.handle_received(self)
+        if self.received:
+            self.loop.create_task(self.received(message,
+                                                "Context", self))
+        self.open_receives -= 1
+        return
+
     async def receive_message(self, min_incomplete_length,
                               max_length):
-        """ Function wrapped by receive.
+        """ Queues reception of a message if there is no framer. Will block until
+            message that is at least min_incomplete_length long is in the
+            msg_buffer
         """
         print_time("Reading message", color)
 
         # Try to read data from the recv_buffer
         try:
-            data = await self.read_buffer(max_length)
+            data = await self.read_buffer()
             if self.msg_buffer is None:
                 self.msg_buffer = data.decode()
             else:
@@ -272,25 +308,6 @@ class Connection(asyncio.Protocol):
             if self.connection_error is not None:
                 self.loop.create_task(self.connection_error(self))
             return
-
-        if self.framer:
-            print_time("Deframing", color)
-            new_buf, message = self.framer.deframe(self.msg_buffer)
-            print_time("New buffer is " + new_buf, "red")
-            if message != -1:
-                print_time("Received full deframed message", color)
-                self.msg_buffer = new_buf
-                if self.received:
-                    self.loop.create_task(self.received(message,
-                                                        "Context", self))
-                return
-            elif message == -1:
-                print_time("Deframing incomplete", color)
-                await self.receive_message(min_incomplete_length, max_length)
-                return
-            else:
-                print_time("Deframing error", "rec")
-
         # If we are at EOF or message based, issue a full message received cb
         if self.message_based or self.at_eof:
             print_time("Received full message", color)
@@ -322,8 +339,12 @@ class Connection(asyncio.Protocol):
             max_length (integer, optional):
                 The maximum length a message can have.
         """
-        self.loop.create_task(self.receive_message(min_incomplete_length,
-                              max_length))
+        if self.framer:
+            self.loop.create_task(self.receive_framed(min_incomplete_length,
+                                  max_length))
+        else:
+            self.loop.create_task(self.receive_message(min_incomplete_length,
+                                  max_length))
 
     async def close_connection(self):
         """ Function wrapped by close
@@ -460,14 +481,16 @@ class DatagramHandler(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
+        print_time("New UDP flow", color)
         return
 
     def datagram_received(self, data, addr):
-        print("Receied new dgram")
+        print_time("Received new datagram", color)
         if addr in self.remotes:
             self.remotes[addr].datagram_received(data, addr)
             return
         new_connection = Connection(self.preconnection)
+        new_connection.state = ConnectionState.ESTABLISHED
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
         new_remote_endpoint.with_address(addr[0])

@@ -8,6 +8,37 @@ import PyTAPS as taps  # noqa: E402
 color = "yellow"
 
 
+class testFramer(taps.Framer):
+    async def start(self, connection):
+        taps.print_time("Framer got new connection", color)
+        self.make_connection_ready(connection)
+    async def new_sent_message(self, data, context, eom):
+        taps.print_time("Framing new message " + str(data), color)
+        tlv = (data[0] + "/" + str(len(str(data[1]))) + "/" +
+               str(data[1]))
+        self.send(tlv)
+    async def handle_received_data(self, connection):
+        byte_stream, context, eom = self.parse(connection, 0, 0)
+        taps.print_time("Deframing " + byte_stream, color)
+        try:
+            tlv = byte_stream.split("/")
+        except:
+            taps.print_time("Error splitting", color)
+            return
+
+        if len(tlv) < 3:
+            taps.print_time("Not enough parameters", color)
+            return
+
+        if (len(tlv[2]) < int(tlv[1])):
+            taps.print_time("Didnt receive full message", color)
+            return
+        len_message = len(tlv[0]) + len(tlv[1]) + int(tlv[1]) + 2
+        message = (str(tlv[0]), str(tlv[2][0:int(tlv[1])]))
+        self.advance_receive_cursor(connection, len_message)
+        self.deliver(connection, context, message, eom)
+
+
 class TestClient():
     def __init__(self):
         self.connection = None
@@ -57,20 +88,16 @@ class TestClient():
         self.connection.on_received(self.handle_received)
         taps.print_time("Connection cbs set.", color)
 
-        # Send message
         msgref = await self.connection.send_message(("STR", "Hello there"))
         msgref = await self.connection.send_message(("STR", "This is a test"))
         msgref = await self.connection.send_message(("INT", 334353))
         msgref = await self.connection.send_message(("STR", "Hope it worked"))
+        # Send message
         """
-        msgref = await self.connection.send_message("Hello\n")
-        msgref = await self.connection.send_message("There")
-        msgref = await self.connection.send_message("Friend")
-        msgref = await self.connection.send_message("How")
-        msgref = await self.connection.send_message("Are")
-        msgref = await self.connection.send_message("You\n")
-        msgref = await self.connection.send_message("Today?\n")
-        msgref = await self.connection.send_message("343536")"""
+        msgref = await self.connection.send_message("This")
+        msgref = await self.connection.send_message("Is")
+        msgref = await self.connection.send_message("a")
+        msgref = await self.connection.send_message("Test")"""
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
@@ -122,7 +149,7 @@ class TestClient():
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
         # Set the framer
-        framer = taps.TlvFramer()
+        framer = testFramer()
         self.preconnection.add_framer(framer)
         taps.print_time("Created preconnection object and set cbs.", color)
         # Initiate the connection

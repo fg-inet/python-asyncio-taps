@@ -168,10 +168,6 @@ class Preconnection:
         self.local_endpoint = lp
         self.transport_properties = tp
         self.security_parameters = sp
-        # return Preconnection(remote_endpoint=rp,
-        #        local_endpoint=lp,
-        #        transport_properties=tp,
-        #        security_parameters=sp)
 
     def from_yangfile(self, fname):
         """ Loads the configuration of a the preconnection, including endpoints,
@@ -380,13 +376,14 @@ class Preconnection:
             self.remote_endpoint.host_name, self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
 
-    def frame_with(self, framer):
+    # Set the framer
+    def add_framer(self, a):
         """ Set a framer with which to frame the messages of the connection.
 
         Attributes:
             framer (framer, required): Class that implements a TAPS framer.
         """
-        self.framer = framer
+        self.framer = a
 
     # Events for active open
     def on_ready(self, callback):
