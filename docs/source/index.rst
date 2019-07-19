@@ -16,7 +16,7 @@ As of right now, PyTAPS supports the following features:
     - Protocol selection based on specified transport properties (UDP, TCP and TLS)
     - Actively initiating connections 
     - Passively listening for new connections
-    - Configuring Preconnections and Connections with YANG
+    - Configuring Preconnections and Endpoints with YANG
     - Framers, e.g., to preserve message boundaries across TCP
 
 

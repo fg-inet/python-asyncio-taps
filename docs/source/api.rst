@@ -28,10 +28,10 @@ A Preconnection consists of the local and remote endpoints as well as the Transp
 	local_endpoint.with_port("6666")
 
 TransProperties specify which behavior and properties an application expects a new connection to have. This has also an impact on which transport protocol gets choosen by the TAPS system.
-The default TransportProperties will result in an TCP conncetion: 
-	
+The default TransportProperties will result in an TCP conncetion::
+
 	properties = taps.TransportProperties()
-	
+
 Applications are also able to use security parameters in the preconnection as an optional argument. These allow the application to specify a certificate to be trusted as well as a local identity::
 
 	security = taps.SecurityParameters()
