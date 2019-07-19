@@ -1,6 +1,6 @@
 # python-asyncio-taps
 
-This is an implementation of a transport system as described by the **TAPS (Transport Services) Working Group** in the IETF in [draft-ietf-taps-interface-03](https://tools.ietf.org/html/draft-ietf-taps-interface-03). The full documentation can be found on [readthedocs.io](https://pytaps.readthedocs.io/en/latest/index.html)
+This is an implementation of a transport system as described by the **TAPS (Transport Services) Working Group** in the IETF in [draft-ietf-taps-interface-04](https://tools.ietf.org/html/draft-ietf-taps-interface-04). The full documentation can be found on [readthedocs.io](https://pytaps.readthedocs.io/en/latest/index.html)
 
 A **transport system** is a novel way to offer transport layer services to the application layer.
 It provides an interface on top of multiple different transport protocols, such as TCP, SCTP, UDP, or QUIC. Instead of having to choose a transport protocol itself, the application only provides abstract requirements (*Transport Properties*), e.g., *Reliable Data Transfer*. The transport system maps then maps these properties to specific transport protocols, possibly trying out multiple different protocols in parallel. Furthermore, it can select between multiple local interfaces and remote IP addresses.

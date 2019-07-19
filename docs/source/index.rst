@@ -6,7 +6,7 @@
 Welcome to PyTAPS's documentation!
 ==================================
 
-PyTAPS is an implementation of a **transport system** as described by the **TAPS (Transport Services)** Working Group in the IETF in `draft-ietf-taps-interface-03 <https://tools.ietf.org/html/draft-ietf-taps-interface-03>`_.
+PyTAPS is an implementation of a **transport system** as described by the **TAPS (Transport Services)** Working Group in the IETF in `draft-ietf-taps-interface-04 <https://tools.ietf.org/html/draft-ietf-taps-interface-04>`_.
 
 PyTAPS provides an asynchronous programming interface which allows applications to transmit and receive messages over transport protocols and network paths dynamically selected at runtime.
 
@@ -17,6 +17,7 @@ As of right now, PyTAPS supports the following features:
     - Actively initiating connections 
     - Passively listening for new connections
     - Configuring Preconnections and Connections with YANG
+    - Framers, e.g., to preserve message boundaries across TCP
 
 
 .. toctree::
