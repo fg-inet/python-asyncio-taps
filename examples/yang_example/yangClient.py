@@ -67,6 +67,8 @@ class TestClient():
         msgref = await self.connection.send_message("Youuuuu\n")
         msgref = await self.connection.send_message("Today?\n")
         msgref = await self.connection.send_message("343536")"""
+
+        msgref = await self.connection.send_message("Hello\n")
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
@@ -80,7 +82,6 @@ class TestClient():
 
         # Initiate the connection
         self.connection = await self.preconnection.initiate()
-        msgref = await self.connection.send_message("Hello\n")
         taps.print_time("Called initiate, connection object created.", color)
 
 
