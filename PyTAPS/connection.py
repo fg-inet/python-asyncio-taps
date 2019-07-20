@@ -100,9 +100,11 @@ class Connection(asyncio.Protocol):
         self.transport = transport
         print_time("Connected successfully.", color)
         self.state = ConnectionState.ESTABLISHED
-        if self.framer:
+        if len(self.framer) > 0:
             # Send a start even to the framer and wait for a reply
-            await self.framer.handle_start(self)
+            for fr in self.framer:
+                await fr.handle_start(self)
+
         if self.ready:
             self.loop.create_task(self.ready(self))
         return
@@ -146,9 +148,10 @@ class Connection(asyncio.Protocol):
             self.loop.create_task(self.framer.handle_received_data(self))
         # If there is already a receive queued by the connection,
         # trigger its waiter to let it know new data has arrived
-        if self.framer:
-            for i in self.waiters:
-                i.set_result(None)
+        if len(self.framer) > 0:
+            for fr in self.framer:
+                for i in self.waiters:
+                    i.set_result(None)
         elif len(self.waiters) > 0:
             self.waiters[0].set_result(None)
     """ ASYNCIO function that gets called when EOF is received

@@ -79,7 +79,7 @@ class Preconnection:
                 # Waiter required to get the correct connection object
                 self.waiter = None
                 # Framer object
-                self.framer = None
+                self.framer = []
 
     def from_yang(self, frmat, text):
         if frmat == YANG_FMT_XML:
@@ -383,7 +383,7 @@ class Preconnection:
         Attributes:
             framer (framer, required): Class that implements a TAPS framer.
         """
-        self.framer = a
+        self.framer.append(a)
 
     # Events for active open
     def on_ready(self, callback):
