@@ -16,6 +16,7 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 - Python 3.7 or above
 - termcolor (pip install termcolor)
+- pytest, pytest-asyncio, pytest-timeout (for tests)
 
 ## Build Dependencies:
 
