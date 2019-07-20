@@ -16,7 +16,7 @@ class testFramer(taps.Framer):
         taps.print_time("Framing new message " + str(data), color)
         tlv = (data[0] + "/" + str(len(str(data[1]))) + "/" +
                str(data[1]))
-        self.send(tlv)
+        self.loop.create_task(self.send(tlv))
 
     async def handle_received_data(self, connection):
         byte_stream, context, eom = self.parse(connection, 0, 0)

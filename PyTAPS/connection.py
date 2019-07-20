@@ -189,10 +189,57 @@ class Connection(asyncio.Protocol):
     def connection_lost(self, exc):
         print_time("Conenction lost", color)
 
-    """ Function responsible for sending data. It decides which
-        protocol is used and then uses the appropriate functions
-    """
-    async def send_data(self, data, message_count):
+    def send_udp(self, data, message_count):
+        """ Sends udp data
+        """
+        print_time("Writing UDP data.", color)
+        try:
+            # See if the udp flow was the result of passive or active open
+            if self.active:
+                # Write the data
+                self.transport.sendto(data.encode())
+            else:
+                # Delegate sending to the datagram handler
+                self.handler.send_to(self, data.encode())
+        except:
+            print_time("SendError occured.", color)
+            if self.send_error:
+                self.loop.create_task(self.send_error(message_count))
+            return
+        print_time("Data written successfully.", color)
+        if self.sent:
+            self.loop.create_task(self.sent(message_count))
+        return
+
+    def send_tcp(self, data, message_count):
+        """ Send tcp data
+        """
+        print_time("Writing TCP data.", color)
+        try:
+            # Attempt to write data
+            self.transport.write(data.encode())
+        except:
+            print_time("SendError occured.", color)
+            if self.send_error:
+                self.loop.create_task(self.send_error(message_count))
+            return
+        print_time("Data written successfully.", color)
+        if self.sent:
+            self.loop.create_task(self.sent(message_count))
+        return
+
+    def send_data(self, data, message_count):
+        """ Selects correct send call dependent on protocol
+        """
+        if self.protocol == 'tcp':
+            self.send_tcp(data, message_count)
+        elif self.protocol == 'udp':
+            self.send_udp(data, message_count)
+    
+    async def process_send_data(self, data, message_count):
+        """ Function responsible for sending data. It decides which
+            protocol is used and then uses the appropriate functions
+        """
         if self.state is not ConnectionState.ESTABLISHED:
                 print_time("SendError occured, connection is not established.",
                            color)
@@ -201,42 +248,9 @@ class Connection(asyncio.Protocol):
                 return
         # Frame the data
         if self.framer:
-            data = await self.framer.handle_new_sent_message(data, None, False)
-        # Check what protocol we are using
-        if self.protocol == 'tcp':
-            print_time("Writing TCP data.", color)
-            try:
-                # Attempt to write data
-                self.transport.write(data.encode())
-            except:
-                print_time("SendError occured.", color)
-                if self.send_error:
-                    self.loop.create_task(self.send_error(message_count))
-                return
-            print_time("Data written successfully.", color)
-            if self.sent:
-                self.loop.create_task(self.sent(message_count))
-            return
-
-        elif self.protocol == 'udp':
-            print_time("Writing UDP data.", color)
-            try:
-                # See if the udp flow was the result of passive or active open
-                if self.active:
-                    # Write the data
-                    self.transport.sendto(data.encode())
-                else:
-                    # Delegate sending to the datagram handler
-                    self.handler.send_to(self, data.encode())
-            except:
-                print_time("SendError occured.", color)
-                if self.send_error:
-                    self.loop.create_task(self.send_error(message_count))
-                return
-            print_time("Data written successfully.", color)
-            if self.sent:
-                self.loop.create_task(self.sent(message_count))
-            return
+            self.framer.handle_new_sent_message(data, None, False)
+        else:
+            self.send_data(data, message_count)
 
     async def send_message(self, data):
         """ Attempts to send data on the connection.
@@ -245,7 +259,7 @@ class Connection(asyncio.Protocol):
                     Data to be send.
         """
         self.message_count += 1
-        self.loop.create_task(self.send_data(data, self.message_count))
+        self.loop.create_task(self.process_send_data(data, self.message_count))
         return self.message_count
 
     async def read_buffer(self, max_length=-1):

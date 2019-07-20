@@ -14,24 +14,24 @@ class Preconnection:
     """The TAPS preconnection class.
 
     Attributes:
-        localEndpoint (LocalEndpoint, optional):
+        local_endpoint (LocalEndpoint, optional):
                         LocalEndpoint of the
                         preconnection, required if the connection
                         will be used to listen
-        remoteEndpoint (RemoteEndpoint, optional):
+        remote_endpoint (RemoteEndpoint, optional):
                         RemoteEndpoint of the
                         preconnection, required if a connection
                         will be initiated
-        transportProperties (TransportProperties, optional):
+        transport_properties (TransportProperties, optional):
                         Object of the transport properties
                         with specified preferenceLevels
-        securityParams (SecurityParameters, optional):
+        security_parameters (SecurityParameters, optional):
                         Security Parameters for the preconnection
-        eventLoop (eventLoop, optional):
+        event_loop (eventLoop, optional):
                         Event loop on which all coroutines and callbacks
                         will be scheduled, if none if given the
                         one of the current thread is used by default
-        yang (file, optional):
+        yangfile (file, optional):
                         File descriptor of a JSON file containing a
                         TAPS YANG configuration
     """
