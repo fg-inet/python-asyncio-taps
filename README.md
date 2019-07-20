@@ -22,9 +22,13 @@ People interested in participating in TAPS can [join the mailing list](https://w
 Yang support relies on some shared libraries.  Run the script to download, build,
 and install them into dependencies/install/lib (requires cmake and clang or gcc):
 
-  ./build_dependencies.sh
+	./build_dependencies.sh
 
 ### Use
+
+You'll need the path to load the dependent dynamic libraries set:
+
+	export LD_LIBRARY_PATH=dependencies/install/lib
 
 To run a server with a yang model specified in `examples/yang_example/test-server2.json` run
 
