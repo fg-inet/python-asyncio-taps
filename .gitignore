@@ -6,3 +6,4 @@ docs/build
 .*.sw?
 *.so
 *.o
+dependencies/

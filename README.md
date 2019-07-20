@@ -17,38 +17,19 @@ People interested in participating in TAPS can [join the mailing list](https://w
 - Python 3.7 or above
 - termcolor (pip install termcolor)
 
-## Yang support:
+## Build Dependencies:
 
-### Installation
- Install libyang:
+Yang support relies on some shared libraries.  Run the script to download, build,
+and install them into dependencies/install/lib (requires cmake and clang or gcc):
 
-	1. git clone https://github.com/CESNET/libyang
-	2. mkdir libyang/build
-	3. cd libyang/build
-	4. cmake -DCMAKE_INSTALL_PREFIX=$HOME/local-installs ..
-	5. make && make install
-
-Build the shared library:
-
-giOn Linux/FreeBSD/Solaris:
-  
-	  cd PyTAPS
-	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o
-	  g++ validate_yang.o -shared -L $HOME/local-installs/lib -lyang -Wl,-soname,libyangcheck.so -o libyangcheck.so
-	  export LD_LIBRARY_PATH=$HOME/local-installs/lib
-
-On MacOS:
-
-	  cd PyTAPS
-	  g++ -c -fPIC -I $HOME/local-installs/include validate_yang.cxx -o validate_yang.o
-	  g++ validate_yang.o -shared -lyang -dynamiclib -o libyangcheck.so
-	  export LD_LIBRARY_PATH=$HOME/local-installs/lib
+  ./build_dependencies.sh
 
 ### Use
 
-To run a server with a yang model specified in `yang_model_server.json` run
+To run a server with a yang model specified in `examples/yang_example/test-server2.json` run
 
-	python yangServer.py -f ./yang_mode_server.json
-For a client with a model specified in `yang_model_client.json` run
+	python examples/yang_example/yangServer.py -f examples/yang_example/test-server2.json
 
-	python yangClient.py -f ./yang_model_client.json
+For a client with a model specified in `examples/yang_example/test-client2.json` run
+
+	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json

@@ -24,7 +24,7 @@ relevant environment variables:
 
 #include <stdlib.h>
 #include <string.h>
-#include <libyang/libyang.h>
+#include <libyang/libyang.h>   // https://github.com/CESNET/libyang
 #include <deque>
 #include <string>
 #include <sstream>
@@ -47,12 +47,18 @@ extern "C" {
 //   libyang log level and callback is actually global, so only 1 can be
 //   supported right now.
 struct validate_ctx {
-  ly_ctx* loaded_ctx = NULL;
-  LY_LOG_LEVEL log_level = LY_LLERR;
+  ly_ctx* loaded_ctx;
+  LY_LOG_LEVEL log_level;
   std::string search_path;
   std::deque<std::string> errors;
-  unsigned int max_errs = 15;
+  unsigned int max_errs;
   std::string last_convert;
+
+  validate_ctx():
+    loaded_ctx(NULL),
+    log_level(LY_LLERR),
+    max_errs(15)
+  {}
 };
 static validate_ctx g_vctx;
 
@@ -122,7 +128,7 @@ int errmsg_count() {
 }
 
 const char* errmsg(int idx) {
-  if (idx < 0 || idx >= g_vctx.errors.size()) {
+  if (idx < 0 || idx >= (int)g_vctx.errors.size()) {
     return NULL;
   }
   return g_vctx.errors[idx].c_str();

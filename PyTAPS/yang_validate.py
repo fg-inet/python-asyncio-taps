@@ -114,8 +114,17 @@ def convert(from_frmat, text, to_frmat):
 def _on_load():
     global _lib_load_err, _lib
     tapspath = os.path.abspath(os.path.dirname(__file__))
-    libpath = os.path.join(tapspath, 'libyangcheck.so')
+    depspath = os.path.join(os.path.abspath(os.path.dirname(tapspath)),
+            'dependencies/install/lib')
     modulepath = os.path.join(tapspath, 'modules')
+
+    if depspath not in os.environ.get('LD_LIBRARY_PATH', ''):
+        if os.environ.get('LD_LIBRARY_PATH'):
+            os.environ['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH'] + ':' + depspath
+        else:
+            os.environ['LD_LIBRARY_PATH'] = depspath
+        os.execve(sys.executable, [sys.executable] + sys.argv, os.environ)
+    libpath = os.path.join(depspath, 'libyangcheck.so')
     _lib_load_err = None
     try:
         _lib = cdll.LoadLibrary(libpath)
