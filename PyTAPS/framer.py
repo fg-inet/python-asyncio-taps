@@ -15,9 +15,9 @@ class Framer():
 
     def __init__(self, event_loop=asyncio.get_event_loop()):
         self.loop = event_loop
+        self.fail_connection = None
         # Waiters for framers
         self.start_waiter = None
-        self.send_waiter_list = []
         self.receive_waiter_list = []
 
     """ Function that blocks until framer is after start event
@@ -36,17 +36,6 @@ class Framer():
             await self.start_waiter
         finally:
             self.start_waiter = None
-
-    """ Function that blocks until framer is after send event
-    """
-    async def await_framer_send(self):
-        send_waiter = self.loop.create_future()
-        self.send_waiter_list.append(send_waiter)
-        try:
-            data = await send_waiter
-        finally:
-            send_waiter = None
-            return data
 
     """ Function that blocks until framer is after receive event
     """
@@ -104,19 +93,21 @@ class Framer():
                 arrived.
         """
         pass
+
     async def stop(self):
         pass
 
     # Fire start event and the wait until framer replies
     async def handle_start(self, connection):
+        self.connection = connection
         self.loop.create_task(self.start(connection))
         await self.await_framer_ready()
         return
+
     # Fire new_message_sent event and wait for reply of framer
-    async def handle_new_sent_message(self, data, context, eom):
+    def handle_new_sent_message(self, data, context, eom):
         self.loop.create_task(self.new_sent_message(data, context, eom))
-        data = await self.await_framer_send()
-        return data
+
     # Fire handle_received_data event and wait for reply of framer
     async def handle_received(self, connection):
         self.loop.create_task(self.handle_received_data(connection))
@@ -143,7 +134,7 @@ class Framer():
     def prepend_protocol(self, framer):
         return
 
-    def send(self, data):
+    async def send(self, data):
         """ Should be called with framed data after a
             new_sent_message() event.
 
@@ -151,10 +142,7 @@ class Framer():
             data (string, required):
                 The framed message.
         """
-        if len(self.send_waiter_list) > 0:
-            self.send_waiter_list[0].set_result(data)
-            del self.send_waiter_list[0]
-        return
+        self.connection.send_data(data, -1)
 
     def parse(self, connection, min_incomplete_length, max_length):
         """ Returns the message buffer of the

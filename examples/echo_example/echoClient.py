@@ -57,12 +57,7 @@ class TestClient():
         self.connection.on_received(self.handle_received)
         taps.print_time("Connection cbs set.", color)
 
-        # Send message
-        msgref = await self.connection.send_message(("STR", "Hello there"))
-        msgref = await self.connection.send_message(("STR", "This is a test"))
-        msgref = await self.connection.send_message(("INT", 334353))
-        msgref = await self.connection.send_message(("STR", "Hope it worked"))
-        """
+        # Send messages
         msgref = await self.connection.send_message("Hello\n")
         msgref = await self.connection.send_message("There")
         msgref = await self.connection.send_message("Friend")
@@ -70,7 +65,7 @@ class TestClient():
         msgref = await self.connection.send_message("Are")
         msgref = await self.connection.send_message("You\n")
         msgref = await self.connection.send_message("Today?\n")
-        msgref = await self.connection.send_message("343536")"""
+        msgref = await self.connection.send_message("343536")
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
@@ -108,7 +103,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        # tp.prohibit("reliability")
+        #  tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
@@ -121,9 +116,6 @@ class TestClient():
         # Set callbacks
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)
-        # Set the framer
-        framer = taps.TlvFramer()
-        self.preconnection.add_framer(framer)
         taps.print_time("Created preconnection object and set cbs.", color)
         # Initiate the connection
         self.connection = await self.preconnection.initiate()
