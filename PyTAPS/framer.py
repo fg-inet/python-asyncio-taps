@@ -4,6 +4,14 @@ color = "magenta"
 
 
 class Framer():
+    """The TAPS Framer class.
+
+    Attributes:
+        eventLoop (eventLoop, optional):
+                        Event loop on which all coroutines and callbacks
+                        will be scheduled, if none if given the
+                        one of the current thread is used by default
+    """
 
     def __init__(self, event_loop=asyncio.get_event_loop()):
         self.loop = event_loop
@@ -178,6 +186,7 @@ class Framer():
                                            length, eom):
         """ Combines the functionallity of advance_receive_cursor and
             deliver.
+
         Attributes:
             connection (connection, required):
                 The connection object from which the

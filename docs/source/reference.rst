@@ -47,7 +47,7 @@ Preconnection
 		.. automethod:: initiate
 		.. automethod:: listen
 		.. automethod:: resolve
-		.. automethod:: frame_with
+		.. automethod:: add_framer
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
 		.. automethod:: on_connection_received
@@ -71,3 +71,17 @@ Connection
 		.. automethod:: on_receive_error
 		.. automethod:: on_connection_error
 		.. automethod:: on_closed
+
+Framer
+------
+	.. autoclass:: Framer
+
+		.. automethod:: start
+		.. automethod:: new_sent_message
+		.. automethod:: handle_received_data
+		.. automethod:: make_connection_ready
+		.. automethod:: send
+		.. automethod:: parse
+		.. automethod:: advance_receive_cursor
+		.. automethod:: deliver_and_advance_receive_cursor
+		.. automethod:: deliver
