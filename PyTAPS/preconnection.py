@@ -254,7 +254,8 @@ class Preconnection:
                                 lambda: Connection(self),
                                 self.remote_endpoint.address,
                                 self.remote_endpoint.port,
-                                ssl=self.security_context))
+                                ssl=self.security_context,
+                                server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
 
         # Wait until the correct connection object has been set
         await self.await_connection()
