@@ -46,8 +46,7 @@ class TestServer():
     async def handle_stopped(self):
         taps.print_time("Listener has been stopped")
 
-    async def main(self, args):
-        fname = args.file[0]
+    async def main(self, fname):
         self.preconnection = taps.Preconnection(yangfile = fname)
         taps.print_time("Loaded YANG file: %s." % fname, color)
         self.preconnection.on_connection_received(
@@ -62,7 +61,10 @@ if __name__ == "__main__":
     ap.add_argument('--file', '-f', nargs=1, default=None)
     args = ap.parse_args()
     print(args)
+    if not args.file:
+        print("\tExiting -- Please specify a YANG file using -f FILE")
+        exit()
     # Start testserver
     server = TestServer()
-    server.loop.create_task(server.main(args))
+    server.loop.create_task(server.main(args.file[0]))
     server.loop.run_forever()

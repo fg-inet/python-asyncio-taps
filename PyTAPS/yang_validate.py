@@ -123,7 +123,7 @@ def _on_load():
             os.environ['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH'] + ':' + depspath
         else:
             os.environ['LD_LIBRARY_PATH'] = depspath
-        os.execve(sys.executable, [sys.executable] + sys.argv, os.environ)
+
     libpath = os.path.join(depspath, 'libyangcheck.so')
     _lib_load_err = None
     try:

@@ -225,7 +225,7 @@ class Preconnection:
         # If security_parameters were given, initialize ssl context
         if self.security_parameters:
             self.security_context = ssl.create_default_context(
-                                                ssl.Purpose.CLIENT_AUTH)
+                                                ssl.Purpose.SERVER_AUTH)
             if self.security_parameters.identity:
                 print_time("Identity: " +
                            str(self.security_parameters.identity))
@@ -254,7 +254,8 @@ class Preconnection:
                                 lambda: Connection(self),
                                 self.remote_endpoint.address,
                                 self.remote_endpoint.port,
-                                ssl=self.security_context))
+                                ssl=self.security_context,
+                                server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
 
         # Wait until the correct connection object has been set
         await self.await_connection()
