@@ -187,7 +187,7 @@ class Connection(asyncio.Protocol):
         is lost
     """
     def connection_lost(self, exc):
-        print_time("Conenction lost", color)
+        print_time("Connection lost", color)
 
     def send_udp(self, data, message_count):
         """ Sends udp data
@@ -365,7 +365,7 @@ class Connection(asyncio.Protocol):
         """
         print_time("Closing connection.", color)
         self.transport.close()
-        self.ConnectionState.CLOSED
+        self.state = ConnectionState.CLOSED
         if self.closed:
             self.loop.create_task(self.closed())
 
