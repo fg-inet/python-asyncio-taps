@@ -5,14 +5,8 @@ import ssl
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
+from .transports import *
 color = "green"
-
-
-class ConnectionState(Enum):
-    ESTABLISHING = 0
-    ESTABLISHED = 1
-    CLOSING = 2
-    CLOSED = 3
 
 
 class Connection(asyncio.Protocol):
@@ -33,18 +27,7 @@ class Connection(asyncio.Protocol):
                 self.protocol = preconnection.protocol
                 self.framer = preconnection.framer
 
-                # Keeping track of how many messages have been sent for msgref
-                self.message_count = 0
-                # Determines if the protocol is message based or not (needed?)
-                self.message_based = True
-                # Message buffer, probably no longer required
-                self.msg_buffer = None
-                # Reception buffer, holding data returned from the OS
-                self.recv_buffer = None
-                # Boolean to indicate that EOF has been reached
-                self.at_eof = False
                 # Waiter required to stop receive requests until data arrives
-                self.waiters = []
                 # Current state of the connection object
                 self.state = ConnectionState.ESTABLISHING
                 # Callbacks
@@ -64,12 +47,7 @@ class Connection(asyncio.Protocol):
                 self.reader = None
                 self.writer = None
                 self.open_receives = 0
-
-                # Decide if protocol is message based
-                if self.protocol == 'tcp':
-                    self.message_based = False
-                elif self.protocol == 'udp':
-                    self.message_based = True
+                self.transports = []
 
                 # Assign this connection to the preconnection and trigger
                 # the conenction waiter
@@ -80,12 +58,6 @@ class Connection(asyncio.Protocol):
                 if self.protocol == "udp" and not self.active:
                     self.handler = preconnection.handler
 
-                # Assertions
-                if (self.local_endpoint is None and
-                        self.remote_endpoint is None):
-                    raise Exception("At least one endpoint needs "
-                                    "to be specified")
-
     """ Function that blocks until new data has arrived
     """
     async def await_data(self):
@@ -95,127 +67,6 @@ class Connection(asyncio.Protocol):
             await waiter
         finally:
             del self.waiters[0]
-
-    async def active_open(self, transport):
-        self.transport = transport
-        print_time("Connected successfully.", color)
-        self.state = ConnectionState.ESTABLISHED
-        if self.framer:
-            # Send a start even to the framer and wait for a reply
-            await self.framer.handle_start(self)
-        if self.ready:
-            self.loop.create_task(self.ready(self))
-        return
-
-    # Asyncio Callbacks
-
-    """ ASYNCIO function that gets called when a new
-        connection has been made, similar to TAPS ready callback.
-    """
-    def connection_made(self, transport):
-        # Check if its an incoming or outgoing connection
-        if self.active is False:
-            self.transport = transport
-            new_remote_endpoint = RemoteEndpoint()
-            print_time("Received new connection.", color)
-            # Get information about the newly connected endpoint
-            new_remote_endpoint.with_address(
-                                transport.get_extra_info("peername")[0])
-            new_remote_endpoint.with_port(
-                                transport.get_extra_info("peername")[1])
-            self.remote_endpoint = new_remote_endpoint
-            self.state = ConnectionState.ESTABLISHED
-            if self.connection_received:
-                self.loop.create_task(self.connection_received(self))
-            return
-
-        elif self.active:
-            self.loop.create_task(self.active_open(transport))
-    """ ASYNCIO function that gets called when new data is made available
-        by the OS. Stores new data in buffer and triggers the receive waiter
-    """
-    def data_received(self, data):
-        print_time("Received " + data.decode(), color)
-
-        # See if we already have so data buffered
-        if self.recv_buffer is None:
-            self.recv_buffer = data
-        else:
-            self.recv_buffer = self.recv_buffer + data
-        for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-        # If there is already a receive queued by the connection,
-        # trigger its waiter to let it know new data has arrived
-        if self.framer:
-            for i in self.waiters:
-                i.set_result(None)
-            return
-        for w in self.waiters:
-            if not w.done():
-                w.set_result(None)
-                return
-
-    """ ASYNCIO function that gets called when EOF is received
-    """
-    def eof_received(self):
-        print_time("EOF received", color)
-        self.at_eof = True
-    """ ASYNCIO function that gets called when a new datagram
-        is received. It stores the datagram in the recv_buffer
-    """
-    def datagram_received(self, data, addr):
-        if self.recv_buffer is None:
-            self.recv_buffer = list()
-        self.recv_buffer.append(data)
-        print_time("Received " + data.decode(), color)
-        for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-        if self.framer:
-            for i in self.waiters:
-                i.set_result(None)
-        for w in self.waiters:
-            if not w.done():
-                w.set_result(None)
-                return
-    """ ASYNCIO function that gets called when the connection has
-        an error.
-        TODO: proper error handling
-    """
-    def error_received(self, err):
-        if type(err) is ConnectionRefusedError:
-            print_time("Connection Error occured.", color)
-            print(err)
-            if self.connection_error:
-                self.loop.create_task(self.connection_error())
-            return
-
-    """ ASNYCIO function that gets called when the connection
-        is lost
-    """
-    def connection_lost(self, exc):
-        print_time("Connection lost", color)
-
-    def send_udp(self, data, message_count):
-        """ Sends udp data
-        """
-        print_time("Writing UDP data.", color)
-        try:
-            # See if the udp flow was the result of passive or active open
-            if self.active:
-                # Write the data
-                self.transport.sendto(data.encode())
-            else:
-                # Delegate sending to the datagram handler
-                self.handler.send_to(self, data.encode())
-        except:
-            print_time("SendError occured.", color)
-            if self.send_error:
-                self.loop.create_task(self.send_error(message_count))
-            return
-        print_time("Data written successfully.", color)
-        if self.sent:
-            self.loop.create_task(self.sent(message_count))
-        return
 
     def send_tcp(self, data, message_count):
         """ Send tcp data
@@ -234,39 +85,15 @@ class Connection(asyncio.Protocol):
             self.loop.create_task(self.sent(message_count))
         return
 
-    def send_data(self, data, message_count):
-        """ Selects correct send call dependent on protocol
-        """
-        if self.protocol == 'tcp':
-            self.send_tcp(data, message_count)
-        elif self.protocol == 'udp':
-            self.send_udp(data, message_count)
-    
-    async def process_send_data(self, data, message_count):
-        """ Function responsible for sending data. It decides which
-            protocol is used and then uses the appropriate functions
-        """
-        if self.state is not ConnectionState.ESTABLISHED:
-                print_time("SendError occured, connection is not established.",
-                           color)
-                if self.send_error:
-                    self.loop.create_task(self.send_error(message_count))
-                return
-        # Frame the data
-        if self.framer:
-            self.framer.handle_new_sent_message(data, None, False)
-        else:
-            self.send_data(data, message_count)
-
     async def send_message(self, data):
         """ Attempts to send data on the connection.
             Attributes:
                 data (string, required):
                     Data to be send.
         """
-        self.message_count += 1
-        self.loop.create_task(self.process_send_data(data, self.message_count))
-        return self.message_count
+        self.transports[0].message_count += 1
+        self.loop.create_task(self.transports[0].process_send_data(data, self.transports[0].message_count))
+        return self.transports[0].message_count
 
     async def read_buffer(self, max_length=-1):
         # If the buffer is empty, wait for new data

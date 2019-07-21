@@ -7,6 +7,7 @@ from .securityParameters import SecurityParameters
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
+from .transports import *
 color = "red"
 
 
@@ -238,13 +239,13 @@ class Preconnection:
         remote_info = await self.loop.getaddrinfo(
             self.remote_endpoint.host_name, self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
-
+        new_connection = Connection(self)
         # Decide which protocol was choosen and try to connect
         if candidate_set[0][0] == 'udp':
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
             asyncio.create_task(self.loop.create_datagram_endpoint(
-                                lambda: Connection(self),
+                                lambda: UdpTransport(connection=new_connection, remote_endpoint=self.remote_endpoint),
                                 remote_addr=(self.remote_endpoint.address,
                                              self.remote_endpoint.port)))
         elif candidate_set[0][0] == 'tcp':
@@ -258,9 +259,9 @@ class Preconnection:
                                 server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
 
         # Wait until the correct connection object has been set
-        await self.await_connection()
+        #await self.await_connection()
         print_time("Returning connection object.", color)
-        return self.connection
+        return new_connection
     async def start_listener(self):
         """ method wrapped by listen
         """
