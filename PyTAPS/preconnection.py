@@ -225,7 +225,7 @@ class Preconnection:
         # If security_parameters were given, initialize ssl context
         if self.security_parameters:
             self.security_context = ssl.create_default_context(
-                                                ssl.Purpose.CLIENT_AUTH)
+                                                ssl.Purpose.SERVER_AUTH)
             if self.security_parameters.identity:
                 print_time("Identity: " +
                            str(self.security_parameters.identity))
