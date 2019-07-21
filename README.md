@@ -38,3 +38,8 @@ To run a server with a yang model specified in `examples/yang_example/test-serve
 For a client with a model specified in `examples/yang_example/test-client2.json` run
 
 	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json
+
+## Running Tests
+
+	cd tests/
+	./run_tests.sh
