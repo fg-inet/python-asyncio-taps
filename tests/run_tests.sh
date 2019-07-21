@@ -11,4 +11,8 @@ $PYTHON ../examples/echo_example/echoServer.py --local-address=::1 --local-port=
 
 pytest
 
-killall $PYTHON
+echoservers=$(pgrep -f echoServer)
+
+echo "killing echo servers: $echoservers"
+
+kill $echoservers
