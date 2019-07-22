@@ -247,16 +247,17 @@ class Preconnection:
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
             multicast_receiver = False
-            if self.local_endpoint.address:
-                print_time("local endpoint=%s" % (self.local_endpoint.address), color)
-                check_addr = ipaddress.ip_address(self.local_endpoint.address)
-                if check_addr.is_multicast:
-                    print_time("addr is multicast", color)
-                    if self.transport_properties.properties.get('direction') == 'unidirection-receive':
-                        print_time("direction is unicast receive", color)
-                        multicast_receiver = True
-                        self.connection = Connection(self)
-                        asyncio.create_task(self.connection.multicast_join())
+            if self.local_endpoint:
+                if self.local_endpoint.address:
+                    print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                    check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                    if check_addr.is_multicast:
+                        print_time("addr is multicast", color)
+                        if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                            print_time("direction is unicast receive", color)
+                            multicast_receiver = True
+                            self.connection = Connection(self)
+                            asyncio.create_task(self.connection.multicast_join())
 
             if not multicast_receiver:
                 asyncio.create_task(self.loop.create_datagram_endpoint(
