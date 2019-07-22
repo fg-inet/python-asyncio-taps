@@ -20,7 +20,14 @@ People interested in participating in TAPS can [join the mailing list](https://w
 ## Build Dependencies:
 
 Yang support relies on some shared libraries.  Run the script to download, build,
-and install them into dependencies/install/lib (requires cmake and clang or gcc):
+and install them into dependencies/install/lib.
+
+Requirements:
+
+- gcc or clang
+- cmake
+- libtool
+- autotools
 
 	./build_dependencies.sh
 

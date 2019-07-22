@@ -7,6 +7,7 @@ from .securityParameters import SecurityParameters
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
+import ipaddress
 color = "red"
 
 
@@ -154,12 +155,14 @@ class Preconnection:
             }
             xml_prefix = '{' + ns['taps'] + '}'
             for node in transport:
+                prop_name = str(node.tag)
+                if prop_name.startswith(xml_prefix):
+                    prop_name = prop_name[len(xml_prefix):]
                 if node.text in fn_mapping:
                     fn = fn_mapping.get(node.text)
-                    prop_name = str(node.tag)
-                    if prop_name.startswith(xml_prefix):
-                        prop_name = prop_name[len(xml_prefix):]
                     fn(tp, prop_name)
+                elif prop_name == 'direction':
+                    tp.properties["direction"] = node.text
                 else:
                     # TBD jake 2019-05-07: interface name/type, pvd
                     pass
@@ -243,7 +246,20 @@ class Preconnection:
         if candidate_set[0][0] == 'udp':
             self.protocol = 'udp'
             print_time("Creating UDP connect task.", color)
-            asyncio.create_task(self.loop.create_datagram_endpoint(
+            multicast_receiver = False
+            if self.local_endpoint.address:
+                print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                if check_addr.is_multicast:
+                    print_time("addr is multicast", color)
+                    if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                        print_time("direction is unicast receive", color)
+                        multicast_receiver = True
+                        self.connection = Connection(self)
+                        asyncio.create_task(self.connection.multicast_join())
+
+            if not multicast_receiver:
+                asyncio.create_task(self.loop.create_datagram_endpoint(
                                 lambda: Connection(self),
                                 remote_addr=(self.remote_endpoint.address,
                                              self.remote_endpoint.port)))
