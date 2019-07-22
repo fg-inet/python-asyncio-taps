@@ -149,8 +149,12 @@ class Connection(asyncio.Protocol):
         if self.framer:
             for i in self.waiters:
                 i.set_result(None)
-        elif len(self.waiters) > 0:
-            self.waiters[0].set_result(None)
+            return
+        for w in self.waiters:
+            if not w.done():
+                w.set_result(None)
+                return
+
     """ ASYNCIO function that gets called when EOF is received
     """
     def eof_received(self):
@@ -169,8 +173,10 @@ class Connection(asyncio.Protocol):
         if self.framer:
             for i in self.waiters:
                 i.set_result(None)
-        elif len(self.waiters) > 0:
-            self.waiters[0].set_result(None)
+        for w in self.waiters:
+            if not w.done():
+                w.set_result(None)
+                return
     """ ASYNCIO function that gets called when the connection has
         an error.
         TODO: proper error handling
@@ -187,7 +193,7 @@ class Connection(asyncio.Protocol):
         is lost
     """
     def connection_lost(self, exc):
-        print_time("Conenction lost", color)
+        print_time("Connection lost", color)
 
 
     """ ASYNCIO function that gets called when joining a multicast flow
@@ -372,7 +378,7 @@ class Connection(asyncio.Protocol):
         """
         print_time("Closing connection.", color)
         self.transport.close()
-        self.ConnectionState.CLOSED
+        self.state = ConnectionState.CLOSED
         if self.closed:
             self.loop.create_task(self.closed())
 
