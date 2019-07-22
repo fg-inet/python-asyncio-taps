@@ -1,0 +1,16 @@
+{
+  "ietf-taps-api:preconnection":{
+    "remote-endpoints":[
+      {
+        "id":"1",
+        "remote-host":"localhost",
+        "remote-port":"6666"
+      }
+    ],
+    "transport-properties": {
+      "congestion-control":"ignore",
+      "reliability":"require",
+      "preserve-order":"ignore"
+    }
+  }
+}
