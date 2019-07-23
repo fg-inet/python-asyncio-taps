@@ -5,6 +5,7 @@ import ssl
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
+from .multicast import do_join
 color = "green"
 
 
@@ -13,7 +14,6 @@ class ConnectionState(Enum):
     ESTABLISHED = 1
     CLOSING = 2
     CLOSED = 3
-
 
 class Connection(asyncio.Protocol):
     """The TAPS connection class.
@@ -167,7 +167,7 @@ class Connection(asyncio.Protocol):
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append(data)
-        print_time("Received " + data.decode(), color)
+        print_time("Received %d-byte datagram" % len(data), color)
         for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
         if self.framer:
@@ -194,6 +194,13 @@ class Connection(asyncio.Protocol):
     """
     def connection_lost(self, exc):
         print_time("Connection lost", color)
+
+
+    """ ASYNCIO function that gets called when joining a multicast flow
+    """
+    async def multicast_join(self):
+        print_time("joining multicast session.", color)
+        do_join(self)
 
     def send_udp(self, data, message_count):
         """ Sends udp data
@@ -524,3 +531,10 @@ class DatagramHandler(asyncio.Protocol):
         new_connection.datagram_received(data, addr)
         self.remotes[addr] = new_connection
         return
+
+""" ASYNCIO function that receives data from multicast flows
+"""
+async def do_multicast_receive():
+    if multicast.do_receive():
+        asyncio.create_task(do_multicast_receive())
+
