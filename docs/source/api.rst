@@ -3,11 +3,11 @@ API Usage
 
 Using the PyTAPS API, an application can do the following:
 
-* Create a Preconnection with properties relevant for the connection
+* Create a Preconnection with endpoints, TransportProperties, and SecurityParameters
 * Perform one of the following actions on the Preconnection:
-	* Initiate: Connect to another endpoint
+	* Initiate: Connect to another endpoint or join a multicast session
 	* Listen: Listen for incoming Connections
-	* Rendezvous: Simultaneously Listen for incoming Connections and Initiate a Connection to another Endpoint
+	* Rendezvous: Simultaneously Listen and Initiate
 * To send data, call Send()
 * To receive data, call Receive()
 * Close the Connection
@@ -27,16 +27,31 @@ A Preconnection consists of the local and remote endpoints as well as the Transp
 	local_endpoint = taps.LocalEndpoint()
 	local_endpoint.with_port("6666")
 
-TransProperties specify which behavior and properties an application expects a new connection to have. This has also an impact on which transport protocol gets choosen by the TAPS system.
-The default TransportProperties will result in an TCP conncetion::
+Transport Properties specify which behavior and properties an application expects a new connection to have. This has also an impact on which transport protocol gets chosen by the TAPS system.
+
+The **default TransportProperties will result in a TCP connection**::
 
 	properties = taps.TransportProperties()
 
-Applications are also able to use security parameters in the preconnection as an optional argument. These allow the application to specify a certificate to be trusted as well as a local identity::
+To use **TLS, add SecurityParameters** to the Preconnection.
+The default SecurityParameters result in the client using the default certificate trust store of the system to validate the peer's certificate, while not setting its own identity.
+
+To specify a Certificate Authority to trust or to set a certificate as the local identity, set SecurityParameters as follows::
 
 	security = taps.SecurityParameters()
 	security.addTrustCA(args.trust_ca)
 	security.addIdentity(args.local_identity)
+
+To enforce using **UDP, set TransportProperties** that prohibit the use of TCP, for example:
+
+* "congestion-control": "ignore"
+* "preserve-order": "ignore"
+* "reliability": "prohibit"
+
+.. note::
+	Setting all TransportProperties to "ignore" results in "racing" TCP and UDP. Here, UDP "wins" because it does not perform a handshake.
+
+To **join a multicast group**, configure your Preconnection :ref:`as described here<Joining a multicast group>`.
 
 After all the prerequisite and optional objects have been configured, the preconnection itself can finally be created::
 
@@ -182,3 +197,29 @@ To achieve a preconnection that is configured the same as the one created in the
 			]
 		}
 	}
+
+Joining a multicast group
+-------------------------
+
+PyTAPS currently supports Source-Specific Multicast (SSM), which requires libmcrx, see build_dependencies.sh.
+
+To join a multicast group and receive multicast messages, first :ref:`configure your Preconnection<Creating a Preconnection>` as follows:
+
+* Local endpoint: IP address of the multicast group to join
+
+* Remote endpoint: Source IP address from which to receive multicast messages
+
+* Transport properties:
+
+  * "direction": "unidirection-receive"
+
+  * "congestion-control": "ignore",
+
+  * "reliability": "prohibit",
+
+  * "preserve-order": "ignore"
+
+Then, :ref:`initiate the Preconnection<Initiating a Connection>`.
+
+To test, you can set up an Automatic Multicast Tunneling (AMT) gateway by following the `instructions posted here <https://github.com/GrumpyOldTroll/libmcrx/blob/master/howto.txt>`_ 
+and then joining the multicast group, e.g., using *yangClient.py -f test-mcast-receive.json*.

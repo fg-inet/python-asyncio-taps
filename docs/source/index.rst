@@ -18,6 +18,7 @@ As of right now, PyTAPS supports the following features:
     - Passively listening for new connections
     - Configuring Preconnections and Endpoints with YANG
     - Framers, e.g., to preserve message boundaries across TCP
+    - Multicast: Joining a multicast group with Source-Specific Multicast (SSM)
 
 
 .. toctree::
