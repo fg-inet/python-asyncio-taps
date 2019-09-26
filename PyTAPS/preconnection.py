@@ -8,6 +8,7 @@ from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
+import ipaddress
 color = "red"
 
 
@@ -152,12 +153,14 @@ class Preconnection:
             }
             xml_prefix = '{' + ns['taps'] + '}'
             for node in transport:
+                prop_name = str(node.tag)
+                if prop_name.startswith(xml_prefix):
+                    prop_name = prop_name[len(xml_prefix):]
                 if node.text in fn_mapping:
                     fn = fn_mapping.get(node.text)
-                    prop_name = str(node.tag)
-                    if prop_name.startswith(xml_prefix):
-                        prop_name = prop_name[len(xml_prefix):]
                     fn(tp, prop_name)
+                elif prop_name == 'direction':
+                    tp.properties["direction"] = node.text
                 else:
                     # TBD jake 2019-05-07: interface name/type, pvd
                     pass

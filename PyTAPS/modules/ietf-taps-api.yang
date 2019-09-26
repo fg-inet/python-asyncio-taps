@@ -414,7 +414,12 @@ module ietf-taps-api {
     container security {
       description "Security properties for the connection";
       list credentials {
-        key "identity algorithm";
+        key "id";
+
+        leaf id {
+          type string;
+          description "id of the remote endpoint";
+        }
 
         uses security-credentials;
         description "security credentials";

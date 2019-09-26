@@ -6,8 +6,15 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
 from .transports import *
+from .multicast import do_join
 color = "green"
 
+
+class ConnectionState(Enum):
+    ESTABLISHING = 0
+    ESTABLISHED = 1
+    CLOSING = 2
+    CLOSED = 3
 
 class Connection(asyncio.Protocol):
     """The TAPS connection class.
@@ -311,3 +318,10 @@ class DatagramHandler(asyncio.Protocol):
         new_connection.datagram_received(data, addr)
         self.remotes[addr] = new_connection
         return
+
+""" ASYNCIO function that receives data from multicast flows
+"""
+async def do_multicast_receive():
+    if multicast.do_receive():
+        asyncio.create_task(do_multicast_receive())
+

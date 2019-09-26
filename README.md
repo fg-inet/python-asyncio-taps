@@ -16,11 +16,19 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 - Python 3.7 or above
 - termcolor (pip install termcolor)
+- pytest, pytest-asyncio, pytest-timeout (for tests)
 
 ## Build Dependencies:
 
 Yang support relies on some shared libraries.  Run the script to download, build,
-and install them into dependencies/install/lib (requires cmake and clang or gcc):
+and install them into dependencies/install/lib.
+
+Requirements:
+
+- gcc or clang
+- cmake
+- libtool
+- autotools
 
 	./build_dependencies.sh
 
@@ -37,3 +45,8 @@ To run a server with a yang model specified in `examples/yang_example/test-serve
 For a client with a model specified in `examples/yang_example/test-client2.json` run
 
 	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json
+
+## Running Tests
+
+	cd tests/
+	./run_tests.sh

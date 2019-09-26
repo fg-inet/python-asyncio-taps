@@ -145,7 +145,7 @@ class TransportProperties:
             "per-msg-checksum-len-recv": PreferenceLevel.IGNORE,
             "congestion-control": PreferenceLevel.REQUIRE,
             "multipath": PreferenceLevel.PREFER,
-            "direction": "Bidirectional",
+            "direction": "bidirectional",
             "retransmit-notify": PreferenceLevel.IGNORE,
             "soft-error-notify": PreferenceLevel.IGNORE
         }

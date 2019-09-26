@@ -1,0 +1,23 @@
+{
+  "ietf-taps-api:preconnection":{
+    "local-endpoints":[
+      {
+        "id":"1",
+        "local-address":"232.1.1.1",
+        "local-port":"5001"
+      }
+    ],
+    "remote-endpoints":[
+      {
+        "id":"1",
+        "remote-host":"23.212.185.5"
+      }
+    ],
+    "transport-properties": {
+      "direction":"unidirection-receive",
+      "congestion-control":"ignore",
+      "reliability":"prohibit",
+      "preserve-order":"ignore"
+    }
+  }
+}
