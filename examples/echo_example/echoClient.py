@@ -103,7 +103,7 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        tp.prohibit("reliability")
+        tp.require("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)

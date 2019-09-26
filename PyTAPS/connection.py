@@ -22,68 +22,70 @@ class Connection(asyncio.Protocol):
                 self.local_endpoint = preconnection.local_endpoint
                 self.remote_endpoint = preconnection.remote_endpoint
                 self.transport_properties = preconnection.transport_properties
+                self.security_parameters = preconnection.security_parameters
                 self.loop = preconnection.loop
                 self.active = preconnection.active
                 self.protocol = preconnection.protocol
                 self.framer = preconnection.framer
-
-                # Waiter required to stop receive requests until data arrives
+                self.set_callbacks(preconnection)
+                self.pending = []
+                # Security Context for SSL
+                self.security_context = None
                 # Current state of the connection object
                 self.state = ConnectionState.ESTABLISHING
-                # Callbacks
-                self.ready = preconnection.ready
-                self.initiate_error = preconnection.initiate_error
-                self.connection_received = preconnection.connection_received
-                self.listen_error = preconnection.listen_error
-                self.stopped = preconnection.stopped
-                self.sent = None
-                self.send_error = None
-                self.expired = None
-                self.connection_error = None
-                self.received = None
-                self.received_partial = None
-                self.receive_error = None
-                self.closed = None
-                self.reader = None
-                self.writer = None
-                self.open_receives = 0
+
                 self.transports = []
 
-                # Assign this connection to the preconnection and trigger
-                # the conenction waiter
-                if self.active:
-                    preconnection.connection = self
-                    if preconnection.waiter is not None:
-                        preconnection.waiter.set_result(None)
                 if self.protocol == "udp" and not self.active:
                     self.handler = preconnection.handler
 
-    """ Function that blocks until new data has arrived
-    """
-    async def await_data(self):
-        waiter = self.loop.create_future()
-        self.waiters.append(waiter)
-        try:
-            await waiter
-        finally:
-            del self.waiters[0]
+    async def race(self):
+        # This is an active connection attempt
+        self.active = True
 
-    def send_tcp(self, data, message_count):
-        """ Send tcp data
-        """
-        print_time("Writing TCP data.", color)
-        try:
-            # Attempt to write data
-            self.transport.write(data.encode())
-        except:
-            print_time("SendError occured.", color)
-            if self.send_error:
-                self.loop.create_task(self.send_error(message_count))
-            return
-        print_time("Data written successfully.", color)
-        if self.sent:
-            self.loop.create_task(self.sent(message_count))
-        return
+        # Create the set of possible protocol candidates
+        candidate_set = self.create_candidates()
+        # If security_parameters were given, initialize ssl context
+        if self.security_parameters:
+            self.security_context = ssl.create_default_context(
+                                                ssl.Purpose.SERVER_AUTH)
+            if self.security_parameters.identity:
+                print_time("Identity: " +
+                           str(self.security_parameters.identity))
+                self.security_context.load_cert_chain(
+                                        self.security_parameters.identity)
+            for cert in self.security_parameters.trustedCA:
+                self.security_context.load_verify_locations(cert)
+        # Resolve address
+        remote_info = await self.loop.getaddrinfo(
+            self.remote_endpoint.host_name, self.remote_endpoint.port)
+        self.remote_endpoint.address = remote_info[0][4][0]
+        for candidate in candidate_set:
+
+            if self.state == ConnectionState.ESTABLISHED:
+                break
+
+            if candidate[0] == 'udp':
+                self.protocol = 'udp'
+                print_time("Creating UDP connect task.", color)
+                task = asyncio.create_task(self.loop.create_datagram_endpoint(
+                                    lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
+                                    remote_addr=(self.remote_endpoint.address,
+                                                 self.remote_endpoint.port)))
+
+            elif candidate[0] == 'tcp':
+                self.protocol = 'tcp'
+                print_time("Creating TCP connect task.", color)
+                task = asyncio.create_task(self.loop.create_connection(
+                                    lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
+                                    self.remote_endpoint.address,
+                                    self.remote_endpoint.port,
+                                    ssl=self.security_context,
+                                    server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
+        # self.pending.append(task)
+        # await asyncio.sleep(1)
+        # Wait until the correct connection object has been set
+        # await self.await_connection()
 
     async def send_message(self, data):
         """ Attempts to send data on the connection.
@@ -91,123 +93,80 @@ class Connection(asyncio.Protocol):
                 data (string, required):
                     Data to be send.
         """
-        self.transports[0].message_count += 1
-        self.loop.create_task(self.transports[0].process_send_data(data, self.transports[0].message_count))
-        return self.transports[0].message_count
-
-    async def read_buffer(self, max_length=-1):
-        # If the buffer is empty, wait for new data
-        if self.recv_buffer is None or len(self.recv_buffer) == 0:
-            await self.await_data()
-        # See if we have to deal datagrams or stream data
-        if self.message_based:
-            if len(self.recv_buffer[0]) <= max_length or max_length == -1:
-                data = self.recv_buffer.pop(0)
-                return data
-            elif len(self.recv_buffer[0]) > max_length:
-                data = self.recv_buffer[0][:max_length]
-                self.recv_buffer[0] = self.recv_buffer[0][max_length:]
-                return data
-        else:
-            if max_length == -1 or len(self.recv_buffer) <= max_length:
-                data = self.recv_buffer
-                self.recv_buffer = None
-                return data
-            elif len(self.recv_buffer) > max_length:
-                data = self.recv_buffer[:max_length]
-                self.recv_buffer = self.recv_buffer[max_length:]
-                return data
-
-    """ Receive handling if a framer is in use
-    """
-    async def receive_framed(self, min_incomplete_length,
-                             max_length):
-        print_time("Ready to read message with framer", color)
-        # If the buffer is empty, wait for new data
-        if not self.recv_buffer:
-            await self.await_data()
-        print_time("Deframing", color)
-        self.open_receives += 1
-        context, message, eom = await self.framer.handle_received(self)
-        if self.received:
-            self.loop.create_task(self.received(message,
-                                                "Context", self))
-        self.open_receives -= 1
-        return
-
-    async def receive_message(self, min_incomplete_length,
-                              max_length):
-        """ Queues reception of a message if there is no framer. Will block until
-            message that is at least min_incomplete_length long is in the
-            msg_buffer
-        """
-        print_time("Reading message", color)
-
-        # Try to read data from the recv_buffer
-        try:
-            data = await self.read_buffer()
-            if self.msg_buffer is None:
-                self.msg_buffer = data.decode()
-            else:
-                self.msg_buffer = self.msg_buffer + data.decode()
-        except:
-            print_time("Connection Error", color)
-            if self.connection_error is not None:
-                self.loop.create_task(self.connection_error(self))
-            return
-        # If we are at EOF or message based, issue a full message received cb
-        if self.message_based or self.at_eof:
-            print_time("Received full message", color)
-            if self.received:
-                self.loop.create_task(self.received(self.msg_buffer,
-                                                    "Context", self))
-            self.msg_buffer = None
-            return
-        else:
-            # Wait until message is equal or longer than min_incomplete length
-            while(len(self.msg_buffer) < min_incomplete_length):
-                data = await self.read_buffer(max_length)
-                self.msg_buffer = self.msg_buffer + data.decode()
-
-            print_time("Received partial message.", color)
-            if self.received_partial:
-                self.loop.create_task(self.received_partial(self.msg_buffer,
-                                      "Context", False, self))
-                self.msg_buffer = None
+        return self.transports[0].send(data)
 
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
-        """ Queues the reception of a message.
-
-        Attributes:
-            min_incomplete_length (integer, optional):
-                The minimum length an incomplete message
-                needs to have.
-
-            max_length (integer, optional):
-                The maximum length a message can have.
-        """
-        if self.framer:
-            self.loop.create_task(self.receive_framed(min_incomplete_length,
-                                  max_length))
-        else:
-            self.loop.create_task(self.receive_message(min_incomplete_length,
-                                  max_length))
-
-    async def close_connection(self):
-        """ Function wrapped by close
-        """
-        print_time("Closing connection.", color)
-        self.transport.close()
-        self.state = ConnectionState.CLOSED
-        if self.closed:
-            self.loop.create_task(self.closed())
+        self.transports[0].receive(min_incomplete_length, max_length)
 
     def close(self):
         """ Attempts to close the connection, issues a closed event
         on success.
         """
-        self.loop.create_task(self.close_connection())
+        self.loop.create_task(self.transports[0].close())
         self.state = ConnectionState.CLOSING
+
+    def create_candidates(self):
+        """ Decides which protocols are candidates and then orders them
+        according to the TAPS interface draft
+        """
+        # Get the protocols know to the implementation from transportProperties
+        available_protocols = get_protocols()
+
+        # At the beginning, all protocols are candidates
+        candidate_protocols = dict([(row["name"], list((0, 0)))
+                                   for row in available_protocols])
+
+        # Iterate over all available protocols and over all properties
+        for protocol in available_protocols:
+            for transport_property in self.transport_properties.properties:
+                # If a protocol has a prohibited property remove it
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PROHIBIT):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                # If a protocol doesnt have a required property remove it
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.REQUIRE):
+                    if (protocol[transport_property] is False and
+                            protocol["name"] in candidate_protocols):
+                        del candidate_protocols[protocol["name"]]
+                # Count how many PREFER properties each protocol has
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.PREFER):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]][0] += 1
+                # Count how many AVOID properties each protocol has
+                if (self.transport_properties.properties[transport_property]
+                        is PreferenceLevel.AVOID):
+                    if (protocol[transport_property] is True and
+                            protocol["name"] in candidate_protocols):
+                        candidate_protocols[protocol["name"]][1] -= 1
+
+        # Sort candidates by number of PREFERs and then by AVOIDs on ties
+        sorted_candidates = sorted(candidate_protocols.items(),
+                                   key=lambda value: (value[1][0],
+                                   value[1][1]), reverse=True)
+
+        return sorted_candidates
+
+    def set_callbacks(self, preconnection):
+            self.ready = preconnection.ready
+            self.initiate_error = preconnection.initiate_error
+            self.connection_received = preconnection.connection_received
+            self.listen_error = preconnection.listen_error
+            self.stopped = preconnection.stopped
+            self.sent = None
+            self.send_error = None
+            self.expired = None
+            self.connection_error = None
+            self.received = None
+            self.received_partial = None
+            self.receive_error = None
+            self.closed = None
+            self.reader = None
+            self.writer = None
 
     # Events for active open
     def on_ready(self, callback):
@@ -338,6 +297,7 @@ class DatagramHandler(asyncio.Protocol):
             return
         new_connection = Connection(self.preconnection)
         new_connection.state = ConnectionState.ESTABLISHED
+        transports.append(new_connection)
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
         new_remote_endpoint.with_address(addr[0])
