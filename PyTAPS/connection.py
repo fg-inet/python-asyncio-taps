@@ -16,7 +16,7 @@ class ConnectionState(Enum):
     CLOSING = 2
     CLOSED = 3
 
-class Connection(asyncio.Protocol):
+class Connection():
     """The TAPS connection class.
 
     Attributes:
@@ -32,7 +32,6 @@ class Connection(asyncio.Protocol):
                 self.security_parameters = preconnection.security_parameters
                 self.loop = preconnection.loop
                 self.active = preconnection.active
-                self.protocol = preconnection.protocol
                 self.framer = preconnection.framer
                 self.set_callbacks(preconnection)
                 self.pending = []
@@ -42,9 +41,9 @@ class Connection(asyncio.Protocol):
                 self.state = ConnectionState.ESTABLISHING
 
                 self.transports = []
-
+                """
                 if self.protocol == "udp" and not self.active:
-                    self.handler = preconnection.handler
+                    self.handler = preconnection.handler"""
 
     async def race(self):
         # This is an active connection attempt
@@ -278,46 +277,6 @@ class Connection(asyncio.Protocol):
         """
         self.closed = callback
 
-
-class DatagramHandler(asyncio.Protocol):
-    """ Class required to handle incoming datagram flows
-    """
-    def __init__(self, preconnection):
-        self.preconnection = preconnection
-        self.remotes = dict()
-        self.preconnection.handler = self
-
-    def send_to(self, connection, data):
-        remote_address = connection.remote_endpoint.address
-        remote_port = connection.remote_endpoint.port
-        self.transport.sendto(data, (remote_address, remote_port))
-
-    def connection_made(self, transport):
-        self.transport = transport
-        print_time("New UDP flow", color)
-        return
-
-    def datagram_received(self, data, addr):
-        print_time("Received new datagram", color)
-        if addr in self.remotes:
-            self.remotes[addr].datagram_received(data, addr)
-            return
-        new_connection = Connection(self.preconnection)
-        new_connection.state = ConnectionState.ESTABLISHED
-        transports.append(new_connection)
-        new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
-        new_remote_endpoint.with_address(addr[0])
-        new_remote_endpoint.with_port(addr[1])
-        new_connection.remote_endpoint = new_remote_endpoint
-        print_time("Created new connection object.", color)
-        if new_connection.connection_received:
-            new_connection.loop.create_task(
-                new_connection.connection_received(new_connection))
-            print_time("Called connection_received cb", color)
-        new_connection.datagram_received(data, addr)
-        self.remotes[addr] = new_connection
-        return
 
 """ ASYNCIO function that receives data from multicast flows
 """

@@ -73,10 +73,10 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        #if self.reliable == False:
-        tp.prohibit("reliability")
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
+        if self.reliable == False:
+            tp.prohibit("reliability")
+            tp.ignore("congestion-control")
+            tp.ignore("preserve-order")
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
                                                 transport_properties=tp,

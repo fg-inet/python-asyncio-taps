@@ -92,19 +92,20 @@ class UdpTransport(TransportLayer):
         """ Sends udp data
         """
         print_time("Writing UDP data.", color)
-        try:
-            # See if the udp flow was the result of passive or active open
-            if self.connection.active:
-                # Write the data
-                self.transport.sendto(data.encode())
-            else:
-                # Delegate sending to the datagram handler
-                self.handler.send_to(self, data.encode())
-        except:
+        #try:
+        # See if the udp flow was the result of passive or active open
+        if self.connection.active:
+            # Write the data
+            self.transport.sendto(data.encode())
+        else:
+            remote_address = self.remote_endpoint.address
+            remote_port = self.remote_endpoint.port
+            self.transport.sendto(data.encode(), (remote_address, remote_port))
+        """except:
             print_time("SendError occured.", color)
             if self.connection.send_error:
                 self.loop.create_task(self.connection.send_error(self.message_count))
-            return
+            return"""
         print_time("Data written successfully.", color)
         if self.connection.sent:
             self.loop.create_task(self.connection.sent(self.message_count))
@@ -263,7 +264,7 @@ class TcpTransport(TransportLayer):
                 self.loop.create_task(self.connection.received_partial(data.decode(),
                                       "Context", False, self))
 
-    def close():
+    def close(self):
         print_time("Closing connection.", color)
         self.transport.close()
         self.connection.state = ConnectionState.CLOSED

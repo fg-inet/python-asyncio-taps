@@ -2,12 +2,13 @@ import asyncio
 import ssl
 from .yang_validate import *
 import xml.etree.ElementTree as ET
-from .connection import Connection, DatagramHandler
+from .connection import Connection
 from .securityParameters import SecurityParameters
 from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
+from .listener import Listener
 import ipaddress
 color = "red"
 
@@ -70,13 +71,6 @@ class Preconnection:
                 self.listen_error = None
                 self.stopped = None
                 self.active = False
-
-                # Connection object that will be returned on initiate
-                self.connection = None
-                # Which transport protocol will eventually be used
-                self.protocol = None
-                # Waiter required to get the correct connection object
-                self.waiter = None
                 # Framer object
                 self.framer = None
 
@@ -216,57 +210,6 @@ class Preconnection:
         asyncio.create_task(new_connection.race())
         print_time("Returning connection object.", color)
         return new_connection
-    async def start_listener(self):
-        """ method wrapped by listen
-        """
-        print_time("Starting listener.", color)
-
-        # Create set of candidate protocols
-        candidate_set = self.create_candidates()
-
-        # If the candidate set is empty issue an InitiateError cb
-        if not candidate_set:
-            print_time("Protocol selection Error occured.", color)
-            if self.initiate_error:
-                self.loop.create_task(self.initiate_error())
-            return
-
-        # If security_parameters were given, initialize ssl context
-        if self.security_parameters:
-            self.security_context = ssl.create_default_context(
-                                                ssl.Purpose.CLIENT_AUTH)
-            if self.security_parameters.identity:
-                print_time("Identity: " +
-                           str(self.security_parameters.identity))
-                self.security_context.load_cert_chain(
-                                        self.security_parameters.identity)
-            for cert in self.security_parameters.trustedCA:
-                self.security_context.load_verify_locations(cert)
-        # Attempt to set up the appropriate listener for the candidate protocol
-        try:
-            if candidate_set[0][0] == 'udp':
-                self.protocol = 'udp'
-                await self.loop.create_datagram_endpoint(
-                                lambda: DatagramHandler(self),
-                                local_addr=(self.local_endpoint.interface,
-                                            self.local_endpoint.port))
-            elif candidate_set[0][0] == 'tcp':
-                self.protocol = 'tcp'
-                server = await self.loop.create_server(
-                                lambda: Connection(self),
-                                self.local_endpoint.interface,
-                                self.local_endpoint.port,
-                                ssl=self.security_context)
-        except:
-            print_time("Listen Error occured.", color)
-            if self.listen_error:
-                self.loop.create_task(self.listen_error())
-
-        print_time("Starting " + self.protocol + " Listener on " +
-                   (str(self.local_endpoint.address) if
-                    self.local_endpoint.address else "default") + ":" +
-                   str(self.local_endpoint.port), color)
-        return
 
     async def listen(self):
         """ Tries to start a listener, first chooses candidate protcol and
@@ -274,10 +217,10 @@ class Preconnection:
         """
         # This is a passive connection
         self.active = False
-
+        listener = Listener(self)
         # Create start_listener task so we can return right away
-        self.loop.create_task(self.start_listener())
-        return
+        self.loop.create_task(listener.start_listener())
+        return listener
 
     async def resolve(self):
         """ Resolve the address before initating the connection.
