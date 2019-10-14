@@ -55,7 +55,7 @@ class TransportLayer(asyncio.Protocol):
             self.loop.create_task(self.write(data))
         return self.message_count
 
-    async def write():
+    async def write(self):
         pass
 
     def receive(self, min_incomplete_length, max_length):
@@ -66,10 +66,10 @@ class TransportLayer(asyncio.Protocol):
             self.loop.create_task(self.read(min_incomplete_length,
                                   max_length))
 
-    async def read():
+    async def read(self):
         pass
 
-    async def close():
+    async def close(self):
         pass
 
 
@@ -183,7 +183,7 @@ class UdpTransport(TransportLayer):
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append(data)
-        print_time("Received " + data.decode(), color)
+        print_time("Received %d-byte datagram" % len(data), color)
         for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
         if self.connection.framer:

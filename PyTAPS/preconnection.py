@@ -9,7 +9,6 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
 from .listener import Listener
-import ipaddress
 color = "red"
 
 
@@ -183,19 +182,6 @@ class Preconnection:
                 return check
             except YangException as ye:
                 return self.from_yang(YANG_FMT_XML, text)
-
-    """ Waits until it receives signal from new connection object
-        to indicate it has been correctly initialized. Required because
-        initiate returns the connection object.
-    """
-    async def await_connection(self):
-        if self.waiter is not None:
-            return
-        self.waiter = self.loop.create_future()
-        try:
-            await self.waiter
-        finally:
-            self.waiter = None
 
     async def initiate(self):
         """ Initiates the preconnection, i.e. chooses candidate protocol,

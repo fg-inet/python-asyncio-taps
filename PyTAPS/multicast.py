@@ -2,6 +2,7 @@ import asyncio
 import socket
 import sys
 import os.path
+from .transports import *
 from ctypes import cdll, c_void_p, c_char_p, c_int, py_object, CFUNCTYPE, POINTER, c_ubyte, cast
 
 global _lib_load_err, _lib, _libhandle, _loop
@@ -49,7 +50,7 @@ class BytesConverter(object):
 def got_packet(conn, size, data):
     cb_data = bytes(BytesConverter(size, data))
     addr = conn.remote_endpoint.address
-    conn.datagram_received(cb_data, addr)
+    conn.transports[0].datagram_received(cb_data, addr)
     return 0
 
 got_packet_param = CB_GOT_DATA_TYPE(got_packet)
@@ -75,6 +76,7 @@ def do_join(conn):
     retval = _lib.join(_libhandle, conn, conn.remote_endpoint.address.encode(),
             conn.local_endpoint.address.encode(), c_int(int(conn.local_endpoint.port)),
             got_packet_param)
+    new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
     return (retval == 0)
 
 def _on_load():

@@ -7,6 +7,7 @@ from .transportProperties import *
 from .utility import *
 from .transports import *
 from .multicast import do_join
+import ipaddress
 color = "green"
 
 
@@ -74,10 +75,24 @@ class Connection():
             if candidate[0] == 'udp':
                 self.protocol = 'udp'
                 print_time("Creating UDP connect task.", color)
-                task = asyncio.create_task(self.loop.create_datagram_endpoint(
-                                    lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
-                                    remote_addr=(self.remote_endpoint.address,
-                                                 self.remote_endpoint.port)))
+                multicast_receiver = False
+                if self.local_endpoint:
+                    if self.local_endpoint.address:
+                        print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                        check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                        if check_addr.is_multicast:
+                            print_time("addr is multicast", color)
+                            if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                                print_time("direction is unicast receive", color)
+                                multicast_receiver = True
+                                self.connection = Connection(self)
+                                asyncio.create_task(self.multicast_join())
+
+                if not multicast_receiver:
+                    task = asyncio.create_task(self.loop.create_datagram_endpoint(
+                                        lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
+                                        remote_addr=(self.remote_endpoint.address,
+                                                    self.remote_endpoint.port)))
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'
@@ -277,10 +292,14 @@ class Connection():
         """
         self.closed = callback
 
+    """ ASYNCIO function that gets called when joining a multicast flow
+    """
+    async def multicast_join(self):
+        print_time("joining multicast session.", color)
+        do_join(self)
 
-""" ASYNCIO function that receives data from multicast flows
-"""
-async def do_multicast_receive():
-    if multicast.do_receive():
-        asyncio.create_task(do_multicast_receive())
-
+    """ ASYNCIO function that receives data from multicast flows
+    """
+    async def do_multicast_receive():
+        if multicast.do_receive():
+            asyncio.create_task(do_multicast_receive())
