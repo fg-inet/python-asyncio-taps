@@ -9,7 +9,16 @@ color = "white"
 
 
 class TransportLayer(asyncio.Protocol):
-    """ One possible transport for a TAPS connection
+    """ One possible underlying transport for a TAPS connection
+
+        Attributes:
+        connection (Connection, required):
+                Connection object to which this
+                Transport will be attached.
+        local_endpoint (LocalEndpoint, optional):
+                        LocalEndpoint
+        remote_endpoint (RemoteEndpoint, optional):
+                        RemoteEndpoint
     """
     def __init__(self, connection, local_endpoint=None, remote_endpoint=None):
                 self.local_endpoint = local_endpoint
@@ -38,8 +47,7 @@ class TransportLayer(asyncio.Protocol):
             del self.waiters[0]
 
     def send(self, data):
-        """ Function responsible for sending data. It decides which
-            protocol is used and then uses the appropriate functions
+        """ Function responsible for sending data.
         """
         self.message_count += 1
         if self.connection.state is not ConnectionState.ESTABLISHED:
@@ -92,20 +100,20 @@ class UdpTransport(TransportLayer):
         """ Sends udp data
         """
         print_time("Writing UDP data.", color)
-        #try:
-        # See if the udp flow was the result of passive or active open
-        if self.connection.active:
-            # Write the data
-            self.transport.sendto(data.encode())
-        else:
-            remote_address = self.remote_endpoint.address
-            remote_port = self.remote_endpoint.port
-            self.transport.sendto(data.encode(), (remote_address, remote_port))
-        """except:
+        try:
+            # See if the udp flow was the result of passive or active open
+            if self.connection.active:
+                # Write the data
+                self.transport.sendto(data.encode())
+            else:
+                remote_address = self.remote_endpoint.address
+                remote_port = self.remote_endpoint.port
+                self.transport.sendto(data.encode(), (remote_address, remote_port))
+        except:
             print_time("SendError occured.", color)
             if self.connection.send_error:
                 self.loop.create_task(self.connection.send_error(self.message_count))
-            return"""
+            return
         print_time("Data written successfully.", color)
         if self.connection.sent:
             self.loop.create_task(self.connection.sent(self.message_count))
@@ -159,6 +167,8 @@ class UdpTransport(TransportLayer):
             return
 
         elif self.connection.active:
+            # Stub code for forcfully killing connection tasks
+            # Before establishment to the peer has been completed
             """
             for t in self.connection.transports:
                 if t != self:
@@ -298,6 +308,8 @@ class TcpTransport(TransportLayer):
 
         elif self.connection.active:
             self.loop.create_task(self.active_open(transport))
+            # Stub code for forcfully killing connection tasks
+            # Before establishment to the peer has been completed
             """
             for t in self.connection.transports:
                 if t != self:

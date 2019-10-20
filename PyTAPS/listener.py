@@ -9,6 +9,7 @@ from .transports import *
 
 color = "cyan"
 
+
 class Listener():
     """The TAPS listener class.
 
@@ -56,29 +57,30 @@ class Listener():
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
         # Attempt to set up the appropriate listener for the candidate protocol
-        try:
-            if candidate_set[0][0] == 'udp':
-                self.protocol = 'udp'
-                await self.loop.create_datagram_endpoint(
-                                lambda: DatagramHandler(self),
-                                local_addr=(self.local_endpoint.interface,
-                                            self.local_endpoint.port))
-            elif candidate_set[0][0] == 'tcp':
-                self.protocol = 'tcp'
-                server = await self.loop.create_server(
-                                lambda: StreamHandler(self),
-                                self.local_endpoint.interface,
-                                self.local_endpoint.port,
-                                ssl=self.security_context)
-        except:
-            print_time("Listen Error occured.", color)
-            if self.listen_error:
-                self.loop.create_task(self.listen_error())
+        for candidate in candidate_set:
+            try:
+                if candidate[0] == 'udp':
+                    self.protocol = 'udp'
+                    await self.loop.create_datagram_endpoint(
+                                    lambda: DatagramHandler(self),
+                                    local_addr=(self.local_endpoint.interface,
+                                                self.local_endpoint.port))
+                elif candidate[0] == 'tcp':
+                    self.protocol = 'tcp'
+                    server = await self.loop.create_server(
+                                    lambda: StreamHandler(self),
+                                    self.local_endpoint.interface,
+                                    self.local_endpoint.port,
+                                    ssl=self.security_context)
+            except:
+                print_time("Listen Error occured.", color)
+                if self.listen_error:
+                    self.loop.create_task(self.listen_error())
 
-        print_time("Starting " + self.protocol + " Listener on " +
-                   (str(self.local_endpoint.address) if
-                    self.local_endpoint.address else "default") + ":" +
-                   str(self.local_endpoint.port), color)
+            print_time("Starting " + self.protocol + " Listener on " +
+                       (str(self.local_endpoint.address) if
+                        self.local_endpoint.address else "default") + ":" +
+                       str(self.local_endpoint.port), color)
         return
 
     def create_candidates(self):
@@ -178,7 +180,7 @@ class StreamHandler(asyncio.Protocol):
     def __init__(self, preconnection):
         new_connection = Connection(preconnection)
         self.connection = new_connection
-    
+
     def connection_made(self, transport):
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)

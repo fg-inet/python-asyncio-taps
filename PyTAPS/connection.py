@@ -17,6 +17,7 @@ class ConnectionState(Enum):
     CLOSING = 2
     CLOSED = 3
 
+
 class Connection():
     """The TAPS connection class.
 
@@ -40,11 +41,8 @@ class Connection():
                 self.security_context = None
                 # Current state of the connection object
                 self.state = ConnectionState.ESTABLISHING
-
+                # List of possible underlying transports
                 self.transports = []
-                """
-                if self.protocol == "udp" and not self.active:
-                    self.handler = preconnection.handler"""
 
     async def race(self):
         # This is an active connection attempt
@@ -67,6 +65,8 @@ class Connection():
         remote_info = await self.loop.getaddrinfo(
             self.remote_endpoint.host_name, self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
+
+        # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
 
             if self.state == ConnectionState.ESTABLISHED:
@@ -78,35 +78,41 @@ class Connection():
                 multicast_receiver = False
                 if self.local_endpoint:
                     if self.local_endpoint.address:
+                        # See if the address of the local endpoint
+                        # is a multicast address
                         print_time("local endpoint=%s" % (self.local_endpoint.address), color)
                         check_addr = ipaddress.ip_address(self.local_endpoint.address)
                         if check_addr.is_multicast:
                             print_time("addr is multicast", color)
+                            # If the address is multicast, make sure that the
+                            # application set the direction of communication
+                            # to receive only
                             if self.transport_properties.properties.get('direction') == 'unidirection-receive':
                                 print_time("direction is unicast receive", color)
                                 multicast_receiver = True
                                 self.connection = Connection(self)
                                 asyncio.create_task(self.multicast_join())
+                    else:
+                        if self.initiate_error:
+                            self.loop.create_task(self.initiate_error())
 
                 if not multicast_receiver:
+                    # If we do not have multicast, create a datagram endpoint
                     task = asyncio.create_task(self.loop.create_datagram_endpoint(
                                         lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                         remote_addr=(self.remote_endpoint.address,
-                                                    self.remote_endpoint.port)))
+                                                     self.remote_endpoint.port)))
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'
                 print_time("Creating TCP connect task.", color)
+                # If the protocol is tcp, create a asyncio connection
                 task = asyncio.create_task(self.loop.create_connection(
                                     lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                     self.remote_endpoint.address,
                                     self.remote_endpoint.port,
                                     ssl=self.security_context,
                                     server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
-        # self.pending.append(task)
-        # await asyncio.sleep(1)
-        # Wait until the correct connection object has been set
-        # await self.await_connection()
 
     async def send_message(self, data):
         """ Attempts to send data on the connection.
@@ -117,6 +123,14 @@ class Connection():
         return self.transports[0].send(data)
 
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
+        """ Queues the reception of a message.
+        Attributes:
+            min_incomplete_length (integer, optional):
+                The minimum length an incomplete message
+                needs to have.
+            max_length (integer, optional):
+                The maximum length a message can have.
+        """
         self.transports[0].receive(min_incomplete_length, max_length)
 
     def close(self):
