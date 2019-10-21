@@ -11,7 +11,7 @@ class TestServer():
     """A simple echo server. Listens using TCP by default, but can also use UDP.
 
     """
-    def __init__(self, reliable = True):
+    def __init__(self, reliable=True):
         self.preconnection = None
         self.loop = asyncio.get_event_loop()
         self.connection = None
@@ -73,10 +73,10 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        if self.reliable == False:
-            tp.prohibit("reliability")
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
+        if self.reliable is False:
+            tp.ignore("reliability")
+            tp.ignore("congestion-control")
+            tp.ignore("preserve-order")
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
                                                 transport_properties=tp,
@@ -107,10 +107,10 @@ if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
     # Start testserver
-    if args.reliable in [ "yes", "true", "both" ]:
-        server_tcp = TestServer(reliable = True)
+    if args.reliable in ["yes", "true", "both"]:
+        server_tcp = TestServer(reliable=True)
         loop.create_task(server_tcp.main(args))
-    if args.reliable in [ "no", "false", "both" ]:
-        server_udp = TestServer(reliable = False)
+    if args.reliable in ["no", "false", "both"]:
+        server_udp = TestServer(reliable=False)
         loop.create_task(server_udp.main(args))
     loop.run_forever()
