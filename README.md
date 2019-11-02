@@ -21,7 +21,8 @@ People interested in participating in TAPS can [join the mailing list](https://w
 ## Build Dependencies:
 
 Yang support relies on some shared libraries.  Run the script to download, build,
-and install them into dependencies/install/lib.
+and install them (if not in the default location, then in a place where
+LD_LIBRARY_PATH points).
 
 Requirements:
 
@@ -29,14 +30,30 @@ Requirements:
 - cmake
 - libtool
 - autotools
+- libpcre
 
-	./build_dependencies.sh
+~~~
+sudo apt-get update
+sudo apt-get install -y libpcre3-dev cmake
+sudo apt-get install -y autoconf automake libtool
+
+INSTALL_PATH=${HOME}/local_install \
+  ./build_dependencies.sh
+
+
+python3 -m venv ~/venv-taps
+source ~/venv-taps/bin/activate
+
+INSTALL_PATH=${HOME}/local_install \
+  python setup.py build install
+
+~~~
 
 ### Use
 
-You'll need the path to load the dependent dynamic libraries set:
+You'll need the path to load the dependent dynamic libraries set whenever pytaps is imported:
 
-	export LD_LIBRARY_PATH=dependencies/install/lib
+	export LD_LIBRARY_PATH=${HOME}/local_install/lib
 
 To run a server with a yang model specified in `examples/yang_example/test-server2.json` run
 
