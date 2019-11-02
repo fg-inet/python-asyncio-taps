@@ -26,10 +26,10 @@ fi
 
 # works on linux, not mac:
 #g++ $DEPS/build/validate_yang.o -shared -L $DEPS/install/lib -lyang -Wl,-soname,libyangcheck.so -o $DEPS/install/lib/libyangcheck.so
-g++ -c -fPIC -isystem $DEPS/install/include PyTAPS/validate_yang.cxx -o $DEPS/build/validate_yang.o
+g++ -c -fPIC -isystem $DEPS/install/include pytaps/validate_yang.cxx -o $DEPS/build/validate_yang.o
 g++ $DEPS/build/validate_yang.o -shared -L $DEPS/install/lib -lyang -o $DEPS/install/lib/libyangcheck.so
 
-g++ -c -fPIC -isystem $DEPS/install/include PyTAPS/multicast_glue.cxx -o $DEPS/build/multicast_glue.o
+g++ -c -fPIC -isystem $DEPS/install/include pytaps/multicast_glue.cxx -o $DEPS/build/multicast_glue.o
 g++ $DEPS/build/multicast_glue.o -shared -L $DEPS/install/lib -lmcrx -o $DEPS/install/lib/libmulticast_glue.so
 
 #export LD_LIBRARY_PATH=$DEPS/install/lib

@@ -2,7 +2,7 @@ import asyncio
 import sys
 import argparse
 sys.path.append(sys.path[0] + "/../..")
-import PyTAPS as taps  # noqa: E402
+import pytaps as taps  # noqa: E402
 
 color = "blue"
 

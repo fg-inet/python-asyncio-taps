@@ -3,7 +3,7 @@ import pytest
 import sys
 
 sys.path.append(sys.path[0] + "/..")
-import PyTAPS as taps  # noqa: E402
+import pytaps as taps  # noqa: E402
 
 import time
 
