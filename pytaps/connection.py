@@ -92,14 +92,14 @@ class Connection():
                                 print_time("direction is unicast receive", color)
                                 multicast_receiver = True
                                 self.connection = Connection(self)
-                                asyncio.create_task(self.multicast_join())
+                                self.loop.create_task(self.multicast_join())
                     else:
                         if self.initiate_error:
                             self.loop.create_task(self.initiate_error())
 
                 if not multicast_receiver:
                     # If we do not have multicast, create a datagram endpoint
-                    task = asyncio.create_task(self.loop.create_datagram_endpoint(
+                    task = self.loop.create_task(self.loop.create_datagram_endpoint(
                                         lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                         remote_addr=(self.remote_endpoint.address,
                                                      self.remote_endpoint.port)))
@@ -108,7 +108,7 @@ class Connection():
                 self.protocol = 'tcp'
                 print_time("Creating TCP connect task.", color)
                 # If the protocol is tcp, create a asyncio connection
-                task = asyncio.create_task(self.loop.create_connection(
+                task = self.loop.create_task(self.loop.create_connection(
                                     lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                     self.remote_endpoint.address,
                                     self.remote_endpoint.port,
@@ -320,7 +320,7 @@ class Connection():
     """
     async def do_multicast_receive():
         if multicast.do_receive():
-            asyncio.create_task(do_multicast_receive())
+            self.loop.create_task(do_multicast_receive())
 
     """ ASYNCIO function that gets called when leaving a multicast flow
     """
