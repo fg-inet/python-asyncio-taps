@@ -121,7 +121,6 @@ class UdpTransport(TransportLayer):
 
     async def close(self):
         print_time("Closing connection.", color)
-        # self.transport.close()
         self.connection.state = ConnectionState.CLOSED
         if self.connection.closed:
             self.loop.create_task(self.connection.closed())
