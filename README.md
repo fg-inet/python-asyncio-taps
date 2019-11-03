@@ -62,15 +62,15 @@ INSTALL_PATH=${HOME}/local_install \
 
 You'll need the path to load the dependent dynamic libraries set whenever pytaps is imported:
 
-	`export LD_LIBRARY_PATH=${HOME}/local_install/lib`
+	export LD_LIBRARY_PATH=${HOME}/local_install/lib
 
 To run a server with a yang model specified in `examples/yang_example/test-server2.json` run
 
-	`python examples/yang_example/yangServer.py -f examples/yang_example/test-server2.json`
+	python examples/yang_example/yangServer.py -f examples/yang_example/test-server2.json
 
 For a client with a model specified in `examples/yang_example/test-client2.json` run
 
-	`python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json`
+	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json
 
 ## Running Tests
 
