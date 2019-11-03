@@ -39,7 +39,13 @@ For example, to build under Linux(Debian):
 sudo apt-get update
 sudo apt-get install -y libpcre3-dev cmake
 sudo apt-get install -y autoconf automake libtool
-
+~~~
+Install requirements on MacOS:
+~~~
+brew install pcre cmake autoconf automake libtool
+~~~
+Setup virtual environment and install library:
+~~~
 INSTALL_PATH=${HOME}/local_install \
   ./build_dependencies.sh
 
