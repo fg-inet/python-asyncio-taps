@@ -8,3 +8,6 @@ docs/build
 *.o
 dependencies/
 tests/keys/
+build/
+dist/
+pytaps.egg-info/
