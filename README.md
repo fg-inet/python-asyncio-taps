@@ -31,6 +31,9 @@ Requirements:
 - libtool
 - autotools
 - libpcre
+- Python3.7+
+
+For example, to build under Linux(Debian):
 
 ~~~
 sudo apt-get update
@@ -40,13 +43,8 @@ sudo apt-get install -y autoconf automake libtool
 INSTALL_PATH=${HOME}/local_install \
   ./build_dependencies.sh
 
-
-python3 -m venv ~/venv-taps
-source ~/venv-taps/bin/activate
-
 INSTALL_PATH=${HOME}/local_install \
   python setup.py build install
-
 ~~~
 
 ### Use
