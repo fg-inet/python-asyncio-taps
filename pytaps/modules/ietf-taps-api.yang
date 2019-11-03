@@ -355,9 +355,9 @@ module ietf-taps-api {
             type identityref {
               base "ianaift:iana-interface-type";
             }
-            type if:interface-ref {
-              require-instance false;
-            }
+            //type if:interface-ref {
+            //  require-instance false;
+            //}
           }
           description "name or type of interface constraint";
           reference "RFC 7224 Section 2";

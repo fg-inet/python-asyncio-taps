@@ -193,7 +193,7 @@ class Preconnection:
 
         new_connection = Connection(self)
         # Race the candidate sets
-        asyncio.create_task(new_connection.race())
+        self.loop.create_task(new_connection.race())
         print_time("Returning connection object.", color)
         return new_connection
 

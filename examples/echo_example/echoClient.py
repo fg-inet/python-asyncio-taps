@@ -3,7 +3,7 @@ import sys
 import argparse
 import ipaddress
 sys.path.append(sys.path[0] + "/../..")
-import PyTAPS as taps  # noqa: E402
+import pytaps as taps  # noqa: E402
 
 color = "yellow"
 
@@ -125,7 +125,7 @@ class TestClient():
 
 if __name__ == "__main__":
     # Parse arguments
-    ap = argparse.ArgumentParser(description='PyTAPS test client.')
+    ap = argparse.ArgumentParser(description='pytaps test client.')
     ap.add_argument('--remote-host', '--host', nargs='?', default="localhost")
     ap.add_argument('--remote-address', nargs=1)
     ap.add_argument('--remote-port', '--port', type=int, default=6666)

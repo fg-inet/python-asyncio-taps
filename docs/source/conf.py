@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 
 # -- Project information -----------------------------------------------------
 
-project = 'PyTAPS'
+project = 'pytaps'
 copyright = '2019, Max Franke, Theresa Enghardt, Philipp S. Tiesel, Jake Holland'
 author = 'Max Franke, Theresa Enghardt, Philipp S. Tiesel, Jake Holland'
 
@@ -104,7 +104,7 @@ html_static_path = ['_static']
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'PyTAPSdoc'
+htmlhelp_basename = 'pytapsdoc'
 
 
 # -- Options for LaTeX output ------------------------------------------------
@@ -131,7 +131,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'PyTAPS.tex', 'PyTAPS Documentation',
+    (master_doc, 'pytaps.tex', 'PyTAPS Documentation',
      'Max Franke, Theresa Enghardt, Philipp S. Tiesel', 'manual'),
 ]
 
@@ -152,7 +152,7 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'PyTAPS', 'PyTAPS Documentation',
+    (master_doc, 'pytaps', 'PyTAPS Documentation',
      author, 'PyTAPS', 'One line description of project.',
      'Miscellaneous'),
 ]

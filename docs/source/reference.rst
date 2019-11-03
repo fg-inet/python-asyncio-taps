@@ -3,7 +3,7 @@ API Reference
 
 This is the full API reference for the PyTAPS implementation.
 
-.. automodule:: PyTAPS
+.. automodule:: pytaps
 
 Local Endpoint
 --------------

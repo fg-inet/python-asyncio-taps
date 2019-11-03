@@ -18,7 +18,7 @@ Creating a Preconnection
 Before an application can create a Connection, first it has to create a *Preconnection*.
 A Preconnection consists of the local and remote endpoints as well as the Transport properties and security security parameters::
 
-	import PyTAPS as taps
+	import pytaps as taps
 
 	remote_endpoint = taps.RemoteEndpoint()
 	remote_endpoint.with_hostname("example.org")

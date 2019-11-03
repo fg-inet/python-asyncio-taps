@@ -6,7 +6,7 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
 from .transports import *
-from .multicast import do_join
+from .multicast import do_join, do_leave
 import ipaddress
 color = "green"
 
@@ -43,6 +43,7 @@ class Connection():
                 self.state = ConnectionState.ESTABLISHING
                 # List of possible underlying transports
                 self.transports = []
+                self.multicast_open = False
 
     async def race(self):
         # This is an active connection attempt
@@ -91,14 +92,14 @@ class Connection():
                                 print_time("direction is unicast receive", color)
                                 multicast_receiver = True
                                 self.connection = Connection(self)
-                                asyncio.create_task(self.multicast_join())
+                                self.loop.create_task(self.multicast_join())
                     else:
                         if self.initiate_error:
                             self.loop.create_task(self.initiate_error())
 
                 if not multicast_receiver:
                     # If we do not have multicast, create a datagram endpoint
-                    task = asyncio.create_task(self.loop.create_datagram_endpoint(
+                    task = self.loop.create_task(self.loop.create_datagram_endpoint(
                                         lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                         remote_addr=(self.remote_endpoint.address,
                                                      self.remote_endpoint.port)))
@@ -107,7 +108,7 @@ class Connection():
                 self.protocol = 'tcp'
                 print_time("Creating TCP connect task.", color)
                 # If the protocol is tcp, create a asyncio connection
-                task = asyncio.create_task(self.loop.create_connection(
+                task = self.loop.create_task(self.loop.create_connection(
                                     lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                     self.remote_endpoint.address,
                                     self.remote_endpoint.port,
@@ -137,6 +138,8 @@ class Connection():
         """ Attempts to close the connection, issues a closed event
         on success.
         """
+        if self.multicast_open:
+            self.loop.create_task(self.multicast_leave())
         self.loop.create_task(self.transports[0].close())
         self.state = ConnectionState.CLOSING
 
@@ -310,10 +313,19 @@ class Connection():
     """
     async def multicast_join(self):
         print_time("joining multicast session.", color)
+        self.multicast_open = True
         do_join(self)
 
     """ ASYNCIO function that receives data from multicast flows
     """
     async def do_multicast_receive():
         if multicast.do_receive():
-            asyncio.create_task(do_multicast_receive())
+            self.loop.create_task(do_multicast_receive())
+
+    """ ASYNCIO function that gets called when leaving a multicast flow
+    """
+    async def multicast_leave(self):
+        print_time("leaving multicast session.", color)
+        self.multicast_false = True
+        do_leave(self)
+
