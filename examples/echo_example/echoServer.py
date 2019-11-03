@@ -73,10 +73,14 @@ class TestServer():
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()
-        if self.reliable is False:
+        tp.ignore("congestion-control")
+        tp.ignore("preserve-order")
+        if self.reliable == "False":
+            tp.prohibit("reliability")
+        if self.reliable == "Both":
             tp.ignore("reliability")
-            tp.ignore("congestion-control")
-            tp.ignore("preserve-order")
+
+        
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
                                                 transport_properties=tp,
@@ -107,10 +111,14 @@ if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
     # Start testserver
-    if args.reliable in ["yes", "true", "both"]:
-        server_tcp = TestServer(reliable=True)
+    if args.reliable in ["yes", "true"]:
+        server_tcp = TestServer(reliable="True")
         loop.create_task(server_tcp.main(args))
-    if args.reliable in ["no", "false", "both"]:
-        server_udp = TestServer(reliable=False)
+    if args.reliable in ["no", "false"]:
+        server_udp = TestServer(reliable="False")
         loop.create_task(server_udp.main(args))
+    if args.reliable in [ "both"]:
+        server_both = TestServer(reliable="Both")
+        loop.create_task(server_both.main(args))
+
     loop.run_forever()
