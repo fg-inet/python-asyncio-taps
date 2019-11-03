@@ -12,17 +12,12 @@ TAPS is currently being standardized in the [IETF TAPS Working Group](https://da
 - [Implementation considerations](https://datatracker.ietf.org/doc/draft-ietf-taps-impl/)
 
 People interested in participating in TAPS can [join the mailing list](https://www.ietf.org/mailman/listinfo/taps).
-## Requirements:
-
-- Python 3.7 or above
-- termcolor (pip install termcolor)
-- pytest, pytest-asyncio, pytest-timeout (for tests)
 
 ## Build Dependencies:
 
-Yang support relies on some shared libraries.  Run the script to download, build,
-and install them (if not in the default location, then in a place where
-LD_LIBRARY_PATH points).
+Yang and multicast support relies on some shared libraries.  Run the script to
+download, build, and install them (if not in the default location, then in a place
+where LD_LIBRARY_PATH points).
 
 Requirements:
 
@@ -33,22 +28,32 @@ Requirements:
 - libpcre
 - Python3.7+
 
-For example, to build under Linux(Debian):
+Build & Install requirements on Linux(Debian):
 
 ~~~
 sudo apt-get update
 sudo apt-get install -y libpcre3-dev cmake
 sudo apt-get install -y autoconf automake libtool
 ~~~
-Install requirements on MacOS:
+
+Build & Install requirements on MacOS:
+
 ~~~
 brew install pcre cmake autoconf automake libtool
 ~~~
-Setup virtual environment and install library:
+
+At the time of this writing, libyang and libmcrx are not packaged and can either
+be installed independently, or built with the included convenience script, but
+they must also be present for the build to succeed:
+
 ~~~
 INSTALL_PATH=${HOME}/local_install \
   ./build_dependencies.sh
+~~~
 
+Build and install the pytaps package:
+
+~~~
 INSTALL_PATH=${HOME}/local_install \
   python setup.py build install
 ~~~
@@ -57,17 +62,25 @@ INSTALL_PATH=${HOME}/local_install \
 
 You'll need the path to load the dependent dynamic libraries set whenever pytaps is imported:
 
-	export LD_LIBRARY_PATH=${HOME}/local_install/lib
+	`export LD_LIBRARY_PATH=${HOME}/local_install/lib`
 
 To run a server with a yang model specified in `examples/yang_example/test-server2.json` run
 
-	python examples/yang_example/yangServer.py -f examples/yang_example/test-server2.json
+	`python examples/yang_example/yangServer.py -f examples/yang_example/test-server2.json`
 
 For a client with a model specified in `examples/yang_example/test-client2.json` run
 
-	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json
+	`python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json`
 
 ## Running Tests
+
+### Requirements:
+
+- Python 3.7 or above
+- termcolor (pip install termcolor)
+- pytest, pytest-asyncio, pytest-timeout (for tests)
+
+### Running
 
 	cd tests/
 	./run_tests.sh
