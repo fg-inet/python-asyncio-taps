@@ -121,6 +121,8 @@ class Connection():
                 data (string, required):
                     Data to be send.
         """
+        if isinstance(data, str):
+            data = data.encode()
         return self.transports[0].send(data)
 
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):

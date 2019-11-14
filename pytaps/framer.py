@@ -3,6 +3,10 @@ from .utility import *
 color = "magenta"
 
 
+class DeframingFailed(Exception):
+    pass
+
+
 class Framer():
     """The TAPS Framer class.
 
@@ -100,13 +104,13 @@ class Framer():
     # Fire start event and the wait until framer replies
     async def handle_start(self, connection):
         self.connection = connection
-        self.loop.create_task(self.start(connection))
-        await self.await_framer_ready()
+        await self.start(connection)
         return
 
     # Fire new_message_sent event and wait for reply of framer
-    def handle_new_sent_message(self, data, context, eom):
-        self.loop.create_task(self.new_sent_message(data, context, eom))
+    async def handle_new_sent_message(self, data, context, eom):
+        data = await self.new_sent_message(data, context, eom)
+        return data
 
     # Fire handle_received_data event and wait for reply of framer
     async def handle_received(self, connection):
@@ -153,7 +157,7 @@ class Framer():
                 The connection object from which the
                 buffer should be returned.
         """
-        return connection.recv_buffer.decode(), None, False
+        return connection.transports[0].recv_buffer, None, False
 
     def advance_receive_cursor(self, connection, length):
         """ Deletes the first length number of
