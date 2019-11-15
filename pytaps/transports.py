@@ -242,11 +242,6 @@ class UdpTransport(TransportLayer):
                 if not w.done():
                     w.set_result(None)
                     return
-        '''for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-        if self.connection.framer:
-            for i in self.waiters:
-                i.set_result(None)'''
 
     """ ASYNCIO function that gets called when the connection has
         an error.
@@ -404,15 +399,6 @@ class TcpTransport(TransportLayer):
                 if not w.done():
                     w.set_result(None)
                     return
-        """
-        for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-        # If there is already a receive queued by the connection,
-        # trigger its waiter to let it know new data has arrived
-        if self.connection.framer:
-            for i in self.waiters:
-                i.set_result(None)
-            return """
 
     """ ASYNCIO function that gets called when the connection has
         an error.
