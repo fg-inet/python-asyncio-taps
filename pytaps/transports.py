@@ -61,17 +61,23 @@ class TransportLayer(asyncio.Protocol):
         finally:
             self.active_framer = None
     
+    """ Invokes the framer to deframe newly arrived data
+    """
     async def invoke_framer(self):
+        # If there is already another deframing in progress, wait for it to complete
         if self.active_framer:
             await self.active_framer
         self.active_framer = self.loop.create_future()
+        # Try to call the deframing function implemented by the individual framer
         try:
             ctx, msg, len, eom = await self.connection.framer.handle_received_data(self.connection)
         except (DeframingFailed, ValueError):
+            # If the framer throws an DeframingFailed Error, stop trying to deframe until nre data arrives
             print_time("Framing failed", color)
             self.active_framer.set_result(None)
             self.active_framer = None
             return
+        # If a message was deframed succesful, modify the recv buffer, add the message to the framer buffer
         self.recv_buffer = self.recv_buffer[len:]
         self.framer_buffer.append(msg)
         self.active_framer.set_result(None)
@@ -80,6 +86,7 @@ class TransportLayer(asyncio.Protocol):
             if not w.done():
                 w.set_result(None)
                 return
+        # Since there might be another message that is able to be deframed, invoke the framer again
         self.loop.create_task(self.invoke_framer())
 
     def send(self, data):
