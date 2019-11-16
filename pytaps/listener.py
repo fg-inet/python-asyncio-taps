@@ -67,39 +67,39 @@ class Listener():
                 self.security_context.load_verify_locations(cert)
         # Attempt to set up the appropriate listener for the candidate protocol
         for candidate in candidate_set:
-            #try:
-            if candidate[0] == 'udp':
-                self.protocol = 'udp'
-                multicast_receiver = False
-                # See if the address of the local endpoint
-                # is a multicast address
-                print_time("local endpoint=%s" % (self.local_endpoint.address), color)
-                check_addr = ipaddress.ip_address(self.local_endpoint.address)
-                if check_addr.is_multicast:
-                    print_time("addr is multicast", color)
-                    # If the address is multicast, make sure that the
-                    # application set the direction of communication
-                    # to receive only
-                    if self.transport_properties.properties.get('direction') == 'unidirection-receive':
-                        print_time("direction is unicast receive", color)
-                        multicast_receiver = True
-                        self.loop.create_task(self.multicast_join())
-                else:
-                    await self.loop.create_datagram_endpoint(
-                                    lambda: DatagramHandler(self),
-                                    local_addr=(self.local_endpoint.interface,
-                                                self.local_endpoint.port))
-            elif candidate[0] == 'tcp':
-                self.protocol = 'tcp'
-                server = await self.loop.create_server(
-                                lambda: StreamHandler(self),
-                                self.local_endpoint.interface,
-                                self.local_endpoint.port,
-                                ssl=self.security_context)
-            """except:
+            try:
+                if candidate[0] == 'udp':
+                    self.protocol = 'udp'
+                    multicast_receiver = False
+                    # See if the address of the local endpoint
+                    # is a multicast address
+                    print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                    check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                    if check_addr.is_multicast:
+                        print_time("addr is multicast", color)
+                        # If the address is multicast, make sure that the
+                        # application set the direction of communication
+                        # to receive only
+                        if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                            print_time("direction is unicast receive", color)
+                            multicast_receiver = True
+                            self.loop.create_task(self.multicast_join())
+                    else:
+                        await self.loop.create_datagram_endpoint(
+                                        lambda: DatagramHandler(self),
+                                        local_addr=(self.local_endpoint.interface,
+                                                    self.local_endpoint.port))
+                elif candidate[0] == 'tcp':
+                    self.protocol = 'tcp'
+                    server = await self.loop.create_server(
+                                    lambda: StreamHandler(self),
+                                    self.local_endpoint.interface,
+                                    self.local_endpoint.port,
+                                    ssl=self.security_context)
+            except:
                 print_time("Listen Error occured.", color)
                 if self.listen_error:
-                    self.loop.create_task(self.listen_error())"""
+                    self.loop.create_task(self.listen_error())
 
             print_time("Starting " + self.protocol + " Listener on " +
                        (str(self.local_endpoint.address) if

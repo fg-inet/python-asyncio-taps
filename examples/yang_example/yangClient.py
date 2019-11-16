@@ -74,7 +74,6 @@ class TestClient():
     async def main(self, args):
         fname = args.file[0]
         self.preconnection = taps.Preconnection.from_yangfile(fname)
-        print(self.preconnection.remote_endpoint.address)
         taps.print_time("Loaded YANG file: %s." % fname, color)
 
         self.preconnection.on_initiate_error(self.handle_initiate_error)
