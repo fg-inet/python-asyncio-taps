@@ -22,6 +22,7 @@ class Listener():
     """
     def __init__(self, preconnection):
                 # Initializations
+                self.preconnection = preconnection
                 self.local_endpoint = preconnection.local_endpoint
                 self.remote_endpoint = preconnection.remote_endpoint
                 self.transport_properties = preconnection.transport_properties
@@ -31,7 +32,7 @@ class Listener():
                 self.framer = preconnection.framer
                 self.security_context = None
                 self.set_callbacks(preconnection)
-                self.active_connection = []
+                self.active_ports = {}
 
     async def start_listener(self):
         """ method wrapped by listen

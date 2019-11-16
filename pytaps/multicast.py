@@ -2,19 +2,20 @@ import asyncio
 import socket
 import sys
 import os.path
-from .transports import *
+#import pytaps as taps
 import multicast_glue
 
-global _loop, _libhandle, active_ports
+global _loop, _libhandle
 _loop = None
 _libhandle = None
-active_ports = {}
+
 
 def added_sock_cb(loop, handle, fd, do_read):
     global _libhandle
     assert(_libhandle is not None)
     #sock = socket.socket(fileno=fd)
     def read_handler(do_read, handle, fd):
+
         global _libhandle
         assert(_libhandle is not None)
         return multicast_glue.receive_packets(_libhandle, do_read, handle, fd)
@@ -27,17 +28,8 @@ def removed_sock_cb(loop, fd):
     return 0
 
 def got_packet(listener, size, data, port):
-    cb_data = data
-    addr = listener.remote_endpoint.address
-    if port in active_ports:
-        active_ports[port].transports[0].datagram_received(cb_data, (addr,port))
-    else:
-        precon = Preconnection(listener.local_endpoint, listener.remote_endpoint, listener.transport_properties, listener.security_parameters, listener.loop)
-        conn = Connection(precon)
-        new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
-        active_ports[port] = conn
-        _loop.create_task(new_udp.active_open(None))
 
+    listener.preconnection.got_mc(listener, size, data, port)
     return 0
 
 def do_join(listener):
@@ -55,7 +47,6 @@ def do_join(listener):
         # if we hit this, we need to maintain a dict to keep a separate
         # libhandle per loop
         raise Exception("not yet supported: joining with multiple different asyncio loops")
-    
     join_ctx = multicast_glue.join(_libhandle, listener,
         listener.remote_endpoint.address,
         listener.local_endpoint.address,
