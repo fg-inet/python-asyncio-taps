@@ -8,7 +8,6 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
 from .multicast import do_join, do_leave
-import ipaddress
 
 color = "cyan"
 
