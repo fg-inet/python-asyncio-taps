@@ -294,5 +294,9 @@ class Preconnection:
                 new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
                 listener.active_ports[port] = conn
                 listener.loop.create_task(new_udp.active_open(None))
+                if self.connection_received:
+                    self.loop.create_task(
+                        self.connection_received(conn))
+                    print_time("Called connection_received cb", color)
         except BaseException as e:
             print(e)

@@ -165,6 +165,7 @@ class Listener():
     async def multicast_join(self):
         print_time("joining multicast session.", color)
         self.multicast_open = True
+        handler = DatagramHandler(self)
         do_join(self)
 
     """ ASYNCIO function that receives data from multicast flows
