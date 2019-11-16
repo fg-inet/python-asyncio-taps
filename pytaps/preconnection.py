@@ -289,7 +289,10 @@ class Preconnection:
             if port in listener.active_ports:
                 listener.active_ports[port].transports[0].datagram_received(cb_data, (addr,port))
             else:
-                precon = Preconnection(listener.local_endpoint, listener.remote_endpoint, listener.transport_properties, listener.security_parameters, listener.loop)
+                rp = RemoteEndpoint()
+                rp.with_address(listener.remote_endpoint.address)
+                rp.with_port(port)
+                precon = Preconnection(listener.local_endpoint, rp, listener.transport_properties, listener.security_parameters, listener.loop)
                 conn = Connection(precon)
                 new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
                 listener.active_ports[port] = conn
