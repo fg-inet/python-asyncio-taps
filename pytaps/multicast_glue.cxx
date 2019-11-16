@@ -289,6 +289,8 @@ mc_join(PyObject* dummy, PyObject* args) {
     return NULL;
   }
 
+  Py_INCREF(conn);
+  Py_INCREF(got_data);
   subinfo->conn = conn;
   subinfo->got_data = got_data;
 

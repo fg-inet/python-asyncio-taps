@@ -250,14 +250,6 @@ class UdpTransport(TransportLayer):
         self.recv_buffer.append(data)
         print_time("Received %d-byte datagram" % len(data), color)
 
-        for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-
-        if self.connection.received:
-            self.context.addr = addr
-            self.loop.create_task(self.connection.received(data,
-                self.context, self.connection))
-
         if self.connection.framer:
             self.loop.create_task(self.invoke_framer())
             return

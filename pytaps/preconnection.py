@@ -72,7 +72,6 @@ class Preconnection:
             xml_text = text
         else:
             xml_text = convert(frmat, text, YANG_FMT_XML)
-
         root = ET.fromstring(xml_text)
         ns = {'taps': 'urn:ietf:params:xml:ns:yang:ietf-taps-api'}
 
@@ -279,3 +278,21 @@ class Preconnection:
                 callback.
         """
         self.stopped = callback
+
+
+    def got_mc(self, listener, size, data, port):
+        """ Method that redirects incoming multicast data to the relevant connection object
+        """
+        try:
+            cb_data = data
+            addr = listener.remote_endpoint.address
+            if port in listener.active_ports:
+                listener.active_ports[port].transports[0].datagram_received(cb_data, (addr,port))
+            else:
+                precon = Preconnection(listener.local_endpoint, listener.remote_endpoint, listener.transport_properties, listener.security_parameters, listener.loop)
+                conn = Connection(precon)
+                new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
+                listener.active_ports[port] = conn
+                listener.loop.create_task(new_udp.active_open(None))
+        except BaseException as e:
+            print(e)

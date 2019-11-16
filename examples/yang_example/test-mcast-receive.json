@@ -10,7 +10,7 @@
     "remote-endpoints":[
       {
         "id":"1",
-        "remote-host":"23.212.185.5"
+        "remote-host":"23.212.185.7"
       }
     ],
     "transport-properties": {
