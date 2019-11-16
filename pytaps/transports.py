@@ -5,6 +5,7 @@ import ssl
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
+from .framer import *
 color = "white"
 
 class MessageContext(object):
@@ -39,6 +40,11 @@ class TransportLayer(asyncio.Protocol):
                 self.recv_buffer = None
                 # Boolean to indicate that EOF has been reached
                 self.at_eof = False
+
+                # If we have a framer, create a buffer for deframed messages
+                if connection.framer:
+                    self.active_framer = None
+                    self.framer_buffer = []
     """ Function that blocks until new data has arrived
     """
     async def await_data(self):
@@ -48,6 +54,43 @@ class TransportLayer(asyncio.Protocol):
             await waiter
         finally:
             del self.waiters[0]
+
+    """ Function that blocks until a framer has finished deframing
+    """
+    async def await_framer(self):
+        self.active_framer = self.loop.create_future()
+        try:
+            await self.active_framer
+        finally:
+            self.active_framer = None
+    
+    """ Invokes the framer to deframe newly arrived data
+    """
+    async def invoke_framer(self):
+        # If there is already another deframing in progress, wait for it to complete
+        if self.active_framer:
+            await self.active_framer
+        self.active_framer = self.loop.create_future()
+        # Try to call the deframing function implemented by the individual framer
+        try:
+            ctx, msg, len, eom = await self.connection.framer.handle_received_data(self.connection)
+        except (DeframingFailed, ValueError):
+            # If the framer throws an DeframingFailed Error, stop trying to deframe until nre data arrives
+            print_time("Framing failed", color)
+            self.active_framer.set_result(None)
+            self.active_framer = None
+            return
+        # If a message was deframed succesful, modify the recv buffer, add the message to the framer buffer
+        self.recv_buffer = self.recv_buffer[len:]
+        self.framer_buffer.append(msg)
+        self.active_framer.set_result(None)
+        self.active_framer = None
+        for w in self.waiters:
+            if not w.done():
+                w.set_result(None)
+                return
+        # Since there might be another message that is able to be deframed, invoke the framer again
+        self.loop.create_task(self.invoke_framer())
 
     def send(self, data):
         """ Function responsible for sending data.
@@ -59,22 +102,18 @@ class TransportLayer(asyncio.Protocol):
                 if self.send_error:
                     self.loop.create_task(self.send_error(message_count))
                 return
-        # Frame the data
-        if self.connection.framer:
-            self.loop.create_task(self.connection.framer.handle_new_sent_message(data, None, False))
-        else:
-            self.loop.create_task(self.write(data))
+        self.loop.create_task(self.write(data))
         return self.message_count
 
     async def write(self):
         pass
 
     def receive(self, min_incomplete_length, max_length):
-        if self.connection.framer:
+        """if self.connection.framer:
             self.loop.create_task(self.read_framed(min_incomplete_length,
                                   max_length))
-        else:
-            self.loop.create_task(self.read(min_incomplete_length,
+        else:"""
+        self.loop.create_task(self.read(min_incomplete_length,
                                   max_length))
 
     async def read(self):
@@ -112,6 +151,9 @@ class UdpTransport(TransportLayer):
         try:
             # See if the udp flow was the result of passive or active open
             if self.connection.active:
+                # Frame the data
+                if self.connection.framer:
+                    data = await self.connection.framer.handle_new_sent_message(data, None, False)
                 # Write the data
                 self.transport.sendto(data)
             else:
@@ -137,14 +179,19 @@ class UdpTransport(TransportLayer):
 
     async def read(self, min_incomplete_length, max_length):
         print_time("Reading message", color)
-        if self.recv_buffer is None:
-            await self.await_data()
-        print_time("Received full message", color)
-        if len(self.recv_buffer) == 1:
-            data = self.recv_buffer[0]
-            self.recv_buffer = None
+        if self.connection.framer:
+            if len(self.framer_buffer) == 0:
+                await self.await_data()
+            data = self.framer_buffer.pop(0)
         else:
-            data = self.recv_buffer.pop(0)
+            if self.recv_buffer is None:
+                await self.await_data()
+            print_time("Received full message", color)
+            if len(self.recv_buffer) == 1:
+                data = self.recv_buffer[0]
+                self.recv_buffer = None
+            else:
+                data = self.recv_buffer.pop(0)
         if self.connection.received:
             self.loop.create_task(self.connection.received(data,
                 self.context, self.connection))
@@ -202,6 +249,7 @@ class UdpTransport(TransportLayer):
             self.recv_buffer = list()
         self.recv_buffer.append(data)
         print_time("Received %d-byte datagram" % len(data), color)
+
         for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
 
@@ -211,12 +259,14 @@ class UdpTransport(TransportLayer):
                 self.context, self.connection))
 
         if self.connection.framer:
-            for i in self.waiters:
-                i.set_result(None)
-        for w in self.waiters:
-            if not w.done():
-                w.set_result(None)
-                return
+            self.loop.create_task(self.invoke_framer())
+            return
+        else:
+            for w in self.waiters:
+                if not w.done():
+                    w.set_result(None)
+                    return
+
     """ ASYNCIO function that gets called when the connection has
         an error.
         TODO: proper error handling
@@ -260,6 +310,10 @@ class TcpTransport(TransportLayer):
         if isinstance(data, str):
             data = data.encode()
         try:
+            
+            # Frame the data
+            if self.connection.framer:
+                data = await self.connection.framer.handle_new_sent_message(data, None, False)
             # Attempt to write data
             self.transport.write(data)
         except:
@@ -274,6 +328,16 @@ class TcpTransport(TransportLayer):
 
     async def read(self, min_incomplete_length, max_length):
         print_time("Reading message", color)
+        if self.connection.framer:
+            if len(self.framer_buffer) == 0:
+                await self.await_data()
+            data = self.framer_buffer.pop(0)
+            if self.connection.received:
+                self.loop.create_task(self.connection.received(data,
+                                                               "Context",
+                                                               self.connection))
+            return
+
         while self.recv_buffer is None or (len(self.recv_buffer) < min_incomplete_length):
             await self.await_data()
         if max_length == -1 or len(self.recv_buffer) <= max_length:
@@ -356,18 +420,15 @@ class TcpTransport(TransportLayer):
             self.recv_buffer = data
         else:
             self.recv_buffer = self.recv_buffer + data
-        for i in range(self.open_receives):
-            self.loop.create_task(self.framer.handle_received_data(self))
-        # If there is already a receive queued by the connection,
-        # trigger its waiter to let it know new data has arrived
         if self.connection.framer:
-            for i in self.waiters:
-                i.set_result(None)
-            return
-        for w in self.waiters:
-            if not w.done():
-                w.set_result(None)
+                self.loop.create_task(self.invoke_framer())
                 return
+        else:
+            for w in self.waiters:
+                if not w.done():
+                    w.set_result(None)
+                    return
+
     """ ASYNCIO function that gets called when the connection has
         an error.
         TODO: proper error handling
