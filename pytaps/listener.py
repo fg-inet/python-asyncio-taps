@@ -61,23 +61,6 @@ class Listener():
             try:
                 if candidate[0] == 'udp':
                     self.protocol = 'udp'
-                    multicast_receiver = False
-                    if self.local_endpoint:
-                        if self.local_endpoint.address:
-                            # See if the address of the local endpoint
-                            # is a multicast address
-                            print_time("local endpoint=%s" % (self.local_endpoint.address), color)
-                            check_addr = ipaddress.ip_address(self.local_endpoint.address)
-                            if check_addr.is_multicast:
-                                print_time("addr is multicast", color)
-                                # If the address is multicast, make sure that the
-                                # application set the direction of communication
-                                # to receive only
-                                if self.transport_properties.properties.get('direction') == 'unidirection-receive':
-                                    print_time("direction is unicast receive", color)
-                                    multicast_receiver = True
-                                    self.connection = Connection(self)
-                                    self.loop.create_task(self.multicast_join())
                     await self.loop.create_datagram_endpoint(
                                     lambda: DatagramHandler(self),
                                     local_addr=(self.local_endpoint.interface,
