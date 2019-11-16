@@ -6,6 +6,7 @@ from .transportProperties import *
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
+from .multicast import do_join, do_leave
 
 color = "cyan"
 
@@ -61,10 +62,25 @@ class Listener():
             try:
                 if candidate[0] == 'udp':
                     self.protocol = 'udp'
-                    await self.loop.create_datagram_endpoint(
-                                    lambda: DatagramHandler(self),
-                                    local_addr=(self.local_endpoint.interface,
-                                                self.local_endpoint.port))
+                    multicast_receiver = False
+                    # See if the address of the local endpoint
+                    # is a multicast address
+                    print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                    check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                    if check_addr.is_multicast:
+                        print_time("addr is multicast", color)
+                        # If the address is multicast, make sure that the
+                        # application set the direction of communication
+                        # to receive only
+                        if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                            print_time("direction is unicast receive", color)
+                            multicast_receiver = True
+                            self.loop.create_task(self.multicast_join())
+                    else:
+                        await self.loop.create_datagram_endpoint(
+                                        lambda: DatagramHandler(self),
+                                        local_addr=(self.local_endpoint.interface,
+                                                    self.local_endpoint.port))
                 elif candidate[0] == 'tcp':
                     self.protocol = 'tcp'
                     server = await self.loop.create_server(
@@ -136,6 +152,25 @@ class Listener():
             self.listen_error = preconnection.listen_error
             self.stopped = preconnection.stopped
 
+    """ ASYNCIO function that gets called when joining a multicast flow
+    """
+    async def multicast_join(self):
+        print_time("joining multicast session.", color)
+        self.multicast_open = True
+        do_join(self)
+
+    """ ASYNCIO function that receives data from multicast flows
+    """
+    async def do_multicast_receive():
+        if multicast.do_receive():
+            self.loop.create_task(do_multicast_receive())
+
+    """ ASYNCIO function that gets called when leaving a multicast flow
+    """
+    async def multicast_leave(self):
+        print_time("leaving multicast session.", color)
+        self.multicast_false = True
+        do_leave(self)
 
 class DatagramHandler(asyncio.Protocol):
     """ Class required to handle incoming datagram flows
