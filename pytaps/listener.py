@@ -7,6 +7,7 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
 from .multicast import do_join, do_leave
+import ipaddress
 
 color = "cyan"
 
@@ -30,6 +31,7 @@ class Listener():
                 self.framer = preconnection.framer
                 self.security_context = None
                 self.set_callbacks(preconnection)
+                self.active_connection = []
 
     async def start_listener(self):
         """ method wrapped by listen
@@ -39,6 +41,11 @@ class Listener():
         # Create set of candidate protocols
         candidate_set = self.create_candidates()
 
+        if self.remote_endpoint is not None:
+            if self.remote_endpoint.address is None:
+                remote_info = await self.loop.getaddrinfo(
+                    self.remote_endpoint.host_name, self.remote_endpoint.port)
+                self.remote_endpoint.address = remote_info[0][4][0]
         # If the candidate set is empty issue an InitiateError cb
         if not candidate_set:
             print_time("Protocol selection Error occured.", color)
@@ -59,39 +66,39 @@ class Listener():
                 self.security_context.load_verify_locations(cert)
         # Attempt to set up the appropriate listener for the candidate protocol
         for candidate in candidate_set:
-            try:
-                if candidate[0] == 'udp':
-                    self.protocol = 'udp'
-                    multicast_receiver = False
-                    # See if the address of the local endpoint
-                    # is a multicast address
-                    print_time("local endpoint=%s" % (self.local_endpoint.address), color)
-                    check_addr = ipaddress.ip_address(self.local_endpoint.address)
-                    if check_addr.is_multicast:
-                        print_time("addr is multicast", color)
-                        # If the address is multicast, make sure that the
-                        # application set the direction of communication
-                        # to receive only
-                        if self.transport_properties.properties.get('direction') == 'unidirection-receive':
-                            print_time("direction is unicast receive", color)
-                            multicast_receiver = True
-                            self.loop.create_task(self.multicast_join())
-                    else:
-                        await self.loop.create_datagram_endpoint(
-                                        lambda: DatagramHandler(self),
-                                        local_addr=(self.local_endpoint.interface,
-                                                    self.local_endpoint.port))
-                elif candidate[0] == 'tcp':
-                    self.protocol = 'tcp'
-                    server = await self.loop.create_server(
-                                    lambda: StreamHandler(self),
-                                    self.local_endpoint.interface,
-                                    self.local_endpoint.port,
-                                    ssl=self.security_context)
-            except:
+            #try:
+            if candidate[0] == 'udp':
+                self.protocol = 'udp'
+                multicast_receiver = False
+                # See if the address of the local endpoint
+                # is a multicast address
+                print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                if check_addr.is_multicast:
+                    print_time("addr is multicast", color)
+                    # If the address is multicast, make sure that the
+                    # application set the direction of communication
+                    # to receive only
+                    if self.transport_properties.properties.get('direction') == 'unidirection-receive':
+                        print_time("direction is unicast receive", color)
+                        multicast_receiver = True
+                        self.loop.create_task(self.multicast_join())
+                else:
+                    await self.loop.create_datagram_endpoint(
+                                    lambda: DatagramHandler(self),
+                                    local_addr=(self.local_endpoint.interface,
+                                                self.local_endpoint.port))
+            elif candidate[0] == 'tcp':
+                self.protocol = 'tcp'
+                server = await self.loop.create_server(
+                                lambda: StreamHandler(self),
+                                self.local_endpoint.interface,
+                                self.local_endpoint.port,
+                                ssl=self.security_context)
+            """except:
                 print_time("Listen Error occured.", color)
                 if self.listen_error:
-                    self.loop.create_task(self.listen_error())
+                    self.loop.create_task(self.listen_error())"""
 
             print_time("Starting " + self.protocol + " Listener on " +
                        (str(self.local_endpoint.address) if
@@ -179,6 +186,7 @@ class DatagramHandler(asyncio.Protocol):
         self.preconnection = preconnection
         self.remotes = dict()
         self.preconnection.handler = self
+        self.transport = None
 
     def connection_made(self, transport):
         self.transport = transport

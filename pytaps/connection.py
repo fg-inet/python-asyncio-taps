@@ -79,12 +79,11 @@ class Connection():
                     if self.initiate_error:
                         self.loop.create_task(self.initiate_error())
 
-                if not multicast_receiver:
-                    # If we do not have multicast, create a datagram endpoint
-                    task = self.loop.create_task(self.loop.create_datagram_endpoint(
-                                        lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
-                                        remote_addr=(self.remote_endpoint.address,
-                                                     self.remote_endpoint.port)))
+                # Create a datagram endpoint
+                task = self.loop.create_task(self.loop.create_datagram_endpoint(
+                                    lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
+                                    remote_addr=(self.remote_endpoint.address,
+                                                    self.remote_endpoint.port)))
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'

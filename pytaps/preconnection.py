@@ -72,7 +72,6 @@ class Preconnection:
             xml_text = text
         else:
             xml_text = convert(frmat, text, YANG_FMT_XML)
-
         root = ET.fromstring(xml_text)
         ns = {'taps': 'urn:ietf:params:xml:ns:yang:ietf-taps-api'}
 
