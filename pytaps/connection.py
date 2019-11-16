@@ -8,14 +8,11 @@ from .utility import *
 from .transports import *
 from .multicast import do_join, do_leave
 import ipaddress
+import socket
 color = "green"
 
-
-class ConnectionState(Enum):
-    ESTABLISHING = 0
-    ESTABLISHED = 1
-    CLOSING = 2
-    CLOSED = 3
+# Wait for 100 ms between connection attempts when racing
+RACING_DELAY=0.1
 
 
 class Connection():
@@ -50,7 +47,7 @@ class Connection():
         self.active = True
 
         # Create the set of possible protocol candidates
-        candidate_set = self.create_candidates()
+        protocol_candidates = self.create_candidates()
         # If security_parameters were given, initialize ssl context
         if self.security_parameters:
             self.security_context = ssl.create_default_context(
@@ -65,17 +62,27 @@ class Connection():
         # Resolve address
         remote_info = await self.loop.getaddrinfo(
             self.remote_endpoint.host_name, self.remote_endpoint.port)
-        self.remote_endpoint.address = remote_info[0][4][0]
+
+        # Concat v6 and v4 address lists, making sure we try v6 first
+        all_addrs_v6 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET6]))
+        all_addrs_v4 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET]))
+        all_addrs = all_addrs_v6 + all_addrs_v4
+
+        print_time("Resolved " + str(self.remote_endpoint.host_name) + " to " + str(all_addrs), color)
+        candidate_set = [ protocol + (address,) for address in all_addrs for protocol in protocol_candidates ]
 
         # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
 
             if self.state == ConnectionState.ESTABLISHED:
+                print_time("Connection established -- stop racing", color)
                 break
 
+            print_time("Trying candidate protocol: " + str(candidate[0]) + " and address: " + str(candidate[2]), color)
             if candidate[0] == 'udp':
                 self.protocol = 'udp'
-                print_time("Creating UDP connect task.", color)
+                print_time("Creating UDP connect task with remote addr " + str(candidate[2]), color)
+                self.remote_endpoint.address = candidate[2]
                 multicast_receiver = False
                 if self.local_endpoint:
                     if self.local_endpoint.address:
@@ -106,7 +113,8 @@ class Connection():
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'
-                print_time("Creating TCP connect task.", color)
+                print_time("Creating TCP connect task to " + candidate[2] + ".", color)
+                self.remote_endpoint.address = candidate[2]
                 # If the protocol is tcp, create a asyncio connection
                 task = self.loop.create_task(self.loop.create_connection(
                                     lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
@@ -114,6 +122,7 @@ class Connection():
                                     self.remote_endpoint.port,
                                     ssl=self.security_context,
                                     server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
+                await asyncio.sleep(RACING_DELAY)
 
     async def send_message(self, data):
         """ Attempts to send data on the connection.
