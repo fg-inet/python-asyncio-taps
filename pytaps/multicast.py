@@ -25,10 +25,10 @@ def removed_sock_cb(loop, fd):
     loop.remove_reader(fd)
     return 0
 
-def got_packet(conn, size, data):
+def got_packet(conn, size, data, port):
     cb_data = data
     addr = conn.remote_endpoint.address
-    conn.transports[0].datagram_received(cb_data, addr)
+    conn.transports[0].datagram_received(cb_data, (addr,port))
     return 0
 
 def do_join(conn):
@@ -54,6 +54,7 @@ def do_join(conn):
         got_packet)
     conn._join_ctx = join_ctx
     new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
+    _loop.create_task(new_udp.active_open(None))
     return (join_ctx is not None)
 
 def do_leave(conn):

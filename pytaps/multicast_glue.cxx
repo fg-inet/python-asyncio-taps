@@ -219,7 +219,6 @@ static int mc_receive_cb(struct mcrx_packet* pkt) {
   uint8_t* data = 0;
   int len = mcrx_packet_get_contents(pkt, &data);
 
-  printf("received packet len %d\n", len);
   PyObject* data_obj = PyBytes_FromStringAndSize((const char*) data, len);
   if (!data_obj) {
     PyErr_SetString(MCGlueError, "OOM: creating bytes object for packet failed");
@@ -227,8 +226,9 @@ static int mc_receive_cb(struct mcrx_packet* pkt) {
     return MCRX_ERR_CALLBACK_FAILED;
   }
 
-  PyObject* result = PyObject_CallFunction(info->got_data, "OiS",
-      info->conn, (Py_ssize_t)len, data_obj);
+  uint16_t port = mcrx_packet_get_remote_port(pkt);
+  PyObject* result = PyObject_CallFunction(info->got_data, "OiSi",
+      info->conn, (Py_ssize_t)len, data_obj, port);
   if (!result) {
     PyErr_SetString(MCGlueError, "OOM: creating args for remove_socket_cb failed");
     mcrx_packet_unref(pkt);

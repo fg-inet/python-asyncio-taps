@@ -113,15 +113,3 @@ class Framer():
                 buffer should be returned.
         """
         return connection.transports[0].recv_buffer, None, False
-
-class MessageContext():
-
-    def __init__(self):
-        self.values = []
-        return
-
-    def add(self, framer, key, value):
-        return
-
-    def get(self, framer, key):
-        return
