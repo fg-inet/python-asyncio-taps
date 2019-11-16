@@ -195,8 +195,17 @@ mc_cleanup(PyObject* dummy, PyObject* args)
     PyErr_SetString(MCGlueError, "error: cleanup with null ctx");
     return NULL;
   }
-  struct ctx_info* info = (struct ctx_info*)mcrx_ctx_get_userdata(ctx);
+  struct mc_glue_info* info = (struct mc_glue_info*)mcrx_ctx_get_userdata(ctx);
   if (info) {
+    if (info->add_sock_cb) {
+      Py_DECREF(info->add_sock_cb);
+    }
+    if (info->remove_sock_cb) {
+      Py_DECREF(info->remove_sock_cb);
+    }
+    if (info->py_obj) {
+      Py_DECREF(info->py_obj);
+    }
     mcrx_ctx_set_userdata(ctx, 0);
     free(info);
   }
@@ -323,9 +332,23 @@ mc_leave(PyObject* dummy, PyObject* args) {
     return NULL;
   }
   struct mcrx_subscription* sub = (struct mcrx_subscription*)sub_val;
+  struct mc_glue_sub_info* info = (struct mc_glue_sub_info*)mcrx_subscription_get_userdata(sub);
+  mcrx_subscription_set_userdata(sub, (intptr_t)0);
+
+  if (info) {
+    if (info->conn) {
+      Py_DECREF(info->conn);
+    }
+    if (info->got_data) {
+      Py_DECREF(info->got_data);
+    }
+    free(info);
+  }
+
   int err = mcrx_subscription_leave(sub);
   // if there was a problem, it probably printed something.  ignore?
   (void)err;
+  sub = mcrx_subscription_unref(sub);
 
   Py_INCREF(Py_None);
   return Py_None;
