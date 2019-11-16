@@ -11,32 +11,36 @@ color = "yellow"
 class testFramer(taps.Framer):
     async def start(self, connection):
         taps.print_time("Framer got new connection", color)
-        self.make_connection_ready(connection)
+        return
     async def new_sent_message(self, data, context, eom):
         taps.print_time("Framing new message " + str(data), color)
         tlv = (data[0] + "/" + str(len(str(data[1]))) + "/" +
                str(data[1]))
-        self.loop.create_task(self.send(tlv))
+        return tlv.encode()
 
     async def handle_received_data(self, connection):
         byte_stream, context, eom = self.parse(connection, 0, 0)
+        byte_stream = byte_stream.decode()
         taps.print_time("Deframing " + byte_stream, color)
         try:
             tlv = byte_stream.split("/")
         except:
             taps.print_time("Error splitting", color)
+            raise taps.DeframingFailed
             return
 
         if len(tlv) < 3:
             taps.print_time("Deframing error: missing length, value or type parameter.", color)
+            raise taps.DeframingFailed
             return
 
         if (len(tlv[2]) < int(tlv[1])):
             taps.print_time("Deframing error: actual length of message shorter than indicated", color)
+            raise taps.DeframingFailed
             return
         len_message = len(tlv[0]) + len(tlv[1]) + int(tlv[1]) + 2
         message = (str(tlv[0]), str(tlv[2][0:int(tlv[1])]))
-        self.deliver_and_advance_receive_cursor(connection, context, message, len_message, eom)
+        return(context, message, len_message, eom)
         """
         self.advance_receive_cursor(connection, len_message)
         self.deliver(connection, context, message, eom)

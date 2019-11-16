@@ -103,7 +103,7 @@ def test_echo_udp():
 		task = loop.create_task(client.main(data_to_send=teststring))
 		loop.run_forever()
 
-		assert client.received_data == teststring
+		assert client.received_data.decode() == teststring
 	finally:
 		loop.close()
 
@@ -124,7 +124,7 @@ def test_echo_udp_yang():
 		client_loop.run_forever()
 		print("Started client")
 
-		assert client.received_data == teststring
+		assert client.received_data.decode() == teststring
 	finally:
 		client_loop.close()
 
@@ -142,7 +142,7 @@ def test_echo_yang_tcp():
 		task = loop.create_task(client.main(data_to_send=teststring, yangfile=yangfile))
 		loop.run_forever()
 
-		assert client.received_data == teststring
+		assert client.received_data.decode() == teststring
 	finally:
 		loop.close()
 
@@ -159,7 +159,7 @@ def test_echo_tls():
 		task = loop.create_task(client.main(data_to_send=teststring, remote_port=6667, reliable=True, trust_ca="keys/MyRootCA.pem"))
 		loop.run_forever()
 
-		assert client.received_data == teststring
+		assert client.received_data.decode() == teststring
 	finally:
 		loop.close()
 
@@ -177,6 +177,6 @@ def test_echo_tls_yang():
 		task = loop.create_task(client.main(data_to_send=teststring, yangfile=yangfile))
 		loop.run_forever()
 
-		assert client.received_data == teststring
+		assert client.received_data.decode() == teststring
 	finally:
 		loop.close()
