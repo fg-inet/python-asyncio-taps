@@ -68,11 +68,18 @@ class TestClient():
 		else:
 			sp = None
 
-		self.preconnection = taps.Preconnection(remote_endpoint=ep,
-												transport_properties=tp,
-												security_parameters=sp,
-												event_loop=asyncio.get_event_loop(),
-												yangfile=yangfile)
+		if self.yangfile:
+			self.preconnection = taps.Preconnection.from_yangfile(self.yangfile,
+													remote_endpoint=ep,
+													transport_properties=tp,
+													security_parameters=sp,
+													event_loop=asyncio.get_event_loop())
+		else:
+			self.preconnection = taps.Preconnection(remote_endpoint=ep,
+													transport_properties=tp,
+													security_parameters=sp,
+													event_loop=asyncio.get_event_loop())
+
 		self.preconnection.on_ready(self.handle_ready)
 		self.connection = await self.preconnection.initiate()
 

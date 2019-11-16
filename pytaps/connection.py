@@ -6,7 +6,6 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
 from .transports import *
-from .multicast import do_join, do_leave
 import ipaddress
 import socket
 color = "green"
@@ -89,34 +88,12 @@ class Connection():
                 self.protocol = 'udp'
                 print_time("Creating UDP connect task with remote addr " + str(candidate[2]) + ", port " + str(self.remote_endpoint.port), color)
                 self.remote_endpoint.address = candidate[2]
-                multicast_receiver = False
-                if self.local_endpoint:
-                    if self.local_endpoint.address:
-                        # See if the address of the local endpoint
-                        # is a multicast address
-                        print_time("local endpoint=%s" % (self.local_endpoint.address), color)
-                        check_addr = ipaddress.ip_address(self.local_endpoint.address)
-                        if check_addr.is_multicast:
-                            print_time("addr is multicast", color)
-                            # If the address is multicast, make sure that the
-                            # application set the direction of communication
-                            # to receive only
-                            if self.transport_properties.properties.get('direction') == 'unidirection-receive':
-                                print_time("direction is unicast receive", color)
-                                multicast_receiver = True
-                                self.connection = Connection(self)
-                                self.loop.create_task(self.multicast_join())
-                    else:
-                        if self.initiate_error:
-                            self.loop.create_task(self.initiate_error())
 
-                if not multicast_receiver:
-                    # If we do not have multicast, create a datagram endpoint
-                    print_time("endpoint: " + str(self.remote_endpoint) + ", address: " + str(self.remote_endpoint.address) + ", " + str(self.remote_endpoint.port), color)
-                    task = self.loop.create_task(self.loop.create_datagram_endpoint(
-                                        lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
-                                        remote_addr=(self.remote_endpoint.address,
-                                                     self.remote_endpoint.port)))
+                # Create a datagram endpoint
+                task = self.loop.create_task(self.loop.create_datagram_endpoint(
+                                    lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
+                                    remote_addr=(self.remote_endpoint.address,
+                                                 self.remote_endpoint.port)))
 
                 print_time("Not racing multiple addrs for UDP -- stop racing", color)
                 break
@@ -330,24 +307,4 @@ class Connection():
                 callback.
         """
         self.closed = callback
-
-    """ ASYNCIO function that gets called when joining a multicast flow
-    """
-    async def multicast_join(self):
-        print_time("joining multicast session.", color)
-        self.multicast_open = True
-        do_join(self)
-
-    """ ASYNCIO function that receives data from multicast flows
-    """
-    async def do_multicast_receive():
-        if multicast.do_receive():
-            self.loop.create_task(do_multicast_receive())
-
-    """ ASYNCIO function that gets called when leaving a multicast flow
-    """
-    async def multicast_leave(self):
-        print_time("leaving multicast session.", color)
-        self.multicast_false = True
-        do_leave(self)
 

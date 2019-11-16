@@ -40,21 +40,13 @@ class Preconnection:
     def __init__(self, local_endpoint=None, remote_endpoint=None,
                  transport_properties=TransportProperties(),
                  security_parameters=None,
-                 event_loop=asyncio.get_event_loop(), yangfile=None):
+                 event_loop=asyncio.get_event_loop()):
 
-                # Configuration via YANG
-                if yangfile:
-                    self.from_yangfile(yangfile)
-                else:
-                    # Assertions
-                    if local_endpoint is None and remote_endpoint is None:
-                        raise Exception("At least one endpoint needs "
-                                        "to be specified")
-                    # Initializations from arguments
-                    self.local_endpoint = local_endpoint
-                    self.remote_endpoint = remote_endpoint
-                    self.transport_properties = transport_properties
-                    self.security_parameters = security_parameters
+                # Initializations from arguments
+                self.local_endpoint = local_endpoint
+                self.remote_endpoint = remote_endpoint
+                self.transport_properties = transport_properties
+                self.security_parameters = security_parameters
 
                 self.loop = event_loop
 
@@ -73,13 +65,13 @@ class Preconnection:
                 # Framer object
                 self.framer = None
 
-    def from_yang(self, frmat, text):
+    def from_yang(frmat, text, *args, **kwargs):
+        self = Preconnection(*args, **kwargs)
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
             xml_text = text
         else:
             xml_text = convert(frmat, text, YANG_FMT_XML)
-
         root = ET.fromstring(xml_text)
         ns = {'taps': 'urn:ietf:params:xml:ns:yang:ietf-taps-api'}
 
@@ -162,8 +154,9 @@ class Preconnection:
         self.local_endpoint = lp
         self.transport_properties = tp
         self.security_parameters = sp
+        return self
 
-    def from_yangfile(self, fname):
+    def from_yangfile(fname, *args, **kwargs):
         """ Loads the configuration of a the preconnection, including endpoints,
         transport properties and security parameters from a yangfile.
         Attributes:
@@ -173,15 +166,15 @@ class Preconnection:
             text = infile.read()
 
         if fname.endswith('.xml'):
-            return self.from_yang(YANG_FMT_XML, text)
+            return Preconnection.from_yang(YANG_FMT_XML, text, *args, **kwargs)
         elif fname.endswith('.json'):
-            return self.from_yang(YANG_FMT_JSON, text)
+            return Preconnection.from_yang(YANG_FMT_JSON, text, *args, **kwargs)
         else:
             try:
-                check = self.from_yang(YANG_FMT_JSON, text)
+                check = Preconnection.from_yang(YANG_FMT_JSON, text, *args, **kwargs)
                 return check
             except YangException as ye:
-                return self.from_yang(YANG_FMT_XML, text)
+                return Preconnection.from_yang(YANG_FMT_XML, text, *args, **kwargs)
 
     async def initiate(self):
         """ Initiates the preconnection, i.e. chooses candidate protocol,
@@ -189,6 +182,10 @@ class Preconnection:
         was requested, resolves address and finally calls relevant
         connection call.
         """
+        # Assertions
+        if self.remote_endpoint is None:
+            raise Exception("A remote endpoint needs "
+                            "to be specified to initiate")
         print_time("Initiating connection.", color)
 
         new_connection = Connection(self)
@@ -201,6 +198,9 @@ class Preconnection:
         """ Tries to start a listener, first chooses candidate protcol and
         then tries to establish it with the appropriate asyncio function.
         """
+        if self.local_endpoint is None:
+            raise Exception("A local endpoint needs "
+                            "to be specified to listen")
         # This is a passive connection
         self.active = False
         listener = Listener(self)
@@ -211,6 +211,9 @@ class Preconnection:
     async def resolve(self):
         """ Resolve the address before initating the connection.
         """
+        if self.remote_endpoint is None:
+            raise Exception("A remote endpoint needs "
+                            "to be specified to resolve")
         remote_info = await self.loop.getaddrinfo(
             self.remote_endpoint.host_name, self.remote_endpoint.port)
         self.remote_endpoint.address = remote_info[0][4][0]
@@ -275,3 +278,28 @@ class Preconnection:
                 callback.
         """
         self.stopped = callback
+
+
+    def got_mc(self, listener, size, data, port):
+        """ Method that redirects incoming multicast data to the relevant connection object
+        """
+        try:
+            cb_data = data
+            addr = listener.remote_endpoint.address
+            if port in listener.active_ports:
+                listener.active_ports[port].transports[0].datagram_received(cb_data, (addr,port))
+            else:
+                rp = RemoteEndpoint()
+                rp.with_address(listener.remote_endpoint.address)
+                rp.with_port(port)
+                precon = Preconnection(listener.local_endpoint, rp, listener.transport_properties, listener.security_parameters, listener.loop)
+                conn = Connection(precon)
+                new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
+                listener.active_ports[port] = conn
+                listener.loop.create_task(new_udp.active_open(None))
+                if self.connection_received:
+                    self.loop.create_task(
+                        self.connection_received(conn))
+                    print_time("Called connection_received cb", color)
+        except BaseException as e:
+            print(e)

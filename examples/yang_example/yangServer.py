@@ -19,7 +19,7 @@ class TestServer():
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
         self.connection.on_sent(self.handle_sent)
-        await self.connection.receive(min_incomplete_length=7, max_length=-1)
+        await self.connection.receive()
         # await self.connection.receive(min_incomplete_length=4, max_length=3)
         # self.connection.on_sent(handle_sent)
 
@@ -47,7 +47,7 @@ class TestServer():
         taps.print_time("Listener has been stopped")
 
     async def main(self, fname):
-        self.preconnection = taps.Preconnection(yangfile = fname)
+        self.preconnection = taps.Preconnection.from_yangfile(fname)
         taps.print_time("Loaded YANG file: %s." % fname, color)
         self.preconnection.on_connection_received(
                                             self.handle_connection_received)
