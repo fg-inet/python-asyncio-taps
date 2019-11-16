@@ -7,6 +7,9 @@ from .transportProperties import *
 from .utility import *
 color = "white"
 
+class MessageContext(object):
+    def __init__(self):
+        self.addr = None
 
 class TransportLayer(asyncio.Protocol):
     """ One possible underlying transport for a TAPS connection
@@ -83,6 +86,10 @@ class TransportLayer(asyncio.Protocol):
 
 class UdpTransport(TransportLayer):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context = MessageContext()
+
     async def active_open(self, transport):
         self.transport = transport
         for t in self.connection.pending:
@@ -100,15 +107,17 @@ class UdpTransport(TransportLayer):
         """ Sends udp data
         """
         print_time("Writing UDP data.", color)
+        if isinstance(data, str):
+            data = data.encode()
         try:
             # See if the udp flow was the result of passive or active open
             if self.connection.active:
                 # Write the data
-                self.transport.sendto(data.encode())
+                self.transport.sendto(data)
             else:
                 remote_address = self.remote_endpoint.address
                 remote_port = self.remote_endpoint.port
-                self.transport.sendto(data.encode(), (remote_address, remote_port))
+                self.transport.sendto(data, (remote_address, remote_port))
         except:
             print_time("SendError occured.", color)
             if self.connection.send_error:
@@ -137,9 +146,8 @@ class UdpTransport(TransportLayer):
         else:
             data = self.recv_buffer.pop(0)
         if self.connection.received:
-            self.loop.create_task(self.connection.received(data.decode(),
-                                                           "Context",
-                                                           self.connection))
+            self.loop.create_task(self.connection.received(data,
+                self.context, self.connection))
 
     # Asyncio Callbacks
 
@@ -151,7 +159,7 @@ class UdpTransport(TransportLayer):
             transport.close()
             return
         # Check if its an incoming or outgoing connection
-        if self.connection.active is False:
+        if not self.connection.active:
             self.transport = transport
             new_remote_endpoint = RemoteEndpoint()
             print_time("Received new connection.", color)
@@ -166,7 +174,7 @@ class UdpTransport(TransportLayer):
                 self.loop.create_task(self.connection_received(self))
             return
 
-        elif self.connection.active:
+        else:
             # Stub code for forcfully killing connection tasks
             # Before establishment to the peer has been completed
             """
@@ -196,6 +204,12 @@ class UdpTransport(TransportLayer):
         print_time("Received %d-byte datagram" % len(data), color)
         for i in range(self.open_receives):
             self.loop.create_task(self.framer.handle_received_data(self))
+
+        if self.connection.received:
+            self.context.addr = addr
+            self.loop.create_task(self.connection.received(data,
+                self.context, self.connection))
+
         if self.connection.framer:
             for i in self.waiters:
                 i.set_result(None)
@@ -224,6 +238,10 @@ class UdpTransport(TransportLayer):
 
 class TcpTransport(TransportLayer):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context = MessageContext()
+
     async def active_open(self, transport):
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
@@ -239,9 +257,11 @@ class TcpTransport(TransportLayer):
         """ Send tcp data
         """
         print_time("Writing TCP data.", color)
+        if isinstance(data, str):
+            data = data.encode()
         try:
             # Attempt to write data
-            self.transport.write(data.encode())
+            self.transport.write(data)
         except:
             print_time("SendError occured.", color)
             if self.send_error:
@@ -265,14 +285,13 @@ class TcpTransport(TransportLayer):
 
         if self.at_eof:
             if self.connection.received:
-                self.loop.create_task(self.connection.received(data.decode(),
-                                                               "Context",
-                                                               self.connection))
+                self.loop.create_task(self.connection.received(data,
+                    self.context, self.connection))
             return
         else:
             if self.connection.received_partial:
-                self.loop.create_task(self.connection.received_partial(data.decode(),
-                                      "Context", False, self))
+                self.loop.create_task(self.connection.received_partial(data,
+                                      self.context, False, self))
 
     def close(self):
         print_time("Closing connection.", color)
@@ -330,7 +349,7 @@ class TcpTransport(TransportLayer):
         by the OS. Stores new data in buffer and triggers the receive waiter
     """
     def data_received(self, data):
-        print_time("Received " + data.decode(), color)
+        print_time("Received " + len(data) + " bytes", color)
 
         # See if we already have so data buffered
         if self.recv_buffer is None:

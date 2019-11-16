@@ -227,15 +227,3 @@ class Framer():
     def on_handle_received_data(self, a):
         self.new_sent_message = a
 
-
-class MessageContext():
-
-    def __init__(self):
-        self.values = []
-        return
-
-    def add(self, framer, key, value):
-        return
-
-    def get(self, framer, key):
-        return
