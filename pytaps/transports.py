@@ -413,7 +413,7 @@ class TcpTransport(TransportLayer):
         by the OS. Stores new data in buffer and triggers the receive waiter
     """
     def data_received(self, data):
-        print_time("Received " + len(data) + " bytes", color)
+        print_time("Received %d bytes" % len(data), color)
 
         # See if we already have so data buffered
         if self.recv_buffer is None:

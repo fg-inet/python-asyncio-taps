@@ -65,8 +65,8 @@ class Preconnection:
                 # Framer object
                 self.framer = None
 
-    def from_yang(frmat, text):
-        self = Preconnection()
+    def from_yang(frmat, text, *args, **kwargs):
+        self = Preconnection(*args, **kwargs)
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
             xml_text = text
@@ -157,7 +157,7 @@ class Preconnection:
         self.security_parameters = sp
         return self
 
-    def from_yangfile(fname):
+    def from_yangfile(fname, *args, **kwargs):
         """ Loads the configuration of a the preconnection, including endpoints,
         transport properties and security parameters from a yangfile.
         Attributes:
@@ -167,15 +167,15 @@ class Preconnection:
             text = infile.read()
 
         if fname.endswith('.xml'):
-            return Preconnection.from_yang(YANG_FMT_XML, text)
+            return Preconnection.from_yang(YANG_FMT_XML, text, *args, **kwargs)
         elif fname.endswith('.json'):
-            return Preconnection.from_yang(YANG_FMT_JSON, text)
+            return Preconnection.from_yang(YANG_FMT_JSON, text, *args, **kwargs)
         else:
             try:
-                check = Preconnection.from_yang(YANG_FMT_JSON, text)
+                check = Preconnection.from_yang(YANG_FMT_JSON, text, *args, **kwargs)
                 return check
             except YangException as ye:
-                return Preconnection.from_yang(YANG_FMT_XML, text)
+                return Preconnection.from_yang(YANG_FMT_XML, text, *args, **kwargs)
 
     async def initiate(self):
         """ Initiates the preconnection, i.e. chooses candidate protocol,
