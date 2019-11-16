@@ -126,7 +126,7 @@ class UdpTransport(TransportLayer):
         self.transport = transport
         for t in self.connection.pending:
             t.cancel()
-        print_time("Connected successfully UDP.", color)
+        print_time("Connected successfully UDP to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         self.connection.state = ConnectionState.ESTABLISHED
         if self.connection.framer:
             # Send a start even to the framer and wait for a reply
@@ -138,7 +138,7 @@ class UdpTransport(TransportLayer):
     async def write(self, data):
         """ Sends udp data
         """
-        print_time("Writing UDP data.", color)
+        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         try:
             # See if the udp flow was the result of passive or active open
             if self.connection.active:
