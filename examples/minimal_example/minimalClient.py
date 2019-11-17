@@ -10,7 +10,7 @@ class TestClient():
 
     async def main(self):
         ep = taps.RemoteEndpoint()
-        ep.with_address("localhost")
+        ep.with_hostname("localhost")
         ep.with_port(6666)
         tp = taps.TransportProperties()
 

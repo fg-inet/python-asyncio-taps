@@ -57,6 +57,8 @@ class TestServer():
             lp.with_interface(args.interface)
         if args.local_address:
             lp.with_address(args.local_address)
+        if args.local_host:
+            lp.with_hostname(args.local_host)
         if args.local_port:
             lp.with_port(args.local_port)
 
@@ -98,7 +100,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description='PyTAPS test server.')
     ap.add_argument('--interface', '-i', nargs=1, default=None)
     ap.add_argument('--local-address', '--address', '-a', nargs='?',
-                    default='::1')
+                    default=None)
+    ap.add_argument('--local-host', '--host', '-H', nargs='?',
+                    default='localhost')
     ap.add_argument('--local-port', '--port', '-l', type=int, nargs='?',
                     default=6666)
     ap.add_argument('--local-identity', type=str, nargs=1, default=None)

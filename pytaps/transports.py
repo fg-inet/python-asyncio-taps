@@ -130,22 +130,40 @@ class UdpTransport(TransportLayer):
         self.context = MessageContext()
 
     async def active_open(self, transport):
+        # If there is a framer, call the start event
+        if self.connection.framer is not None:
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         for t in self.connection.pending:
             t.cancel()
-        print_time("Connected successfully UDP.", color)
+        print_time("Connected successfully UDP to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.framer:
-            # Send a start even to the framer and wait for a reply
-            await self.connection.framer.handle_start(self.connection)
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
+        return
+    
+    async def passive_open(self, transport):
+        # If there is a framer, call the start event
+        if self.connection.framer is not None:
+            await self.connection.framer.handle_start(self.connection)
+        self.transport = transport
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        # Get information about the newly connected endpoint
+        new_remote_endpoint.with_address(
+                            transport.get_extra_info("peername")[0])
+        new_remote_endpoint.with_port(
+                            transport.get_extra_info("peername")[1])
+        self.remote_endpoint = new_remote_endpoint
+        self.connection.state = ConnectionState.ESTABLISHED
+        if self.connection.connection_received:
+            self.loop.create_task(self.connection_received(self))
         return
 
     async def write(self, data):
         """ Sends udp data
         """
-        print_time("Writing UDP data.", color)
+        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -205,23 +223,12 @@ class UdpTransport(TransportLayer):
         if self.connection.state == ConnectionState.ESTABLISHED:
             transport.close()
             return
-        # Check if its an incoming or outgoing connection
-        if not self.connection.active:
-            self.transport = transport
-            new_remote_endpoint = RemoteEndpoint()
-            print_time("Received new connection.", color)
-            # Get information about the newly connected endpoint
-            new_remote_endpoint.with_address(
-                                transport.get_extra_info("peername")[0])
-            new_remote_endpoint.with_port(
-                                transport.get_extra_info("peername")[1])
-            self.remote_endpoint = new_remote_endpoint
-            self.connection.state = ConnectionState.ESTABLISHED
-            if self.connection.connection_received:
-                self.loop.create_task(self.connection_received(self))
-            return
 
+        # Check if its an incoming or outgoing connection
+        if self.connection.active:
+            self.loop.create_task(self.active_open(transport))
         else:
+            self.loop.create_task(self.passive_open(transport))
             # Stub code for forcfully killing connection tasks
             # Before establishment to the peer has been completed
             """
@@ -234,7 +241,7 @@ class UdpTransport(TransportLayer):
                     print(self.connection.pending[t])
                     print(t)
                     t.cancel()"""
-            self.loop.create_task(self.active_open(transport))
+
 
     """ ASYNCIO function that gets called when EOF is received
     """
@@ -285,14 +292,33 @@ class TcpTransport(TransportLayer):
         self.context = MessageContext()
 
     async def active_open(self, transport):
+        # If there is a framer, call the start event
+        if self.connection.framer is not None:
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
         self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.framer:
-            # Send a start even to the framer and wait for a reply
-            await self.connection.framer.handle_start(self.connection)
+        self.connection.sleeper_for_racing.cancel_all()
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
+        return
+
+    async def passive_open(self, transport):
+        # If there is a framer, call the start event
+        if self.connection.framer is not None:
+            await self.connection.framer.handle_start(self.connection)
+        self.transport = transport
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        # Get information about the newly connected endpoint
+        new_remote_endpoint.with_address(
+                            transport.get_extra_info("peername")[0])
+        new_remote_endpoint.with_port(
+                            transport.get_extra_info("peername")[1])
+        self.remote_endpoint = new_remote_endpoint
+        self.connection.state = ConnectionState.ESTABLISHED
+        if self.connection.connection_received:
+            self.loop.create_task(self.connection_received(self))
         return
 
     async def write(self, data):
@@ -365,24 +391,14 @@ class TcpTransport(TransportLayer):
         if self.connection.state == ConnectionState.ESTABLISHED:
             transport.close()
             return
-        # Check if its an incoming or outgoing connection
-        if self.connection.active is False:
-            self.transport = transport
-            new_remote_endpoint = RemoteEndpoint()
-            print_time("Received new connection.", color)
-            # Get information about the newly connected endpoint
-            new_remote_endpoint.with_address(
-                                transport.get_extra_info("peername")[0])
-            new_remote_endpoint.with_port(
-                                transport.get_extra_info("peername")[1])
-            self.remote_endpoint = new_remote_endpoint
-            self.connection.state = ConnectionState.ESTABLISHED
-            if self.connection.connection_received:
-                self.loop.create_task(self.connection_received(self))
-            return
 
-        elif self.connection.active:
+        # Check if its an incoming or outgoing connection
+        if self.connection.active:
             self.loop.create_task(self.active_open(transport))
+        else:
+            self.loop.create_task(self.passive_open(transport))
+
+
             # Stub code for forcfully killing connection tasks
             # Before establishment to the peer has been completed
             """

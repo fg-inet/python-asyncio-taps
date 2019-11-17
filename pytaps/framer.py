@@ -65,7 +65,7 @@ class Framer():
                 The connection object on which new data has
                 arrived.
         """
-        pass
+        return None,None,None,None
 
     async def stop(self):
         pass

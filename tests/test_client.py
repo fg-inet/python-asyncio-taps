@@ -44,13 +44,13 @@ class TestClient():
 		self.connection.on_closed(self.handle_closed)
 		msgref = await self.connection.send_message(self.data_to_send)
 
-	async def main(self, data_to_send="Hello\n", stop_at_sent=False, remote_port=6666, reliable=False, yangfile=None, trust_ca=None, local_identity=None):
+	async def main(self, data_to_send="Hello\n", stop_at_sent=False, remote_hostname="localhost", remote_port=6666, reliable=False, yangfile=None, trust_ca=None, local_identity=None):
 		self.data_to_send = data_to_send
 		self.stop_at_sent = stop_at_sent
 		self.yangfile = yangfile
 
 		ep = taps.RemoteEndpoint()
-		ep.with_hostname("localhost")
+		ep.with_hostname(remote_hostname)
 		ep.with_port(remote_port)
 		tp = taps.TransportProperties()
 
@@ -185,5 +185,20 @@ def test_echo_tls_yang():
 		loop.run_forever()
 
 		assert client.received_data.decode() == teststring
+	finally:
+		loop.close()
+
+@pytest.mark.timeout(TEST_TIMEOUT)
+def test_http():
+	hostname = "www.ietf.org"
+	teststring = "GET / HTTP/1.1\r\nHost: " + hostname + "\r\n\r\n"
+	loop = asyncio.new_event_loop()
+	try:
+		client = TestClient()
+		asyncio.set_event_loop(loop)
+		task = loop.create_task(client.main(data_to_send=teststring, remote_hostname=hostname, remote_port=80, reliable=True))
+		loop.run_forever()
+
+		assert "HTTP" in client.received_data.decode()
 	finally:
 		loop.close()

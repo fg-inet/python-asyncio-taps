@@ -7,7 +7,8 @@ class LocalEndpoint:
     def __init__(self):
         self.interface = None
         self.port = None
-        self.address = None
+        self.address = []
+        self.host_name = None
 
     def with_interface(self, interface):
         """Specifies which interface the local endpoint should use.
@@ -24,7 +25,16 @@ class LocalEndpoint:
             address (string, required): Address in the form of an IPv4
                 or IPv6 address.
         """
-        self.address = address
+        self.address.append(address)
+
+    def with_hostname(self, hostname):
+        """Specifies a hostname to listen on the resolved addresses.
+
+        Attributes:
+            hostname (hostname, required): Domain name, e.g., localhost.
+        """
+        self.host_name = hostname
+
 
     def with_port(self, portNumber):
         """Specifies which port the local endpoint should use.

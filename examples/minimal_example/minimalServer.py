@@ -14,7 +14,7 @@ class TestServer():
 
     async def main(self):
         lp = taps.LocalEndpoint()
-        lp.with_address("localhost")
+        lp.with_hostname("localhost")
         lp.with_port(6666)
         tp = taps.TransportProperties()
 
