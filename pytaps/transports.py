@@ -132,16 +132,12 @@ class UdpTransport(TransportLayer):
     async def active_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer is not None:
-            if self.connection.framer.start is not None:
-                await self.connection.framer.start(self.connection)
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         for t in self.connection.pending:
             t.cancel()
         print_time("Connected successfully UDP to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.framer:
-            # Send a start even to the framer and wait for a reply
-            await self.connection.framer.handle_start(self.connection)
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
         return
@@ -149,8 +145,7 @@ class UdpTransport(TransportLayer):
     async def passive_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer is not None:
-            if self.connection.framer.start is not None:
-                await self.connection.framer.start(self.connection)
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
@@ -299,15 +294,11 @@ class TcpTransport(TransportLayer):
     async def active_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer is not None:
-            if self.connection.framer.start is not None:
-                await self.connection.framer.start(self.connection)
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
         self.connection.state = ConnectionState.ESTABLISHED
         self.connection.sleeper_for_racing.cancel_all()
-        if self.connection.framer:
-            # Send a start even to the framer and wait for a reply
-            await self.connection.framer.handle_start(self.connection)
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
         return
@@ -315,8 +306,7 @@ class TcpTransport(TransportLayer):
     async def passive_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer is not None:
-            if self.connection.framer.start is not None:
-                await self.connection.framer.start(self.connection)
+            await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         new_remote_endpoint = RemoteEndpoint()
         print_time("Received new connection.", color)
