@@ -48,6 +48,12 @@ class Connection():
 
         # Create the set of possible protocol candidates
         protocol_candidates = self.create_candidates()
+
+        if len(protocol_candidates) == 0:
+            print_time("Candidate set is empty, aborting", color)
+            if self.initiate_error is not None:
+                self.loop.create_task(self.initiate_error())
+            return
         # If security_parameters were given, initialize ssl context
         if self.security_parameters:
             self.security_context = ssl.create_default_context(
