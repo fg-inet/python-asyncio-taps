@@ -11,7 +11,7 @@ TEST_TIMEOUT = 5
 
 class TestClient():
 
-	async def handle_closed(self):
+	async def handle_closed(self, conn):
 		print("Closed")
 		asyncio.get_event_loop().stop()
 
@@ -26,11 +26,11 @@ class TestClient():
 		self.received_data = data
 		connection.close()
 
-	async def sent_and_receive(self, connection):
+	async def sent_and_receive(self, message_ref, connection):
 		print("Sent and receive")
 		await self.connection.receive(min_incomplete_length=1)
 
-	async def sent_and_stop(self, connection):
+	async def sent_and_stop(self, message_ref, connection):
 		print("Sent and stop")
 		asyncio.get_event_loop().stop()
 

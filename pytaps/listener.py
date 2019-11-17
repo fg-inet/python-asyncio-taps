@@ -50,8 +50,8 @@ class Listener():
         # If the candidate set is empty issue an InitiateError cb
         if not candidate_set:
             print_time("Protocol selection Error occured.", color)
-            if self.initiate_error:
-                self.loop.create_task(self.initiate_error())
+            if self.listen_error:
+                self.loop.create_task(self.listen_error())
             return
 
         # If security_parameters were given, initialize ssl context

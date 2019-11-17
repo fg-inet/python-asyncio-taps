@@ -100,7 +100,7 @@ class TransportLayer(asyncio.Protocol):
                 print_time("SendError occured, connection is not established.",
                            color)
                 if self.send_error:
-                    self.loop.create_task(self.send_error(message_count))
+                    self.loop.create_task(self.send_error(message_count, self.connection))
                 return
         self.loop.create_task(self.write(data))
         return self.message_count
@@ -163,11 +163,11 @@ class UdpTransport(TransportLayer):
         except:
             print_time("SendError occured.", color)
             if self.connection.send_error:
-                self.loop.create_task(self.connection.send_error(self.message_count))
+                self.loop.create_task(self.connection.send_error(self.message_count, self.connection))
             return
         print_time("Data written successfully.", color)
         if self.connection.sent:
-            self.loop.create_task(self.connection.sent(self.message_count))
+            self.loop.create_task(self.connection.sent(self.message_count, self.connection))
         return
 
     async def close(self):
@@ -175,7 +175,7 @@ class UdpTransport(TransportLayer):
         self.transport.close()
         self.connection.state = ConnectionState.CLOSED
         if self.connection.closed:
-            self.loop.create_task(self.connection.closed())
+            self.loop.create_task(self.connection.closed(self.connection))
 
     async def read(self, min_incomplete_length, max_length):
         print_time("Reading message", color)
@@ -311,11 +311,11 @@ class TcpTransport(TransportLayer):
         except:
             print_time("SendError occured.", color)
             if self.send_error:
-                self.loop.create_task(self.send_error(self.message_count))
+                self.loop.create_task(self.send_error(self.message_count, self.connection))
             return
         print_time("Data written successfully.", color)
         if self.connection.sent:
-            self.loop.create_task(self.connection.sent(self.message_count))
+            self.loop.create_task(self.connection.sent(self.message_count, self.connection))
         return
 
     async def read(self, min_incomplete_length, max_length):
@@ -354,7 +354,7 @@ class TcpTransport(TransportLayer):
         self.transport.close()
         self.connection.state = ConnectionState.CLOSED
         if self.connection.closed:
-            self.loop.create_task(self.connection.closed())
+            self.loop.create_task(self.connection.closed(self.connection))
 
 # Asyncio Callbacks
 

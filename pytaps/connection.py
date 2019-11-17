@@ -77,7 +77,7 @@ class Connection():
                 print_time("Creating UDP connect task.", color)
                 if not self.local_endpoint:
                     if self.initiate_error:
-                        self.loop.create_task(self.initiate_error())
+                        self.loop.create_task(self.initiate_error(self))
 
                 # Create a datagram endpoint
                 task = self.loop.create_task(self.loop.create_datagram_endpoint(
@@ -288,7 +288,8 @@ class Connection():
 
         Attributes:
             callback (callback, required): Function that implements the
-                callback.
+                callback.  Callback signature should accept a connection
+                as its parameter.
         """
         self.closed = callback
 
