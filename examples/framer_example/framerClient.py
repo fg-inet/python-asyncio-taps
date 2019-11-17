@@ -61,21 +61,21 @@ class TestClient():
         taps.print_time("Received message " + str(data) + ".", color)
         # self.loop.stop()
 
-    async def handle_sent(self, message_ref):
+    async def handle_sent(self, message_ref, connection):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
         await self.connection.receive(min_incomplete_length=1)
 
-    async def handle_send_error(self, msg):
+    async def handle_send_error(self, msg, connection):
         taps.print_time("SendError cb received.", color)
         print("Error sending message")
 
-    async def handle_initiate_error(self):
+    async def handle_initiate_error(self, connection):
         taps.print_time("InitiateError cb received.", color)
         print("Error init")
         self.loop.stop()
 
-    async def handle_closed(self):
+    async def handle_closed(self, connection):
         taps.print_time("Connection closed, stopping event loop.", color)
         # self.loop.stop()
 

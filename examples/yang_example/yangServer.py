@@ -38,7 +38,7 @@ class TestServer():
         taps.print_time("Listen Error occured.", color)
         self.loop.stop()
 
-    async def handle_sent(self, message_ref):
+    async def handle_sent(self, message_ref, connection):
         taps.print_time("Sent cb received, message " + str(message_ref) +
                         " has been sent.", color)
         # self.connection.close()

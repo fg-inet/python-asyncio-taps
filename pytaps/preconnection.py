@@ -293,6 +293,8 @@ class Preconnection:
                 rp.with_address(listener.remote_endpoint.address)
                 rp.with_port(port)
                 precon = Preconnection(listener.local_endpoint, rp, listener.transport_properties, listener.security_parameters, listener.loop)
+                if listener.framer is not None:
+                    precon.add_framer(listener.framer)
                 conn = Connection(precon)
                 new_udp = UdpTransport(conn, conn.local_endpoint, conn.remote_endpoint)
                 listener.active_ports[port] = conn
