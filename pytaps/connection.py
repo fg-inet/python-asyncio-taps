@@ -32,6 +32,7 @@ class Connection():
                 self.active = preconnection.active
                 self.framer = preconnection.framer
                 self.set_callbacks(preconnection)
+                self.sleeper_for_racing = SleepClassForRacing()
                 self.pending = []
                 # Security Context for SSL
                 self.security_context = None
@@ -110,7 +111,7 @@ class Connection():
                                     ssl=self.security_context,
                                     server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
                 # Wait before starting next connection attempt
-                await asyncio.sleep(RACING_DELAY)
+                await self.sleeper_for_racing.sleep(RACING_DELAY)
 
     async def send_message(self, data):
         """ Attempts to send data on the connection.

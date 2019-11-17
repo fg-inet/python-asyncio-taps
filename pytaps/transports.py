@@ -288,6 +288,7 @@ class TcpTransport(TransportLayer):
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
         self.connection.state = ConnectionState.ESTABLISHED
+        self.connection.sleeper_for_racing.cancel_all()
         if self.connection.framer:
             # Send a start even to the framer and wait for a reply
             await self.connection.framer.handle_start(self.connection)
