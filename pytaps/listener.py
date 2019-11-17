@@ -76,15 +76,16 @@ class Listener():
         if len(self.local_endpoint.address) > 0:
             all_addrs += self.local_endpoint.address
             print_time("Adding addresses to listen: " + str(self.local_endpoint.address) + " --> " + str(all_addrs), color)
-        for local_interface in self.local_endpoint.interface:
-            try:
-                # Unfortunately, listening on link-local IPv6 addresses does not work
-                # because it's broken in asyncio: https://bugs.python.org/issue35545
-                all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET6] if entry['addr'][:4] != "fe80" ]
-                all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET] ]
-                print_time("Adding addresses of local interface " + str(self.local_endpoint.interface) + " --> " + str(all_addrs), color)
-            except ValueError as err:
-                print_time("Cannot get IP addresses for " + str(self.local_endpoint.interface) + ": " + str(err), color)
+        if self.local_endpoint.interface is not None:
+            for local_interface in self.local_endpoint.interface:
+                try:
+                    # Unfortunately, listening on link-local IPv6 addresses does not work
+                    # because it's broken in asyncio: https://bugs.python.org/issue35545
+                    all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET6] if entry['addr'][:4] != "fe80" ]
+                    all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET] ]
+                    print_time("Adding addresses of local interface " + str(self.local_endpoint.interface) + " --> " + str(all_addrs), color)
+                except ValueError as err:
+                    print_time("Cannot get IP addresses for " + str(self.local_endpoint.interface) + ": " + str(err), color)
 
         # Get all combinations of protocols and remote IP addresses
         # to listen on all of them
