@@ -196,7 +196,7 @@ class UdpTransport(TransportLayer):
             self.loop.create_task(self.connection.closed(self.connection))
 
     async def read(self, min_incomplete_length, max_length):
-        print_time("Reading message", color)
+        # print_time("Reading message", color)
         if self.connection.framer:
             if len(self.framer_buffer) == 0:
                 await self.await_data()
@@ -204,7 +204,7 @@ class UdpTransport(TransportLayer):
         else:
             if self.recv_buffer is None:
                 await self.await_data()
-            print_time("Received full message", color)
+            #print_time("Received full message", color)
             if len(self.recv_buffer) == 1:
                 data = self.recv_buffer[0]
                 self.recv_buffer = None
@@ -255,7 +255,7 @@ class UdpTransport(TransportLayer):
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append(data)
-        print_time("Received %d-byte datagram" % len(data), color)
+        #print_time("Received %d-byte datagram" % len(data), color)
 
         if self.connection.framer:
             self.loop.create_task(self.invoke_framer())
@@ -275,14 +275,21 @@ class UdpTransport(TransportLayer):
             print_time("Connection Error occured.", color)
             print(err)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error())
+                self.loop.create_task(self.connection.connection_error(err, self.connection))
             return
 
     """ ASNYCIO function that gets called when the connection
         is lost
     """
     def connection_lost(self, exc):
-        print_time("Connection lost", color)
+        if exc is None:
+            print_time("Connection lost without err", color)
+            if self.connection.closed:
+                self.loop.create_task(self.connection.closed(self.connection))
+        else:
+            print_time("Connection lost with err", color)
+            if self.connection.connection_error:
+                self.loop.create_task(self.connection.connection_error(exc, self.connection))
 
 
 class TcpTransport(TransportLayer):
@@ -345,7 +352,7 @@ class TcpTransport(TransportLayer):
         return
 
     async def read(self, min_incomplete_length, max_length):
-        print_time("Reading message", color)
+        # print_time("Reading message", color)
         if self.connection.framer:
             if len(self.framer_buffer) == 0:
                 await self.await_data()
@@ -444,13 +451,20 @@ class TcpTransport(TransportLayer):
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
             print_time("Connection Error occured.", color)
-            print(err)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error())
+                self.loop.create_task(self.connection.connection_error(err, self.connection))
             return
 
     """ ASNYCIO function that gets called when the connection
         is lost
     """
     def connection_lost(self, exc):
-        print_time("Connection lost", color)
+        if exc is None:
+            print_time("Connection lost without err", color)
+            if self.connection.closed:
+                self.loop.create_task(self.connection.closed(self.connection))
+        else:
+            print_time("Connection lost with err", color)
+            if self.connection.connection_error:
+                self.loop.create_task(self.connection.connection_error(exc, self.connection))
+
