@@ -1,5 +1,6 @@
 import asyncio
 import ssl
+import ipaddress
 from .connection import Connection
 from .securityParameters import SecurityParameters
 from .transportProperties import *
@@ -7,7 +8,6 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .utility import *
 from .transports import *
 from .multicast import do_join, do_leave
-import ipaddress
 
 color = "cyan"
 
@@ -40,7 +40,7 @@ class Listener():
         print_time("Starting listener.", color)
 
         # Create set of candidate protocols
-        candidate_set = self.create_candidates()
+        protocol_candidates = self.create_candidates()
 
         if self.remote_endpoint is not None:
             if self.remote_endpoint.address is None:
@@ -48,7 +48,7 @@ class Listener():
                     self.remote_endpoint.host_name, self.remote_endpoint.port)
                 self.remote_endpoint.address = remote_info[0][4][0]
         # If the candidate set is empty issue an InitiateError cb
-        if not candidate_set:
+        if not protocol_candidates:
             print_time("Protocol selection Error occured.", color)
             if self.initiate_error:
                 self.loop.create_task(self.initiate_error())
@@ -65,15 +65,31 @@ class Listener():
                                         self.security_parameters.identity)
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
+
+        if len(self.local_endpoint.address) < 1 and self.local_endpoint.host_name is not None:
+            # No address to listen on yet -- resolve hostname
+            endpoint_info = await self.loop.getaddrinfo(
+                self.local_endpoint.host_name, self.local_endpoint.port)
+            all_addrs = list(set([ info[4][0] for info in endpoint_info]))
+            print_time("Resolved " + str(self.local_endpoint.host_name) + " to " + str(all_addrs), color)
+        else:
+            all_addrs = self.local_endpoint.address
+            print_time("Not resolving - using address(es) " + str(self.local_endpoint.address) + " --> " + str(all_addrs), color)
+
+        # Get all combinations of protocols and remote IP addresses
+        # to listen on all of them
+        candidate_set = [ protocol + (address,) for address in all_addrs for protocol in protocol_candidates ]
+
         # Attempt to set up the appropriate listener for the candidate protocol
         for candidate in candidate_set:
             try:
                 if candidate[0] == 'udp':
                     self.protocol = 'udp'
+                    self.local_endpoint.address = candidate[2]
                     multicast_receiver = False
                     # See if the address of the local endpoint
                     # is a multicast address
-                    print_time("local endpoint=%s" % (self.local_endpoint.address), color)
+                    print_time("UDP local endpoint: address " + str(self.local_endpoint.address) + " port: " + str(self.local_endpoint.port), color)
                     check_addr = ipaddress.ip_address(self.local_endpoint.address)
                     if check_addr.is_multicast:
                         print_time("addr is multicast", color)
@@ -87,21 +103,23 @@ class Listener():
                     else:
                         await self.loop.create_datagram_endpoint(
                                         lambda: DatagramHandler(self),
-                                        local_addr=(self.local_endpoint.interface,
+                                        local_addr=(self.local_endpoint.address,
                                                     self.local_endpoint.port))
                 elif candidate[0] == 'tcp':
                     self.protocol = 'tcp'
+                    self.local_endpoint.address = candidate[2]
+                    print_time("TCP local endpoint: address " + str(self.local_endpoint.address) + " port: " + str(self.local_endpoint.port))
                     server = await self.loop.create_server(
                                     lambda: StreamHandler(self),
-                                    self.local_endpoint.interface,
+                                    self.local_endpoint.address,
                                     self.local_endpoint.port,
                                     ssl=self.security_context)
-            except:
-                print_time("Listen Error occured.", color)
+            except Exception as err:
+                print_time("Listen Error occured: " + str(err), color)
                 if self.listen_error:
                     self.loop.create_task(self.listen_error())
 
-            print_time("Starting " + self.protocol + " Listener on " +
+            print_time("Started " + self.protocol + " Listener on " +
                        (str(self.local_endpoint.address) if
                         self.local_endpoint.address else "default") + ":" +
                        str(self.local_endpoint.port), color)

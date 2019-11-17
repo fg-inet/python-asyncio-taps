@@ -133,7 +133,7 @@ class UdpTransport(TransportLayer):
         self.transport = transport
         for t in self.connection.pending:
             t.cancel()
-        print_time("Connected successfully UDP.", color)
+        print_time("Connected successfully UDP to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         self.connection.state = ConnectionState.ESTABLISHED
         if self.connection.framer:
             # Send a start even to the framer and wait for a reply
@@ -145,7 +145,7 @@ class UdpTransport(TransportLayer):
     async def write(self, data):
         """ Sends udp data
         """
-        print_time("Writing UDP data.", color)
+        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -288,6 +288,7 @@ class TcpTransport(TransportLayer):
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
         self.connection.state = ConnectionState.ESTABLISHED
+        self.connection.sleeper_for_racing.cancel_all()
         if self.connection.framer:
             # Send a start even to the framer and wait for a reply
             await self.connection.framer.handle_start(self.connection)
