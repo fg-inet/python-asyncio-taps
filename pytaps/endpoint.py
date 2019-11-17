@@ -52,18 +52,21 @@ class RemoteEndpoint:
         as a name that will be resolved with DNS.
     """
     def __init__(self):
-        self.address = None
+        self.address = []
         self.port = None
         self.host_name = None
 
     def with_address(self, address):
-        """Specifies which address the remote endpoint should have.
+        """Specifies which address(es) the remote endpoint should have.
 
         Attributes:
             address (string, required): Address in the form of an IPv4
                 or IPv6 address.
         """
-        self.address = address
+        if isinstance(address, list):
+            self.address += address
+        else:
+            self.address.append(address)
 
     def with_hostname(self, hostname):
         """Specifies which hostname the remote endpoint should have.

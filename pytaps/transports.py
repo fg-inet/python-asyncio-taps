@@ -145,7 +145,7 @@ class UdpTransport(TransportLayer):
     async def write(self, data):
         """ Sends udp data
         """
-        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
+        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address[0]) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -157,7 +157,7 @@ class UdpTransport(TransportLayer):
                 # Write the data
                 self.transport.sendto(data)
             else:
-                remote_address = self.remote_endpoint.address
+                remote_address = self.remote_endpoint.address[0]
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
         except:

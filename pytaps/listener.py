@@ -221,7 +221,7 @@ class DatagramHandler(asyncio.Protocol):
         new_connection = Connection(self.preconnection)
         new_connection.state = ConnectionState.ESTABLISHED
         new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
+        print_time("Received new connection from " + str(addr[0]) + ":" + str(addr[1]) + ".", color)
         new_remote_endpoint.with_address(addr[0])
         new_remote_endpoint.with_port(addr[1])
         new_connection.remote_endpoint = new_remote_endpoint
