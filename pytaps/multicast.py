@@ -43,13 +43,16 @@ def do_join(listener):
         _loop = listener.loop
         assert(_libhandle is not None)
 
+    remote = listener.remote_endpoint.address[0]
+    local = listener.local_endpoint.address[0]
+
     if _loop is not listener.loop:
         # if we hit this, we need to maintain a dict to keep a separate
         # libhandle per loop
         raise Exception("not yet supported: joining with multiple different asyncio loops")
     join_ctx = multicast_glue.join(_libhandle, listener,
-        listener.remote_endpoint.address,
-        listener.local_endpoint.address,
+        remote,
+        local,
         int(listener.local_endpoint.port),
         got_packet)
     listener._join_ctx = join_ctx

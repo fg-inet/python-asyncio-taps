@@ -43,10 +43,10 @@ class Listener():
         protocol_candidates = self.create_candidates()
 
         if self.remote_endpoint is not None:
-            if self.remote_endpoint.address is None:
+            if not self.remote_endpoint.address:
                 remote_info = await self.loop.getaddrinfo(
                     self.remote_endpoint.host_name, self.remote_endpoint.port)
-                self.remote_endpoint.address = remote_info[0][4][0]
+                self.remote_endpoint.address = [remote_info[0][4][0]]
         # If the candidate set is empty issue an InitiateError cb
         if not protocol_candidates:
             print_time("Protocol selection Error occured.", color)
@@ -85,12 +85,12 @@ class Listener():
             try:
                 if candidate[0] == 'udp':
                     self.protocol = 'udp'
-                    self.local_endpoint.address = candidate[2]
+                    self.local_endpoint.address = [candidate[2]]
                     multicast_receiver = False
                     # See if the address of the local endpoint
                     # is a multicast address
                     print_time("UDP local endpoint: address " + str(self.local_endpoint.address) + " port: " + str(self.local_endpoint.port), color)
-                    check_addr = ipaddress.ip_address(self.local_endpoint.address)
+                    check_addr = ipaddress.ip_address(self.local_endpoint.address[0])
                     if check_addr.is_multicast:
                         print_time("addr is multicast", color)
                         # If the address is multicast, make sure that the
@@ -103,15 +103,15 @@ class Listener():
                     else:
                         await self.loop.create_datagram_endpoint(
                                         lambda: DatagramHandler(self),
-                                        local_addr=(self.local_endpoint.address,
+                                        local_addr=(self.local_endpoint.address[0],
                                                     self.local_endpoint.port))
                 elif candidate[0] == 'tcp':
                     self.protocol = 'tcp'
-                    self.local_endpoint.address = candidate[2]
+                    self.local_endpoint.address = [candidate[2]]
                     print_time("TCP local endpoint: address " + str(self.local_endpoint.address) + " port: " + str(self.local_endpoint.port))
                     server = await self.loop.create_server(
                                     lambda: StreamHandler(self),
-                                    self.local_endpoint.address,
+                                    self.local_endpoint.address[0],
                                     self.local_endpoint.port,
                                     ssl=self.security_context)
             except Exception as err:
