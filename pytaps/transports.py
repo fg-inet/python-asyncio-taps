@@ -382,7 +382,7 @@ class TcpTransport(TransportLayer):
                 self.loop.create_task(self.connection.received_partial(data,
                                       self.context, False, self))
 
-    def close(self):
+    async def close(self):
         print_time("Closing connection.", color)
         self.transport.close()
         self.connection.state = ConnectionState.CLOSED
