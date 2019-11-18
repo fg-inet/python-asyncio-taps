@@ -59,6 +59,9 @@ class TestServer():
             lp.with_address(args.local_address)
         if args.local_host:
             lp.with_hostname(args.local_host)
+        # If nothing to listen on has been specified, listen on localhost
+        if not args.interface and not args.local_address and not args.local_host:
+            lp.with_hostname("localhost")
         if args.local_port:
             lp.with_port(args.local_port)
 
@@ -102,7 +105,7 @@ if __name__ == "__main__":
     ap.add_argument('--local-address', '--address', '-a', nargs='?',
                     default=None)
     ap.add_argument('--local-host', '--host', '-H', nargs='?',
-                    default='localhost')
+                    default=None)
     ap.add_argument('--local-port', '--port', '-l', type=int, nargs='?',
                     default=6666)
     ap.add_argument('--local-identity', type=str, nargs=1, default=None)

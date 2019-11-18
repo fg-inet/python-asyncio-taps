@@ -1,6 +1,7 @@
 import asyncio
 import ssl
 import ipaddress
+import netifaces
 from .connection import Connection
 from .securityParameters import SecurityParameters
 from .transportProperties import *
@@ -37,7 +38,7 @@ class Listener():
     async def start_listener(self):
         """ method wrapped by listen
         """
-        print_time("Starting listener.", color)
+        print_time("Starting listener with hostname: " + str(self.local_endpoint.host_name) + ", interface: " + str(self.local_endpoint.interface) + ", addresses: " + str(self.local_endpoint.address) + ".", color)
 
         # Create set of candidate protocols
         protocol_candidates = self.create_candidates()
@@ -66,15 +67,25 @@ class Listener():
             for cert in self.security_parameters.trustedCA:
                 self.security_context.load_verify_locations(cert)
 
-        if len(self.local_endpoint.address) < 1 and self.local_endpoint.host_name is not None:
-            # No address to listen on yet -- resolve hostname
+        all_addrs = []
+        if self.local_endpoint.host_name is not None:
             endpoint_info = await self.loop.getaddrinfo(
                 self.local_endpoint.host_name, self.local_endpoint.port)
-            all_addrs = list(set([ info[4][0] for info in endpoint_info]))
+            all_addrs += list(set([ info[4][0] for info in endpoint_info]))
             print_time("Resolved " + str(self.local_endpoint.host_name) + " to " + str(all_addrs), color)
-        else:
-            all_addrs = self.local_endpoint.address
-            print_time("Not resolving - using address(es) " + str(self.local_endpoint.address) + " --> " + str(all_addrs), color)
+        if len(self.local_endpoint.address) > 0:
+            all_addrs += self.local_endpoint.address
+            print_time("Adding addresses to listen: " + str(self.local_endpoint.address) + " --> " + str(all_addrs), color)
+        if self.local_endpoint.interface is not None:
+            for local_interface in self.local_endpoint.interface:
+                try:
+                    # Unfortunately, listening on link-local IPv6 addresses does not work
+                    # because it's broken in asyncio: https://bugs.python.org/issue35545
+                    all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET6] if entry['addr'][:4] != "fe80" ]
+                    all_addrs += [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET] ]
+                    print_time("Adding addresses of local interface " + str(self.local_endpoint.interface) + " --> " + str(all_addrs), color)
+                except ValueError as err:
+                    print_time("Cannot get IP addresses for " + str(self.local_endpoint.interface) + ": " + str(err), color)
 
         # Get all combinations of protocols and remote IP addresses
         # to listen on all of them

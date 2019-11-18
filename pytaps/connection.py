@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 import ssl
+import netifaces
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .transportProperties import *
 from .utility import *
@@ -68,20 +69,42 @@ class Connection():
 
         if self.remote_endpoint.host_name is not None:
             # Resolve address
+            # FIXME: Unfortunately, asyncio getaddrinfo does not allow to resolve on specific interfaces
+            # FIXME: Consider migrating to something better, e.g., getdns
             remote_info = await self.loop.getaddrinfo(
                 self.remote_endpoint.host_name, self.remote_endpoint.port)
             # Concat v6 and v4 address lists, making sure we try v6 first
-            all_addrs_v6 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET6]))
-            all_addrs_v4 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET]))
-            all_addrs = all_addrs_v6 + all_addrs_v4
-            print_time("Resolved " + str(self.remote_endpoint.host_name) + " to " + str(all_addrs), color)
+            remote_addrs_v6 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET6]))
+            remote_addrs_v4 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET]))
+            remote_addrs = remote_addrs_v6 + remote_addrs_v4
+            print_time("Resolved " + str(self.remote_endpoint.host_name) + " to " + str(remote_addrs), color)
 
         else:
-            all_addrs = self.remote_endpoint.address
-            print_time("Not resolving - using address " + str(self.remote_endpoint.address) + " --> " + str(all_addrs), color)
+            remote_addrs = self.remote_endpoint.address
+            print_time("Not resolving - using address " + str(self.remote_endpoint.address) + " --> " + str(remote_addrs), color)
 
-        # Get all combinations of protocols and remote IP addresses to race them
-        candidate_set = [ protocol + (address,) for address in all_addrs for protocol in protocol_candidates ]
+        if self.local_endpoint is not None:
+            # Local interface specified --> try local addresses on that interface
+            for local_interface in self.local_endpoint.interface:
+                try:
+                    # Unfortunately, link-local IPv6 addresses don't work
+                    # because they're broken in asyncio: https://bugs.python.org/issue35545
+                    local_v6_addrs = [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET6] if entry['addr'][:4] != "fe80" ]
+                    local_v4_addrs = [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET] ]
+                    print_time("Trying addresses of local interface " + str(self.local_endpoint.interface) + " --> " + str(local_v6_addrs) + ", " + str(local_v4_addrs), color)
+                except ValueError as err:
+                    print_time("Cannot get IP addresses for " + str(self.local_endpoint.interface) + ": " + str(err), color)
+                    # TODO throw error
+            # Build candidate set for racing
+            # based on combinations of protocol, local and remote IP address
+            candidate_set = [ protocol + (remote_address,) + (local_address,) for remote_address in remote_addrs_v6 for protocol in protocol_candidates for local_address in local_v6_addrs ]
+            candidate_set += [ protocol + (remote_address,) + (local_address,) for remote_address in remote_addrs_v4 for protocol in protocol_candidates for local_address in local_v4_addrs ]
+            print_time("Final Candidates: " + str(candidate_set))
+
+        else:
+            # Build candidate set for racing
+            # based on combinations of protocol and remote IP address
+            candidate_set = [ protocol + (address,) for address in remote_addrs for protocol in protocol_candidates ]
 
         # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
@@ -90,7 +113,14 @@ class Connection():
                 print_time("Connection established -- stop racing", color)
                 break
 
-            print_time("Trying candidate protocol: " + str(candidate[0]) + " and address: " + str(candidate[2]), color)
+            print_time("Trying candidate protocol: " + str(candidate[0]) + " and remote address: " + str(candidate[2]) + ( " and local address: " + str(candidate[3]) if len(candidate) > 3 else "" ), color)
+            if len(candidate) > 3:
+                # bind to a specific local address
+                local_address_to_use = (candidate[3], None)
+                self.local_endpoint.address = candidate[3]
+            else:
+                local_address_to_use = None
+
             if candidate[0] == 'udp':
                 self.protocol = 'udp'
                 print_time("Creating UDP connect task with remote addr " + str(candidate[2]) + ", port " + str(self.remote_endpoint.port), color)
@@ -103,7 +133,8 @@ class Connection():
                 task = self.loop.create_task(self.loop.create_datagram_endpoint(
                                     lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
                                     remote_addr=(self.remote_endpoint.address,
-                                                 self.remote_endpoint.port)))
+                                                 self.remote_endpoint.port),
+                                    local_addr=local_address_to_use))
 
                 print_time("Not racing multiple addrs for UDP -- stop racing", color)
                 break
@@ -118,7 +149,8 @@ class Connection():
                                     self.remote_endpoint.address,
                                     self.remote_endpoint.port,
                                     ssl=self.security_context,
-                                    server_hostname=(self.remote_endpoint.host_name if self.security_context else None)))
+                                    server_hostname=(self.remote_endpoint.host_name if self.security_context else None),
+                                    local_addr = local_address_to_use))
                 # Wait before starting next connection attempt
                 await self.sleeper_for_racing.sleep(RACING_DELAY)
 
