@@ -74,9 +74,8 @@ class TransportLayer(asyncio.Protocol):
         # Try to call the deframing function implemented by the individual framer
         try:
             ctx, msg, len, eom = await self.connection.framer.handle_received_data(self.connection)
-        except (DeframingFailed, ValueError):
-            # If the framer throws an DeframingFailed Error, stop trying to deframe until nre data arrives
-            print_time("Framing failed", color)
+        except (DeframingFailed, ValueError, TypeError):
+            # If the framer throws an DeframingFailed Error, stop trying to deframe until new data arrives
             self.active_framer.set_result(None)
             self.active_framer = None
             return
