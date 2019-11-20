@@ -230,6 +230,17 @@ class Connection():
 
         return sorted_candidates
 
+    def parse(self, min_incomplete_length=0, max_length=0):
+        """ Returns the message buffer of the
+            connection.
+
+        Attributes:
+            connection (connection, required):
+                The connection object from which the
+                buffer should be returned.
+        """
+        return self.transports[0].recv_buffer, None, False
+
     def set_callbacks(self, preconnection):
             self.ready = preconnection.ready
             self.initiate_error = preconnection.initiate_error

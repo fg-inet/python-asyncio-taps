@@ -19,7 +19,7 @@ class testFramer(taps.Framer):
         return tlv.encode()
 
     async def handle_received_data(self, connection):
-        byte_stream, context, eom = self.parse(connection, 0, 0)
+        byte_stream, context, eom = connection.parse()
         byte_stream = byte_stream.decode()
         taps.print_time("Deframing " + byte_stream, color)
         try:

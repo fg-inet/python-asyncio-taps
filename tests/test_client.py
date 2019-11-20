@@ -18,13 +18,13 @@ class TestClient():
 	async def handle_received(self, data, context, connection):
 		print("Receive message: " + str(data))
 		self.received_data = data
-		connection.close()
+		await connection.close()
 
 	async def handle_received_partial(self, data, context, end_of_message,
 									  connection):
 		print("Receive partial message: " + str(data))
 		self.received_data = data
-		connection.close()
+		await connection.close()
 
 	async def sent_and_receive(self, message_ref, connection):
 		print("Sent and receive")

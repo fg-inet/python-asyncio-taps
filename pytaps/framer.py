@@ -102,14 +102,3 @@ class Framer():
                 The framed message.
         """
         self.connection.send_data(data, -1)
-
-    def parse(self, connection, min_incomplete_length, max_length):
-        """ Returns the message buffer of the
-            connection.
-
-        Attributes:
-            connection (connection, required):
-                The connection object from which the
-                buffer should be returned.
-        """
-        return connection.transports[0].recv_buffer, None, False
