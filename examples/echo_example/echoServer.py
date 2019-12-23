@@ -8,7 +8,8 @@ color = "blue"
 
 
 class TestServer():
-    """A simple echo server. Listens using TCP by default, but can also use UDP.
+    """A simple echo server. Listens using TCP by default,
+       but can also use UDP.
 
     """
     def __init__(self, reliable=True):
@@ -60,7 +61,8 @@ class TestServer():
         if args.local_host:
             lp.with_hostname(args.local_host)
         # If nothing to listen on has been specified, listen on localhost
-        if not args.interface and not args.local_address and not args.local_host:
+        if not args.interface and not args.local_address\
+           and not args.local_host:
             lp.with_hostname("localhost")
         if args.local_port:
             lp.with_port(args.local_port)
@@ -84,8 +86,6 @@ class TestServer():
             tp.prohibit("reliability")
         if self.reliable == "Both":
             tp.ignore("reliability")
-
-        
 
         self.preconnection = taps.Preconnection(local_endpoint=lp,
                                                 transport_properties=tp,
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     if args.reliable in ["no", "false"]:
         server_udp = TestServer(reliable="False")
         loop.create_task(server_udp.main(args))
-    if args.reliable in [ "both"]:
+    if args.reliable in ["both"]:
         server_both = TestServer(reliable="Both")
         loop.create_task(server_both.main(args))
 

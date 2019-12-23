@@ -8,9 +8,11 @@ from .utility import *
 from .framer import *
 color = "white"
 
+
 class MessageContext(object):
     def __init__(self):
         self.addr = None
+
 
 class TransportLayer(asyncio.Protocol):
     """ One possible underlying transport for a TAPS connection
@@ -25,26 +27,26 @@ class TransportLayer(asyncio.Protocol):
                         RemoteEndpoint
     """
     def __init__(self, connection, local_endpoint=None, remote_endpoint=None):
-                self.local_endpoint = local_endpoint
-                self.remote_endpoint = remote_endpoint
-                self.connection = connection
-                self.loop = connection.loop
-                self.connection.transports.append(self)
-                self.waiters = []
-                self.open_receives = 0
-                # Keeping track of how many messages have been sent for msgref
-                self.message_count = 0
-                # Determines if the protocol is message based or not (needed?)
-                self.message_based = True
-                # Reception buffer, holding data returned from the OS
-                self.recv_buffer = None
-                # Boolean to indicate that EOF has been reached
-                self.at_eof = False
+        self.local_endpoint = local_endpoint
+        self.remote_endpoint = remote_endpoint
+        self.connection = connection
+        self.loop = connection.loop
+        self.connection.transports.append(self)
+        self.waiters = []
+        self.open_receives = 0
+        # Keeping track of how many messages have been sent for msgref
+        self.message_count = 0
+        # Determines if the protocol is message based or not (needed?)
+        self.message_based = True
+        # Reception buffer, holding data returned from the OS
+        self.recv_buffer = None
+        # Boolean to indicate that EOF has been reached
+        self.at_eof = False
 
-                # If we have a framer, create a buffer for deframed messages
-                if connection.framer:
-                    self.active_framer = None
-                    self.framer_buffer = []
+        # If we have a framer, create a buffer for deframed messages
+        if connection.framer:
+            self.active_framer = None
+            self.framer_buffer = []
     """ Function that blocks until new data has arrived
     """
     async def await_data(self):
@@ -63,23 +65,28 @@ class TransportLayer(asyncio.Protocol):
             await self.active_framer
         finally:
             self.active_framer = None
-    
+
     """ Invokes the framer to deframe newly arrived data
     """
     async def invoke_framer(self):
-        # If there is already another deframing in progress, wait for it to complete
+        # If there is already another deframing in progress,
+        #  wait for it to complete
         if self.active_framer:
             await self.active_framer
         self.active_framer = self.loop.create_future()
-        # Try to call the deframing function implemented by the individual framer
+        # Try to call the deframing function implemented
+        # by the individual framer
         try:
-            ctx, msg, len, eom = await self.connection.framer.handle_received_data(self.connection)
+            ctx, msg, len, eom = await \
+                self.connection.framer.handle_received_data(self.connection)
         except (DeframingFailed, ValueError, TypeError):
-            # If the framer throws an DeframingFailed Error, stop trying to deframe until new data arrives
+            # If the framer throws an DeframingFailed Error, stop trying
+            # to deframe until new data arrives
             self.active_framer.set_result(None)
             self.active_framer = None
             return
-        # If a message was deframed succesful, modify the recv buffer, add the message to the framer buffer
+        # If a message was deframed succesful, modify the recv buffer,
+        #  add the message to the framer buffer
         self.recv_buffer = self.recv_buffer[len:]
         self.framer_buffer.append(msg)
         self.active_framer.set_result(None)
@@ -88,7 +95,8 @@ class TransportLayer(asyncio.Protocol):
             if not w.done():
                 w.set_result(None)
                 return
-        # Since there might be another message that is able to be deframed, invoke the framer again
+        # Since there might be another message that is able to be deframed,
+        #  invoke the framer again
         self.loop.create_task(self.invoke_framer())
 
     def send(self, data):
@@ -96,11 +104,13 @@ class TransportLayer(asyncio.Protocol):
         """
         self.message_count += 1
         if self.connection.state is not ConnectionState.ESTABLISHED:
-                print_time("SendError occured, connection is not established.",
-                           color)
-                if self.send_error:
-                    self.loop.create_task(self.send_error(message_count, self.connection))
-                return
+            print_time("SendError occured, connection is not established.",
+                       color)
+            if self.send_error:
+                self.loop.create_task(
+                    self.send_error(message_count, self.connection)
+                    )
+            return
         self.loop.create_task(self.write(data))
         return self.message_count
 
@@ -113,7 +123,7 @@ class TransportLayer(asyncio.Protocol):
                                   max_length))
         else:"""
         self.loop.create_task(self.read(min_incomplete_length,
-                                  max_length))
+                                        max_length))
 
     async def read(self):
         pass
@@ -135,12 +145,15 @@ class UdpTransport(TransportLayer):
         self.transport = transport
         for t in self.connection.pending:
             t.cancel()
-        print_time("Connected successfully UDP to " + str(self.connection.remote_endpoint.address) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
+        print_time("Connected successfully UDP to " +
+                   str(self.connection.remote_endpoint.address) +
+                   ":" + str(self.connection.remote_endpoint.port) +
+                   ".", color)
         self.connection.state = ConnectionState.ESTABLISHED
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
         return
-    
+
     async def passive_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer is not None:
@@ -162,7 +175,10 @@ class UdpTransport(TransportLayer):
     async def write(self, data):
         """ Sends udp data
         """
-        print_time("Writing UDP data to " + str(self.connection.remote_endpoint.address[0]) + ":" + str(self.connection.remote_endpoint.port) + ".", color)
+        print_time("Writing UDP data to " +
+                   str(self.connection.remote_endpoint.address[0]) +
+                   ":" + str(self.connection.remote_endpoint.port) +
+                   ".", color)
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -170,21 +186,28 @@ class UdpTransport(TransportLayer):
             if self.connection.active:
                 # Frame the data
                 if self.connection.framer:
-                    data = await self.connection.framer.handle_new_sent_message(data, None, False)
+                    data = await self.connection.framer.\
+                        handle_new_sent_message(data, None, False)
                 # Write the data
                 self.transport.sendto(data)
             else:
                 remote_address = self.remote_endpoint.address[0]
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
-        except:
+        except Exception:
             print_time("SendError occured.", color)
             if self.connection.send_error:
-                self.loop.create_task(self.connection.send_error(self.message_count, self.connection))
+                self.loop.create_task(
+                    self.connection.send_error(
+                        self.message_count, self.connection
+                    )
+                )
             return
         print_time("Data written successfully.", color)
         if self.connection.sent:
-            self.loop.create_task(self.connection.sent(self.message_count, self.connection))
+            self.loop.create_task(
+                self.connection.sent(self.message_count, self.connection)
+            )
         return
 
     async def close(self):
@@ -195,7 +218,6 @@ class UdpTransport(TransportLayer):
             self.loop.create_task(self.connection.closed(self.connection))
 
     async def read(self, min_incomplete_length, max_length):
-        # print_time("Reading message", color)
         if self.connection.framer:
             if len(self.framer_buffer) == 0:
                 await self.await_data()
@@ -203,7 +225,6 @@ class UdpTransport(TransportLayer):
         else:
             if self.recv_buffer is None:
                 await self.await_data()
-            #print_time("Received full message", color)
             if len(self.recv_buffer) == 1:
                 data = self.recv_buffer[0]
                 self.recv_buffer = None
@@ -211,7 +232,7 @@ class UdpTransport(TransportLayer):
                 data = self.recv_buffer.pop(0)
         if self.connection.received:
             self.loop.create_task(self.connection.received(data,
-                self.context, self.connection))
+                                  self.context, self.connection))
 
     # Asyncio Callbacks
 
@@ -241,7 +262,6 @@ class UdpTransport(TransportLayer):
                     print(t)
                     t.cancel()"""
 
-
     """ ASYNCIO function that gets called when EOF is received
     """
     def eof_received(self):
@@ -254,7 +274,6 @@ class UdpTransport(TransportLayer):
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append(data)
-        #print_time("Received %d-byte datagram" % len(data), color)
 
         if self.connection.framer:
             self.loop.create_task(self.invoke_framer())
@@ -274,7 +293,9 @@ class UdpTransport(TransportLayer):
             print_time("Connection Error occured.", color)
             print(err)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error(err, self.connection))
+                self.loop.create_task(
+                    self.connection.connection_error(err, self.connection)
+                )
             return
 
     """ ASNYCIO function that gets called when the connection
@@ -288,7 +309,9 @@ class UdpTransport(TransportLayer):
         else:
             print_time("Connection lost with err", color)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error(exc, self.connection))
+                self.loop.create_task(
+                    self.connection.connection_error(exc, self.connection)
+                )
 
 
 class TcpTransport(TransportLayer):
@@ -334,20 +357,25 @@ class TcpTransport(TransportLayer):
         if isinstance(data, str):
             data = data.encode()
         try:
-            
+
             # Frame the data
             if self.connection.framer:
-                data = await self.connection.framer.handle_new_sent_message(data, None, False)
+                data = await self.connection.framer.\
+                    handle_new_sent_message(data, None, False)
             # Attempt to write data
             self.transport.write(data)
-        except:
+        except Exception:
             print_time("SendError occured.", color)
             if self.send_error:
-                self.loop.create_task(self.send_error(self.message_count, self.connection))
+                self.loop.create_task(
+                    self.send_error(self.message_count, self.connection)
+                )
             return
         print_time("Data written successfully.", color)
         if self.connection.sent:
-            self.loop.create_task(self.connection.sent(self.message_count, self.connection))
+            self.loop.create_task(
+                self.connection.sent(self.message_count, self.connection)
+            )
         return
 
     async def read(self, min_incomplete_length, max_length):
@@ -357,12 +385,13 @@ class TcpTransport(TransportLayer):
                 await self.await_data()
             data = self.framer_buffer.pop(0)
             if self.connection.received:
-                self.loop.create_task(self.connection.received(data,
-                                                               "Context",
-                                                               self.connection))
+                self.loop.create_task(
+                    self.connection.received(data, "Context", self.connection)
+                )
             return
 
-        while self.recv_buffer is None or (len(self.recv_buffer) < min_incomplete_length):
+        while self.recv_buffer is None or (
+                len(self.recv_buffer) < min_incomplete_length):
             await self.await_data()
         if max_length == -1 or len(self.recv_buffer) <= max_length:
             data = self.recv_buffer
@@ -374,7 +403,7 @@ class TcpTransport(TransportLayer):
         if self.at_eof:
             if self.connection.received:
                 self.loop.create_task(self.connection.received(data,
-                    self.context, self.connection))
+                                      self.context, self.connection))
             return
         else:
             if self.connection.received_partial:
@@ -403,7 +432,6 @@ class TcpTransport(TransportLayer):
             self.loop.create_task(self.active_open(transport))
         else:
             self.loop.create_task(self.passive_open(transport))
-
 
             # Stub code for forcfully killing connection tasks
             # Before establishment to the peer has been completed
@@ -435,8 +463,8 @@ class TcpTransport(TransportLayer):
         else:
             self.recv_buffer = self.recv_buffer + data
         if self.connection.framer:
-                self.loop.create_task(self.invoke_framer())
-                return
+            self.loop.create_task(self.invoke_framer())
+            return
         else:
             for w in self.waiters:
                 if not w.done():
@@ -451,7 +479,9 @@ class TcpTransport(TransportLayer):
         if type(err) is ConnectionRefusedError:
             print_time("Connection Error occured.", color)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error(err, self.connection))
+                self.loop.create_task(
+                    self.connection.connection_error(err, self.connection)
+                )
             return
 
     """ ASNYCIO function that gets called when the connection
@@ -465,5 +495,6 @@ class TcpTransport(TransportLayer):
         else:
             print_time("Connection lost with err", color)
             if self.connection.connection_error:
-                self.loop.create_task(self.connection.connection_error(exc, self.connection))
-
+                self.loop.create_task(
+                    self.connection.connection_error(exc, self.connection)
+                )

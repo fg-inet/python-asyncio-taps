@@ -23,6 +23,7 @@ class TestClient():
         self.preconnection.on_ready(self.handle_ready)
         self.connection = await self.preconnection.initiate()
 
+
 if __name__ == "__main__":
     client = TestClient()
     asyncio.get_event_loop().create_task(client.main())

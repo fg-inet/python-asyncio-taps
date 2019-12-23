@@ -151,8 +151,9 @@ class TransportProperties:
         }
 
     def add(self, prop, value):
-        """ Adds the property prop with value to the set of transport properties.
-                
+        """ Adds the property prop with value to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
             value (PreferenceLevel, required): Preference for the property.
@@ -160,40 +161,45 @@ class TransportProperties:
         self.properties[prop] = value
 
     def require(self, prop):
-        """ Adds the property prop with value "require" to the set of transport properties.
-                
+        """ Adds the property prop with value "require" to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
         """
         self.properties[prop] = PreferenceLevel.REQUIRE
 
     def prefer(self, prop):
-        """ Adds the property prop with value "prefer" to the set of transport properties.
-                
+        """ Adds the property prop with value "prefer" to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
         """
         self.properties[prop] = PreferenceLevel.PREFER
 
     def ignore(self, prop):
-        """ Adds the property prop with value "ignore" to the set of transport properties.
-                
+        """ Adds the property prop with value "ignore" to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
         """
         self.properties[prop] = PreferenceLevel.IGNORE
 
     def avoid(self, prop):
-        """ Adds the property prop with value "avoid" to the set of transport properties.
-                
+        """ Adds the property prop with value "avoid" to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
         """
         self.properties[prop] = PreferenceLevel.AVOID
 
     def prohibit(self, prop):
-        """ Adds the property prop with value "prohibit" to the set of transport properties.
-                
+        """ Adds the property prop with value "prohibit" to
+            the set of transport properties.
+
         Attributes:
             prop (string, required): Property to be added.
         """
@@ -201,7 +207,7 @@ class TransportProperties:
 
     def default(self, prop):
         """ Sets the property prop back to its default value.
-                
+
         Attributes:
             prop (string, required): Property to be set back to its default.
         """

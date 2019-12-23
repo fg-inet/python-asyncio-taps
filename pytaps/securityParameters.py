@@ -11,7 +11,8 @@ class SecurityParameters:
         self.trustedCA = []
 
     def addIdentity(self, identity):
-        """ Adds a local identity with which to prove ones identity to a remote.
+        """ Adds a local identity with which to
+            prove ones identity to a remote.
         Attributes:
             identity (string, required): Identity to be added.
         """

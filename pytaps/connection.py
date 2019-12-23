@@ -12,7 +12,7 @@ import socket
 color = "green"
 
 # Wait for 100 ms between connection attempts when racing
-RACING_DELAY=0.1
+RACING_DELAY = 0.1
 
 
 class Connection():
@@ -24,24 +24,24 @@ class Connection():
                 object was created.
     """
     def __init__(self, preconnection):
-                # Initializations
-                self.local_endpoint = preconnection.local_endpoint
-                self.remote_endpoint = preconnection.remote_endpoint
-                self.transport_properties = preconnection.transport_properties
-                self.security_parameters = preconnection.security_parameters
-                self.loop = preconnection.loop
-                self.active = preconnection.active
-                self.framer = preconnection.framer
-                self.set_callbacks(preconnection)
-                self.sleeper_for_racing = SleepClassForRacing()
-                self.pending = []
-                # Security Context for SSL
-                self.security_context = None
-                # Current state of the connection object
-                self.state = ConnectionState.ESTABLISHING
-                # List of possible underlying transports
-                self.transports = []
-                self.multicast_open = False
+        # Initializations
+        self.local_endpoint = preconnection.local_endpoint
+        self.remote_endpoint = preconnection.remote_endpoint
+        self.transport_properties = preconnection.transport_properties
+        self.security_parameters = preconnection.security_parameters
+        self.loop = preconnection.loop
+        self.active = preconnection.active
+        self.framer = preconnection.framer
+        self.set_callbacks(preconnection)
+        self.sleeper_for_racing = SleepClassForRacing()
+        self.pending = []
+        # Security Context for SSL
+        self.security_context = None
+        # Current state of the connection object
+        self.state = ConnectionState.ESTABLISHING
+        # List of possible underlying transports
+        self.transports = []
+        self.multicast_open = False
 
     async def race(self):
         # This is an active connection attempt
@@ -69,42 +69,76 @@ class Connection():
 
         if self.remote_endpoint.host_name is not None:
             # Resolve address
-            # FIXME: Unfortunately, asyncio getaddrinfo does not allow to resolve on specific interfaces
+            # FIXME: Unfortunately, asyncio getaddrinfo does not
+            # FIXME: allow to resolve on specific interfaces
             # FIXME: Consider migrating to something better, e.g., getdns
             remote_info = await self.loop.getaddrinfo(
                 self.remote_endpoint.host_name, self.remote_endpoint.port)
             # Concat v6 and v4 address lists, making sure we try v6 first
-            remote_addrs_v6 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET6]))
-            remote_addrs_v4 = list(set([ info[4][0] for info in remote_info if info[0] == socket.AddressFamily.AF_INET]))
+            remote_addrs_v6 = list(
+                    set([
+                        info[4][0] for info in remote_info
+                        if info[0] == socket.AddressFamily.AF_INET6]
+                        )
+                )
+            remote_addrs_v4 = list(
+                    set([
+                        info[4][0] for info in remote_info
+                        if info[0] == socket.AddressFamily.AF_INET]
+                        )
+                )
             remote_addrs = remote_addrs_v6 + remote_addrs_v4
-            print_time("Resolved " + str(self.remote_endpoint.host_name) + " to " + str(remote_addrs), color)
+            print_time("Resolved " + str(self.remote_endpoint.host_name) +
+                       " to " + str(remote_addrs), color)
 
         else:
             remote_addrs = self.remote_endpoint.address
-            print_time("Not resolving - using address " + str(self.remote_endpoint.address) + " --> " + str(remote_addrs), color)
+            print_time("Not resolving - using address " +
+                       str(self.remote_endpoint.address) + " --> " +
+                       str(remote_addrs), color)
 
         if self.local_endpoint is not None:
-            # Local interface specified --> try local addresses on that interface
+            # Local interface specified -->
+            # try local addresses on that interface
             for local_interface in self.local_endpoint.interface:
                 try:
                     # Unfortunately, link-local IPv6 addresses don't work
-                    # because they're broken in asyncio: https://bugs.python.org/issue35545
-                    local_v6_addrs = [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET6] if entry['addr'][:4] != "fe80" ]
-                    local_v4_addrs = [ entry['addr'] for entry in netifaces.ifaddresses(local_interface)[netifaces.AF_INET] ]
-                    print_time("Trying addresses of local interface " + str(self.local_endpoint.interface) + " --> " + str(local_v6_addrs) + ", " + str(local_v4_addrs), color)
+                    # because they're broken in
+                    # asyncio: https://bugs.python.org/issue35545
+                    local_v6_addrs = [entry['addr']
+                                      for entry in netifaces.ifaddresses
+                                      (local_interface)[netifaces.AF_INET6]
+                                      if entry['addr'][:4] != "fe80"]
+                    local_v4_addrs = [entry['addr']
+                                      for entry in netifaces.ifaddresses
+                                      (local_interface)[netifaces.AF_INET]]
+                    print_time("Trying addresses of local interface " +
+                               str(self.local_endpoint.interface) + " --> " +
+                               str(local_v6_addrs) + ", " +
+                               str(local_v4_addrs), color)
                 except ValueError as err:
-                    print_time("Cannot get IP addresses for " + str(self.local_endpoint.interface) + ": " + str(err), color)
+                    print_time("Cannot get IP addresses for " +
+                               str(self.local_endpoint.interface) + ": " +
+                               str(err), color)
                     # TODO throw error
             # Build candidate set for racing
             # based on combinations of protocol, local and remote IP address
-            candidate_set = [ protocol + (remote_address,) + (local_address,) for remote_address in remote_addrs_v6 for protocol in protocol_candidates for local_address in local_v6_addrs ]
-            candidate_set += [ protocol + (remote_address,) + (local_address,) for remote_address in remote_addrs_v4 for protocol in protocol_candidates for local_address in local_v4_addrs ]
+            candidate_set = [protocol + (remote_address,) + (local_address,)
+                             for remote_address in remote_addrs_v6
+                             for protocol in protocol_candidates
+                             for local_address in local_v6_addrs]
+            candidate_set += [protocol + (remote_address,) + (local_address,)
+                              for remote_address in remote_addrs_v4
+                              for protocol in protocol_candidates
+                              for local_address in local_v4_addrs]
             print_time("Final Candidates: " + str(candidate_set))
 
         else:
             # Build candidate set for racing
             # based on combinations of protocol and remote IP address
-            candidate_set = [ protocol + (address,) for address in remote_addrs for protocol in protocol_candidates ]
+            candidate_set = [protocol + (address,)
+                             for address in remote_addrs
+                             for protocol in protocol_candidates]
 
         # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
@@ -113,7 +147,10 @@ class Connection():
                 print_time("Connection established -- stop racing", color)
                 break
 
-            print_time("Trying candidate protocol: " + str(candidate[0]) + " and remote address: " + str(candidate[2]) + ( " and local address: " + str(candidate[3]) if len(candidate) > 3 else "" ), color)
+            print_time("Trying candidate protocol: " + str(candidate[0]) +
+                       " and remote address: " + str(candidate[2]) +
+                       (" and local address: " + str(candidate[3])
+                       if len(candidate) > 3 else ""), color)
             if len(candidate) > 3:
                 # bind to a specific local address
                 local_address_to_use = (candidate[3], None)
@@ -123,34 +160,46 @@ class Connection():
 
             if candidate[0] == 'udp':
                 self.protocol = 'udp'
-                print_time("Creating UDP connect task with remote addr " + str(candidate[2]) + ", port " + str(self.remote_endpoint.port), color)
+                print_time("Creating UDP connect task with remote addr " +
+                           str(candidate[2]) + ", port " +
+                           str(self.remote_endpoint.port), color)
                 self.remote_endpoint.address = candidate[2]
                 if not self.local_endpoint:
                     if self.initiate_error:
                         self.loop.create_task(self.initiate_error(self))
 
                 # Create a datagram endpoint
-                task = self.loop.create_task(self.loop.create_datagram_endpoint(
-                                    lambda: UdpTransport(connection=self, remote_endpoint=self.remote_endpoint),
-                                    remote_addr=(self.remote_endpoint.address,
-                                                 self.remote_endpoint.port),
-                                    local_addr=local_address_to_use))
+                task = self.loop.create_task(
+                    self.loop.create_datagram_endpoint(
+                        lambda: UdpTransport(
+                                    connection=self,
+                                    remote_endpoint=self.remote_endpoint),
+                        remote_addr=(self.remote_endpoint.address,
+                                     self.remote_endpoint.port),
+                        local_addr=local_address_to_use))
 
-                print_time("Not racing multiple addrs for UDP -- stop racing", color)
+                print_time("Not racing multiple addrs for UDP" +
+                           " -- stop racing", color)
                 break
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'
-                print_time("Creating TCP connect task to " + candidate[2] + ".", color)
+                print_time("Creating TCP connect task to " + candidate[2] +
+                           ".", color)
                 self.remote_endpoint.address = candidate[2]
                 # If the protocol is tcp, create a asyncio connection
-                task = self.loop.create_task(self.loop.create_connection(
-                                    lambda: TcpTransport(connection=self, remote_endpoint=self.remote_endpoint),
-                                    self.remote_endpoint.address,
-                                    self.remote_endpoint.port,
-                                    ssl=self.security_context,
-                                    server_hostname=(self.remote_endpoint.host_name if self.security_context else None),
-                                    local_addr = local_address_to_use))
+                task = self.loop.create_task(
+                        self.loop.create_connection(
+                            lambda: TcpTransport(
+                                connection=self,
+                                remote_endpoint=self.remote_endpoint),
+                            self.remote_endpoint.address,
+                            self.remote_endpoint.port,
+                            ssl=self.security_context,
+                            server_hostname=(
+                                self.remote_endpoint.host_name
+                                if self.security_context else None),
+                            local_addr=local_address_to_use))
                 # Wait before starting next connection attempt
                 await self.sleeper_for_racing.sleep(RACING_DELAY)
 
@@ -242,26 +291,27 @@ class Connection():
         return self.transports[0].recv_buffer, None, False
 
     def set_callbacks(self, preconnection):
-            self.ready = preconnection.ready
-            self.initiate_error = preconnection.initiate_error
-            self.connection_received = preconnection.connection_received
-            self.listen_error = preconnection.listen_error
-            self.stopped = preconnection.stopped
-            self.sent = None
-            self.send_error = None
-            self.expired = None
-            self.connection_error = None
-            self.received = None
-            self.received_partial = None
-            self.receive_error = None
-            self.closed = None
-            self.reader = None
-            self.writer = None
+        self.ready = preconnection.ready
+        self.initiate_error = preconnection.initiate_error
+        self.connection_received = preconnection.connection_received
+        self.listen_error = preconnection.listen_error
+        self.stopped = preconnection.stopped
+        self.sent = None
+        self.send_error = None
+        self.expired = None
+        self.connection_error = None
+        self.received = None
+        self.received_partial = None
+        self.receive_error = None
+        self.closed = None
+        self.reader = None
+        self.writer = None
 
     # Events for active open
     def on_ready(self, callback):
-        """ Set callback for ready events that get thrown once the connection is ready
-        to send and receive data.
+        """ Set callback for ready events that
+            get thrown once the connection is ready
+            to send and receive data.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -270,8 +320,9 @@ class Connection():
         self.ready = callback
 
     def on_initiate_error(self, callback):
-        """ Set callback for initiate error events that get thrown if an error occurs
-        during initiation.
+        """ Set callback for initiate error events that
+            get thrown if an error occurs
+            during initiation.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -291,8 +342,9 @@ class Connection():
         self.sent = callback
 
     def on_send_error(self, callback):
-        """ Set callback for send error events that get thrown if an error occurs
-        during sending of a message.
+        """ Set callback for send error events
+            that get thrown if an error occurs
+            during sending of a message.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -301,7 +353,8 @@ class Connection():
         self.send_error = callback
 
     def on_expired(self, callback):
-        """ Set callback for expired events that get thrown if a message expires.
+        """ Set callback for expired events that
+            get thrown if a message expires.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -321,8 +374,9 @@ class Connection():
         self.received = callback
 
     def on_received_partial(self, callback):
-        """ Set callback for partial received events that get thrown if a new partial
-        message has been received.
+        """ Set callback for partial received events that
+            get thrown if a new partial
+            message has been received.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -331,8 +385,9 @@ class Connection():
         self.received_partial = callback
 
     def on_receive_error(self, callback):
-        """ Set callback for receive error events that get thrown if an error occurs
-        during reception of a message.
+        """ Set callback for receive error events that
+            get thrown if an error occurs
+            during reception of a message.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -341,8 +396,9 @@ class Connection():
         self.receive_error = callback
 
     def on_connection_error(self, callback):
-        """ Set callback for connection error events that get thrown if an error occurs
-        while the connection is open.
+        """ Set callback for connection error events that
+            get thrown if an error occurs
+            while the connection is open.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -361,4 +417,3 @@ class Connection():
                 as its parameter.
         """
         self.closed = callback
-

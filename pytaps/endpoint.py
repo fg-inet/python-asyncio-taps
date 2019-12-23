@@ -35,7 +35,6 @@ class LocalEndpoint:
         """
         self.host_name = hostname
 
-
     def with_port(self, portNumber):
         """Specifies which port the local endpoint should use.
 

@@ -35,6 +35,7 @@ class Framer():
                 handled by the framer.
         """
         pass
+
     async def new_sent_message(self, data, context, eom):
         """ Function that gets called when a new message
             has been queued for sending by the application.
@@ -51,6 +52,7 @@ class Framer():
                 as end of message by the application.
         """
         pass
+
     async def handle_received_data(self, connection):
         """ Function that gets called when a new message
             has arrived on the connection. The framer should
@@ -65,7 +67,7 @@ class Framer():
                 The connection object on which new data has
                 arrived.
         """
-        return None,None,None,None
+        return None, None, None, None
 
     async def stop(self):
         pass

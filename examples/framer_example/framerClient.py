@@ -12,6 +12,7 @@ class testFramer(taps.Framer):
     async def start(self, connection):
         taps.print_time("Framer got new connection", color)
         return
+
     async def new_sent_message(self, data, context, eom):
         taps.print_time("Framing new message " + str(data), color)
         tlv = (data[0] + "/" + str(len(str(data[1]))) + "/" +
@@ -24,18 +25,20 @@ class testFramer(taps.Framer):
         taps.print_time("Deframing " + byte_stream, color)
         try:
             tlv = byte_stream.split("/")
-        except:
+        except Exception:
             taps.print_time("Error splitting", color)
             raise taps.DeframingFailed
             return
 
         if len(tlv) < 3:
-            taps.print_time("Deframing error: missing length, value or type parameter.", color)
+            taps.print_time("Deframing error: missing length," +
+                            " value or type parameter.", color)
             raise taps.DeframingFailed
             return
 
         if (len(tlv[2]) < int(tlv[1])):
-            taps.print_time("Deframing error: actual length of message shorter than indicated", color)
+            taps.print_time("Deframing error: actual length of message" +
+                            " shorter than indicated", color)
             raise taps.DeframingFailed
             return
         len_message = len(tlv[0]) + len(tlv[1]) + int(tlv[1]) + 2
@@ -45,6 +48,7 @@ class testFramer(taps.Framer):
         self.advance_receive_cursor(connection, len_message)
         self.deliver(connection, context, message, eom)
         """
+
 
 class TestClient():
     def __init__(self):

@@ -5,6 +5,7 @@ import yang_glue
 YANG_FMT_XML = 1   # MUST match LYD_XML from enum LYD_FORMAT in libyang
 YANG_FMT_JSON = 2  # MUST match LYD_JSON from enum LYD_FORMAT in libyang
 
+
 def _pull_error_msgs():
     errcount = yang_glue.errmsg_count()
     msgs = []
@@ -20,6 +21,7 @@ def _pull_error_msgs():
     yang_glue.clear_errors()
     return msgs
 
+
 class YangException(Exception):
     def __init__(self, base_msg=None):
         msgs = _pull_error_msgs()
@@ -27,6 +29,7 @@ class YangException(Exception):
             msgs = [base_msg] + msgs
         msg_text = '\n'.join(msgs)
         super().__init__(msg_text)
+
 
 def validate(frmat, text):
     start_errs = yang_glue.errmsg_count()
@@ -57,6 +60,7 @@ def validate(frmat, text):
 
     return True
 
+
 def convert(from_frmat, text, to_frmat):
     start_errs = yang_glue.errmsg_count()
     err_msg = None
@@ -86,6 +90,7 @@ def convert(from_frmat, text, to_frmat):
 
     return retval
 
+
 def _on_load():
     tapspath = os.path.abspath(os.path.dirname(__file__))
     modulepath = os.path.join(tapspath, 'modules')
@@ -96,5 +101,6 @@ def _on_load():
         for msg in msgs:
             print(msg)
         raise e
+
 
 _on_load()
