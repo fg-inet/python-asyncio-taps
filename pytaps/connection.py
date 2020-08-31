@@ -164,9 +164,6 @@ class Connection():
                            str(candidate[2]) + ", port " +
                            str(self.remote_endpoint.port), color)
                 self.remote_endpoint.address = candidate[2]
-                if not self.local_endpoint:
-                    if self.initiate_error:
-                        self.loop.create_task(self.initiate_error(self))
 
                 # Create a datagram endpoint
                 task = self.loop.create_task(

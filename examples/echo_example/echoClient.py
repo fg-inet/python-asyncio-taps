@@ -2,8 +2,7 @@ import asyncio
 import sys
 import argparse
 import ipaddress
-sys.path.append(sys.path[0] + "/../..")
-import pytaps as taps  # noqa: E402
+import pytaps as taps 
 
 color = "yellow"
 
@@ -103,7 +102,8 @@ class TestClient():
         # Create transportProperties Object and set properties
         # Does nothing yet
         tp = taps.TransportProperties()
-        tp.require("reliability")
+        tp.require("reliability") if args.reliable in ["yes", "true"] else tp.prohibit("reliability")
+
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
         # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
@@ -136,6 +136,7 @@ if __name__ == "__main__":
     ap.add_argument('--trust-ca', type=str, default=None)
     ap.add_argument('--secure', '-s', nargs='?', const=True,
                     type=bool, default=False)
+    ap.add_argument('--reliable', '-r', type=str, default="yes")
     args = ap.parse_args()
     print(args)
     # Start testclient
