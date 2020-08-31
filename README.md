@@ -28,6 +28,13 @@ Requirements:
 - libpcre
 - Python3.7+
 
+You should first create and activate a virtual environment:
+
+~~~
+python3 -m venv pytaps
+source pytaps/bin/activate
+~~~
+
 Build & Install requirements on Linux(Debian):
 
 ~~~
