@@ -65,7 +65,7 @@ class Preconnection:
         # Framer object
         self.framer = None
 
-    def from_yang(self, frmat, text, *args, **kwargs):
+    def from_yang(frmat, text, *args, **kwargs):
         self = Preconnection(*args, **kwargs)
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
@@ -158,7 +158,7 @@ class Preconnection:
         self.security_parameters = sp
         return self
 
-    def from_yangfile(self, fname, *args, **kwargs):
+    def from_yangfile(fname, *args, **kwargs):
         """ Loads the configuration of a the preconnection,
             including endpoints, transport properties
             and security parameters from a yangfile.
