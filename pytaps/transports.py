@@ -85,7 +85,7 @@ class TransportLayer(asyncio.Protocol):
             self.active_framer.set_result(None)
             self.active_framer = None
             return
-        # If a message was deframed succesful, modify the recv buffer,
+        # If a message was deframed successful, modify the recv buffer,
         #  add the message to the framer buffer
         self.recv_buffer = self.recv_buffer[len:]
         self.framer_buffer.append(msg)
@@ -304,7 +304,7 @@ class UdpTransport(TransportLayer):
     def connection_lost(self, exc):
         if exc is None:
             print_time("Connection lost without err", color)
-            if self.connection.closed:
+            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
                 self.loop.create_task(self.connection.closed(self.connection))
         else:
             print_time("Connection lost with err", color)
@@ -490,7 +490,7 @@ class TcpTransport(TransportLayer):
     def connection_lost(self, exc):
         if exc is None:
             print_time("Connection lost without err", color)
-            if self.connection.closed:
+            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
                 self.loop.create_task(self.connection.closed(self.connection))
         else:
             print_time("Connection lost with err", color)
