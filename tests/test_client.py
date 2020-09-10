@@ -2,10 +2,7 @@ import asyncio
 import pytest
 import sys
 import time
-
-sys.path.append(sys.path[0] + "/..")
-import pytaps as taps  # noqa: E402
-
+import pytaps as taps
 
 TEST_TIMEOUT = 5
 
@@ -97,6 +94,8 @@ class TestClient():
         self.connection = await self.preconnection.initiate()
 
 # Send something over UDP, then stop event loop
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_sending():
     loop = asyncio.new_event_loop()
@@ -114,6 +113,8 @@ def test_sending():
 # This requires an echo server to listen on UDP port 6666
 # python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6666  --reliable both
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_echo_udp():
     teststring = "Hello\n"
@@ -132,8 +133,10 @@ def test_echo_udp():
 # This requires an echo server to listen on UDP port 6666
 # e.g.: python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6666  --reliable both
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_udp_yang():
+def test_echo_yang_udp():
     teststring = "Hello\n"
     yangfile_client = "udp-client.json"
 
@@ -155,6 +158,8 @@ def test_echo_udp_yang():
 # This requires an echo server to listen on TCP port 6666
 # e.g.: python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6666  --reliable both
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_echo_yang_tcp():
     teststring = "Hello\n"
@@ -176,6 +181,8 @@ def test_echo_yang_tcp():
 # e.g.: python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6667
 # --local-identity tests/keys/localhost.pem
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_echo_tls():
     teststring = "Hello\n"
@@ -198,6 +205,8 @@ def test_echo_tls():
 # e.g.: python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6667
 # --local-identity tests/keys/localhost.pem
+
+
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_echo_tls_yang():
     teststring = "Hello\n"

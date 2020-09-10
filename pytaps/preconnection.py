@@ -50,7 +50,7 @@ class Preconnection:
 
         self.loop = event_loop
 
-        # Callbacks of the appliction
+        # Callbacks of the application
         self.read = None
         self.initiate_error = None
         self.connection_received = None
@@ -65,7 +65,7 @@ class Preconnection:
         # Framer object
         self.framer = None
 
-    def from_yang(frmat, text, *args, **kwargs):
+    def from_yang(self, frmat, text, *args, **kwargs):
         self = Preconnection(*args, **kwargs)
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
@@ -158,7 +158,7 @@ class Preconnection:
         self.security_parameters = sp
         return self
 
-    def from_yangfile(fname, *args, **kwargs):
+    def from_yangfile(self, fname, *args, **kwargs):
         """ Loads the configuration of a the preconnection,
             including endpoints, transport properties
             and security parameters from a yangfile.
@@ -190,7 +190,7 @@ class Preconnection:
 
     async def initiate(self):
         """ Initiates the preconnection, i.e. chooses candidate protocol,
-            initializes security parameters if an encrypted conenction
+            initializes security parameters if an encrypted connection
             was requested, resolves address and finally calls relevant
             connection call.
         """
@@ -221,7 +221,7 @@ class Preconnection:
         return listener
 
     async def resolve(self):
-        """ Resolve the address before initating the connection.
+        """ Resolve the address before initiating the connection.
         """
         if self.remote_endpoint is None:
             raise Exception("A remote endpoint needs "
