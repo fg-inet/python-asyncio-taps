@@ -46,7 +46,6 @@ class Connection():
     async def race(self):
         # This is an active connection attempt
         self.active = True
-
         # Create the set of possible protocol candidates
         protocol_candidates = self.create_candidates()
 
@@ -250,7 +249,7 @@ class Connection():
                     if (protocol[transport_property] is True and
                             protocol["name"] in candidate_protocols):
                         del candidate_protocols[protocol["name"]]
-                # If a protocol doesnt have a required property remove it
+                # If a protocol doesn't have a required property remove it
                 if (self.transport_properties.properties[transport_property]
                         is PreferenceLevel.REQUIRE):
                     if (protocol[transport_property] is False and
@@ -330,7 +329,7 @@ class Connection():
     # Events for sending messages
     def on_sent(self, callback):
         """ Set callback for sent events that get thrown if a message has been
-        succesfully sent.
+        successfully sent.
 
         Attributes:
             callback (callback, required): Function that implements the
@@ -406,7 +405,7 @@ class Connection():
     # Events for closing a connection
     def on_closed(self, callback):
         """ Set callback for on closed events that get thrown if the
-        connection has been closed succesfully.
+        connection has been closed successfully.
 
         Attributes:
             callback (callback, required): Function that implements the

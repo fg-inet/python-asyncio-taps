@@ -76,12 +76,11 @@ class TestClient():
 
         if self.yangfile:
             self.preconnection = taps.\
-                Preconnection.from_yangfile(self.yangfile,
-                                            remote_endpoint=ep,
-                                            transport_properties=tp,
-                                            security_parameters=sp,
-                                            event_loop=asyncio.get_event_loop()
-                                            )
+                Preconnection(remote_endpoint=ep,
+                              transport_properties=tp,
+                              security_parameters=sp,
+                              event_loop=asyncio.get_event_loop()
+                              ).from_yangfile(self.yangfile)
         else:
             self.preconnection = taps.\
                 Preconnection(remote_endpoint=ep,
@@ -89,7 +88,6 @@ class TestClient():
                               security_parameters=sp,
                               event_loop=asyncio.get_event_loop()
                               )
-
         self.preconnection.on_ready(self.handle_ready)
         self.connection = await self.preconnection.initiate()
 
@@ -133,7 +131,6 @@ def test_echo_udp():
 # This requires an echo server to listen on UDP port 6666
 # e.g.: python3.7 examples/echo_example/echoServer.py
 # --local-address=::1 --local-port=6666  --reliable both
-
 
 @pytest.mark.timeout(TEST_TIMEOUT)
 def test_echo_yang_udp():

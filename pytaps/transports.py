@@ -132,6 +132,42 @@ class TransportLayer(asyncio.Protocol):
         pass
 
 
+    """ ASYNCIO function that gets called when EOF is received
+    """
+    def eof_received(self):
+        print_time("EOF received", color)
+        self.connection.at_eof = True
+
+    """ ASYNCIO function that gets called when the connection has
+        an error.
+        TODO: proper error handling
+    """
+    def error_received(self, err):
+        if type(err) is ConnectionRefusedError:
+            print_time("Connection Error occured.", color)
+            print(err)
+            if self.connection.connection_error:
+                self.loop.create_task(
+                    self.connection.connection_error(err, self.connection)
+                )
+            return
+
+    """ ASYNCIO function that gets called when the connection
+        is lost
+    """
+    def connection_lost(self, exc):
+        if exc is None:
+            print_time("Connection lost without err", color)
+            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
+                self.loop.create_task(self.connection.closed(self.connection))
+        else:
+            print_time("Connection lost with err", color)
+            if self.connection.connection_error:
+                self.loop.create_task(
+                    self.connection.connection_error(exc, self.connection)
+                )
+
+
 class UdpTransport(TransportLayer):
 
     def __init__(self, *args, **kwargs):
@@ -249,7 +285,7 @@ class UdpTransport(TransportLayer):
             self.loop.create_task(self.active_open(transport))
         else:
             self.loop.create_task(self.passive_open(transport))
-            # Stub code for forcfully killing connection tasks
+            # Stub code for forcefully killing connection tasks
             # Before establishment to the peer has been completed
             """
             for t in self.connection.transports:
@@ -262,11 +298,6 @@ class UdpTransport(TransportLayer):
                     print(t)
                     t.cancel()"""
 
-    """ ASYNCIO function that gets called when EOF is received
-    """
-    def eof_received(self):
-        print_time("EOF received", color)
-        self.connection.at_eof = True
     """ ASYNCIO function that gets called when a new datagram
         is received. It stores the datagram in the recv_buffer
     """
@@ -283,36 +314,6 @@ class UdpTransport(TransportLayer):
                 if not w.done():
                     w.set_result(None)
                     return
-
-    """ ASYNCIO function that gets called when the connection has
-        an error.
-        TODO: proper error handling
-    """
-    def error_received(self, err):
-        if type(err) is ConnectionRefusedError:
-            print_time("Connection Error occured.", color)
-            print(err)
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(err, self.connection)
-                )
-            return
-
-    """ ASNYCIO function that gets called when the connection
-        is lost
-    """
-    def connection_lost(self, exc):
-        if exc is None:
-            print_time("Connection lost without err", color)
-            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
-                self.loop.create_task(self.connection.closed(self.connection))
-        else:
-            print_time("Connection lost with err", color)
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(exc, self.connection)
-                )
-
 
 class TcpTransport(TransportLayer):
 
@@ -433,7 +434,7 @@ class TcpTransport(TransportLayer):
         else:
             self.loop.create_task(self.passive_open(transport))
 
-            # Stub code for forcfully killing connection tasks
+            # Stub code for forcefully killing connection tasks
             # Before establishment to the peer has been completed
             """
             for t in self.connection.transports:
@@ -446,11 +447,6 @@ class TcpTransport(TransportLayer):
                     print(asyncio.current_task())
                     t.cancel() """
 
-    """ ASYNCIO function that gets called when EOF is received
-    """
-    def eof_received(self):
-        print_time("EOF received", color)
-        self.connection.at_eof = True
     """ ASYNCIO function that gets called when new data is made available
         by the OS. Stores new data in buffer and triggers the receive waiter
     """
@@ -470,31 +466,3 @@ class TcpTransport(TransportLayer):
                 if not w.done():
                     w.set_result(None)
                     return
-
-    """ ASYNCIO function that gets called when the connection has
-        an error.
-        TODO: proper error handling
-    """
-    def error_received(self, err):
-        if type(err) is ConnectionRefusedError:
-            print_time("Connection Error occured.", color)
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(err, self.connection)
-                )
-            return
-
-    """ ASNYCIO function that gets called when the connection
-        is lost
-    """
-    def connection_lost(self, exc):
-        if exc is None:
-            print_time("Connection lost without err", color)
-            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
-                self.loop.create_task(self.connection.closed(self.connection))
-        else:
-            print_time("Connection lost with err", color)
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(exc, self.connection)
-                )
