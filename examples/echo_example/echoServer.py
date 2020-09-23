@@ -1,17 +1,19 @@
 import asyncio
 import sys
 import argparse
+
 sys.path.append(sys.path[0] + "/../..")
 import pytaps as taps  # noqa: E402
 
-color = "blue"
+logger = taps.setup_logger("Echo Server", "yellow")
 
 
-class TestServer():
+class TestServer:
     """A simple echo server. Listens using TCP by default,
        but can also use UDP.
 
     """
+
     def __init__(self, reliable=True):
         self.preconnection = None
         self.loop = asyncio.get_event_loop()
@@ -19,7 +21,7 @@ class TestServer():
         self.reliable = reliable
 
     async def handle_connection_received(self, connection):
-        taps.print_time("Received new Connection.", color)
+        logger.info("Received new Connection.")
         self.connection = connection
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_received(self.handle_received)
@@ -30,26 +32,26 @@ class TestServer():
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        taps.print_time("Received partial message " + str(data) + ".", color)
+        logger.info("Received partial message " + str(data) + ".")
         await self.connection.receive(min_incomplete_length=1, max_length=5)
         msgref = await self.connection.send_message(data)
 
     async def handle_received(self, data, context, connection):
-        taps.print_time("Received message " + str(data) + ".", color)
+        logger.info("Received message " + str(data) + ".")
         await self.connection.receive(min_incomplete_length=1, max_length=5)
         await self.connection.send_message(data)
 
     async def handle_listen_error(self):
-        taps.print_time("Listen Error occured.", color)
+        logger.warn("Listen Error occured.")
         self.loop.stop()
 
     async def handle_sent(self, message_ref, connection):
-        taps.print_time("Sent cb received, message " + str(message_ref) +
-                        " has been sent.", color)
+        logger.info("Sent cb received, message " + str(message_ref) +
+                    " has been sent.")
         # self.connection.close()
 
     async def handle_stopped(self):
-        taps.print_time("Listener has been stopped")
+        logger.info("Listener has been stopped")
 
     async def main(self, args):
         # Create endpoint object
@@ -61,13 +63,13 @@ class TestServer():
         if args.local_host:
             lp.with_hostname(args.local_host)
         # If nothing to listen on has been specified, listen on localhost
-        if not args.interface and not args.local_address\
-           and not args.local_host:
+        if not args.interface and not args.local_address \
+                and not args.local_host:
             lp.with_hostname("localhost")
         if args.local_port:
             lp.with_port(args.local_port)
 
-        taps.print_time("Created endpoint objects.", color)
+        logger.info("Created endpoint objects.")
 
         sp = None
         if args.secure or args.trust_ca or args.local_identity:
@@ -77,7 +79,7 @@ class TestServer():
                 sp.add_trust_ca(args.trust_ca)
             if args.local_identity:
                 sp.add_identity(args.local_identity)
-            taps.print_time("Created SecurityParameters.", color)
+            logger.info("Created SecurityParameters.")
 
         tp = taps.TransportProperties()
         tp.ignore("congestion-control")
@@ -91,7 +93,7 @@ class TestServer():
                                                 transport_properties=tp,
                                                 security_parameters=sp)
         self.preconnection.on_connection_received(
-                                            self.handle_connection_received)
+            self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)
         self.preconnection.on_stopped(self.handle_stopped)
         # self.preconnection.frame_with(taps.TlvFramer())

@@ -1,10 +1,21 @@
 import asyncio
 import datetime
+import logging
+import warnings
 from enum import Enum
 
-from termcolor import colored
-
 from pytaps.transportProperties import get_protocols, PreferenceLevel
+
+colors = {
+    "red": "\x1b[31;1m",
+    "green": "\x1b[32;1m",
+    "yellow": "\x1b[33;1m",
+    "blue": "\x1b[34;1m",
+    "magenta": "\x1b[35;1m",
+    "cyan": "\x1b[36;1m",
+    "grey": "\x1b[37;1m",
+    "white": "\x1b[38;1m"
+}
 
 
 class ConnectionState(Enum):
@@ -15,7 +26,35 @@ class ConnectionState(Enum):
 
 
 def print_time(msg="", color="red"):
-    print(colored(str(datetime.datetime.now()) + ": " + msg, color))
+    warnings.warn("\x1b[31;1mprint_time is deprecated, switch to a logger (e.g. with setup_logger()).\x1b[0m", DeprecationWarning, 2)
+    print(str(datetime.datetime.now()) + ": " + msg, color)
+
+
+def color_emit(emit):
+    def new(*args):
+        level = args[0].levelno
+        if level == logging.CRITICAL:
+            color = "red"
+        elif level == logging.WARNING:
+            color = "yellow"
+        elif level == logging.INFO:
+            color = "green"
+        else:
+            color = "white"
+        args[0].levelname = f'{colors[color]}{args[0].levelname}\x1b[0m'
+        return emit(*args)
+    return new
+
+
+def setup_logger(module, color="white"):
+    logger = logging.getLogger(module)
+    logger.setLevel(logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter(f'%(asctime)s - {colors[color]}%(name)s \x1b[0m- %(levelname)s: %(message)s'))
+    ch.emit = color_emit(ch.emit)
+    logger.addHandler(ch)
+    return logger
 
 
 def create_candidates(connection):

@@ -1,11 +1,9 @@
 import socket
-
 import netifaces
 
 from .transports import *
 
-color = "green"
-
+logger = setup_logger(__name__)
 # Wait for 100 ms between connection attempts when racing
 RACING_DELAY = 0.1
 
@@ -64,7 +62,7 @@ class Connection:
         protocol_candidates = create_candidates(self)
 
         if len(protocol_candidates) == 0:
-            print_time("Candidate set is empty, aborting", color)
+            logger.CRITICAL("Candidate set is empty, aborting")
             if self.initiate_error:
                 self.loop.create_task(self.initiate_error())
             return
@@ -90,14 +88,14 @@ class Connection:
                     )
             )
             remote_addrs = remote_addrs_v6 + remote_addrs_v4
-            print_time("Resolved " + str(self.remote_endpoint.host_name) +
-                       " to " + str(remote_addrs), color)
+            logger.info("Resolved " + str(self.remote_endpoint.host_name) +
+                        " to " + str(remote_addrs))
 
         else:
             remote_addrs = self.remote_endpoint.address
-            print_time("Not resolving - using address " +
-                       str(self.remote_endpoint.address) + " --> " +
-                       str(remote_addrs), color)
+            logger.info("Not resolving - using address " +
+                        str(self.remote_endpoint.address) + " --> " +
+                        str(remote_addrs))
 
         if self.local_endpoint:
             # Local interface specified -->
@@ -114,14 +112,14 @@ class Connection:
                     local_v4_addrs = [entry['addr']
                                       for entry in netifaces.ifaddresses
                                       (local_interface)[netifaces.AF_INET]]
-                    print_time("Trying addresses of local interface " +
-                               str(self.local_endpoint.interface) + " --> " +
-                               str(local_v6_addrs) + ", " +
-                               str(local_v4_addrs), color)
+                    logger.info("Trying addresses of local interface " +
+                                str(self.local_endpoint.interface) + " --> " +
+                                str(local_v6_addrs) + ", " +
+                                str(local_v4_addrs), color)
                 except ValueError as err:
-                    print_time("Cannot get IP addresses for " +
-                               str(self.local_endpoint.interface) + ": " +
-                               str(err), color)
+                    logger.critical("Cannot get IP addresses for " +
+                                    str(self.local_endpoint.interface) + ": " +
+                                    str(err), color)
                     # TODO throw error
             # Build candidate set for racing
             # based on combinations of protocol, local and remote IP address
@@ -133,7 +131,7 @@ class Connection:
                               for remote_address in remote_addrs_v4
                               for protocol in protocol_candidates
                               for local_address in local_v4_addrs]
-            print_time("Final Candidates: " + str(candidate_set))
+            logger.info("Final Candidates: " + str(candidate_set))
 
         else:
             # Build candidate set for racing
@@ -146,13 +144,13 @@ class Connection:
         for candidate in candidate_set:
 
             if self.state == ConnectionState.ESTABLISHED:
-                print_time("Connection established -- stop racing", color)
+                logger.info("Connection established -- stop racing")
                 break
 
-            print_time("Trying candidate protocol: " + str(candidate[0]) +
-                       " and remote address: " + str(candidate[2]) +
-                       (" and local address: " + str(candidate[3])
-                        if len(candidate) > 3 else ""), color)
+            logger.info("Trying candidate protocol: " + str(candidate[0]) +
+                        " and remote address: " + str(candidate[2]) +
+                        (" and local address: " + str(candidate[3])
+                         if len(candidate) > 3 else ""))
             if len(candidate) > 3:
                 # bind to a specific local address
                 local_address_to_use = (candidate[3], None)
@@ -162,9 +160,9 @@ class Connection:
 
             if candidate[0] == 'udp':
                 self.protocol = 'udp'
-                print_time("Creating UDP connect task with remote addr " +
-                           str(candidate[2]) + ", port " +
-                           str(self.remote_endpoint.port), color)
+                logger.info("Creating UDP connect task with remote addr " +
+                            str(candidate[2]) + ", port " +
+                            str(self.remote_endpoint.port))
                 self.remote_endpoint.address = candidate[2]
 
                 # Create a datagram endpoint
@@ -177,14 +175,14 @@ class Connection:
                                      self.remote_endpoint.port),
                         local_addr=local_address_to_use))
 
-                print_time("Not racing multiple addrs for UDP" +
-                           " -- stop racing", color)
+                logger.info("Not racing multiple addrs for UDP" +
+                            " -- stop racing")
                 break
 
             elif candidate[0] == 'tcp':
                 self.protocol = 'tcp'
-                print_time("Creating TCP connect task to " + candidate[2] +
-                           ".", color)
+                logger.info("Creating TCP connect task to " + candidate[2] +
+                            ".")
                 self.remote_endpoint.address = candidate[2]
                 # If the protocol is tcp, create a asyncio connection
                 self.loop.create_task(

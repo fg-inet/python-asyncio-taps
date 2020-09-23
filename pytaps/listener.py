@@ -6,7 +6,7 @@ from .connection import Connection
 from .multicast import do_join, do_leave
 from .transports import *
 
-color = "cyan"
+logger = setup_logger(__name__, "cyan")
 
 
 class Listener:
@@ -42,11 +42,11 @@ class Listener:
     async def start_listener(self):
         """ method wrapped by listen
         """
-        print_time("Starting listener with hostname: " +
-                   str(self.local_endpoint.host_name) +
-                   ", interface: " + str(self.local_endpoint.interface) +
-                   ", addresses: " + str(self.local_endpoint.address) +
-                   ".", color)
+        logger.info("Starting listener with hostname: " +
+                    str(self.local_endpoint.host_name) +
+                    ", interface: " + str(self.local_endpoint.interface) +
+                    ", addresses: " + str(self.local_endpoint.address) +
+                    ".")
 
         # Create set of candidate protocols
         protocol_candidates = create_candidates(self)
@@ -58,7 +58,7 @@ class Listener:
                 self.remote_endpoint.address = [remote_info[0][4][0]]
         # If the candidate set is empty issue an InitiateError cb
         if not protocol_candidates:
-            print_time("Protocol selection Error occurred.", color)
+            logger.warn("Protocol selection Error occurred.")
             if self.listen_error:
                 self.loop.create_task(self.listen_error())
             return
@@ -68,13 +68,13 @@ class Listener:
             endpoint_info = await self.loop.getaddrinfo(
                 self.local_endpoint.host_name, self.local_endpoint.port)
             all_addrs += list(set([info[4][0] for info in endpoint_info]))
-            print_time("Resolved " + str(self.local_endpoint.host_name) +
-                       " to " + str(all_addrs), color)
+            logger.info("Resolved " + str(self.local_endpoint.host_name) +
+                        " to " + str(all_addrs))
         if len(self.local_endpoint.address) > 0:
             all_addrs += self.local_endpoint.address
-            print_time("Adding addresses to listen: " +
-                       str(self.local_endpoint.address) + " --> " +
-                       str(all_addrs), color)
+            logger.info("Adding addresses to listen: " +
+                        str(self.local_endpoint.address) + " --> " +
+                        str(all_addrs))
         if self.local_endpoint.interface:
             for local_interface in self.local_endpoint.interface:
                 try:
@@ -89,13 +89,13 @@ class Listener:
                     all_addrs += [entry['addr']
                                   for entry in netifaces.ifaddresses
                                   (local_interface)[netifaces.AF_INET]]
-                    print_time("Adding addresses of local interface " +
-                               str(self.local_endpoint.interface) + " --> " +
-                               str(all_addrs), color)
+                    logger.info("Adding addresses of local interface " +
+                                str(self.local_endpoint.interface) + " --> " +
+                                str(all_addrs))
                 except ValueError as err:
-                    print_time("Cannot get IP addresses for " +
-                               str(self.local_endpoint.interface) + ": " +
-                               str(err), color)
+                    logger.info("Cannot get IP addresses for " +
+                                str(self.local_endpoint.interface) + ": " +
+                                str(err))
 
         # Get all combinations of protocols and remote IP addresses
         # to listen on all of them
@@ -112,20 +112,20 @@ class Listener:
                     # multicast_receiver = False
                     # See if the address of the local endpoint
                     # is a multicast address
-                    print_time("UDP local endpoint: address " +
-                               str(self.local_endpoint.address) +
-                               " port: " +
-                               str(self.local_endpoint.port), color)
+                    logger.info("UDP local endpoint: address " +
+                                str(self.local_endpoint.address) +
+                                " port: " +
+                                str(self.local_endpoint.port))
                     check_addr = ipaddress.ip_address(
                         self.local_endpoint.address[0])
                     if check_addr.is_multicast:
-                        print_time("addr is multicast", color)
+                        logger.info("addr is multicast")
                         # If the address is multicast, make sure that the
                         # application set the direction of communication
                         # to receive only
                         if self.transport_properties.properties. \
                                 get('direction') == 'unidirection-receive':
-                            print_time("direction is unicast receive", color)
+                            logger.info("direction is unicast receive")
                             # multicast_receiver = True
                             self.loop.create_task(self.multicast_join())
                     else:
@@ -137,30 +137,30 @@ class Listener:
                 elif candidate[0] == 'tcp':
                     self.protocol = 'tcp'
                     self.local_endpoint.address = [candidate[2]]
-                    print_time("TCP local endpoint: address " +
-                               str(self.local_endpoint.address) +
-                               " port: " + str(self.local_endpoint.port))
+                    logger.info("TCP local endpoint: address " +
+                                str(self.local_endpoint.address) +
+                                " port: " + str(self.local_endpoint.port))
                     await self.loop.create_server(
                         lambda: StreamHandler(self),
                         self.local_endpoint.address[0],
                         self.local_endpoint.port,
                         ssl=self.security_context)
             except Exception as err:
-                print_time("Listen Error occurred: " + str(err), color)
+                logger.warn("Listen Error occurred: " + str(err))
                 if self.listen_error:
                     self.loop.create_task(self.listen_error())
 
-            print_time("Started " + self.protocol + " Listener on " +
-                       (str(self.local_endpoint.address) if
-                        self.local_endpoint.address else "default") + ":" +
-                       str(self.local_endpoint.port), color)
+            logger.info("Started " + self.protocol + " Listener on " +
+                        (str(self.local_endpoint.address) if
+                         self.local_endpoint.address else "default") + ":" +
+                        str(self.local_endpoint.port))
         return
 
     """ ASYNCIO function that gets called when joining a multicast flow
     """
 
     async def multicast_join(self):
-        print_time("joining multicast session.", color)
+        logger.info("Joining multicast session.")
         DatagramHandler(self)
         do_join(self)
 
@@ -176,7 +176,7 @@ class Listener:
     """
 
     async def multicast_leave(self):
-        print_time("leaving multicast session.", color)
+        logger.info("Leaving multicast session.")
         self.multicast_false = True
         do_leave(self)
 
@@ -193,32 +193,31 @@ class DatagramHandler(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        print_time("New UDP flow", color)
+        logger.info("New UDP flow.")
         return
 
     def datagram_received(self, data, addr):
-        print_time("Received new datagram", color)
+        logger.info("Received new datagram")
         if addr in self.remotes:
             self.remotes[addr].transports[0].datagram_received(data, addr)
             return
         new_connection = Connection(self.preconnection)
         new_connection.state = ConnectionState.ESTABLISHED
         new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection from " +
-                   str(addr[0]) + ":" + str(addr[1]) + ".", color)
+        logger.info("Received new connection from " +
+                    str(addr[0]) + ":" + str(addr[1]) + ".")
         new_remote_endpoint.with_address(addr[0])
         new_remote_endpoint.with_port(addr[1])
         new_connection.remote_endpoint = new_remote_endpoint
-        print_time("Created new connection object.", color)
+        logger.info("Created new connection object.")
         new_udp = UdpTransport(new_connection,
                                new_connection.local_endpoint,
                                new_remote_endpoint)
         new_udp.transport = self.transport
-        print(self.transport)
         if new_connection.connection_received:
             new_connection.loop.create_task(
                 new_connection.connection_received(new_connection))
-            print_time("Called connection_received cb", color)
+            logger.info("Called connection_received cb")
         new_udp.datagram_received(data, addr)
         self.remotes[addr] = new_connection
         return
@@ -232,7 +231,7 @@ class StreamHandler(asyncio.Protocol):
 
     def connection_made(self, transport):
         new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
+        logger.info("Received new connection.")
         # Get information about the newly connected endpoint
         new_remote_endpoint.with_address(
             transport.get_extra_info("peername")[0])

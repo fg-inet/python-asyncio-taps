@@ -9,7 +9,7 @@ from .transportProperties import TransportProperties
 from .transports import *
 from .yang_validate import *
 
-color = "red"
+logger = setup_logger(__name__, "green")
 
 
 class Preconnection:
@@ -64,8 +64,8 @@ class Preconnection:
             self.security_context = ssl.create_default_context(
                 ssl.Purpose.SERVER_AUTH)
             if self.security_parameters.identity:
-                print_time("Identity: " +
-                           str(self.security_parameters.identity))
+                logger.info("Identity: " +
+                            str(self.security_parameters.identity))
                 self.security_context.load_cert_chain(
                     self.security_parameters.identity)
             for cert in self.security_parameters.trustedCA:
@@ -85,8 +85,8 @@ class Preconnection:
         # jake 2019-05-02: *sigh* thanks for all the hate, xml...
         if root.tag != "{urn:ietf:params:xml:ns:yang:ietf-taps-api}" + \
                 "preconnection":
-            print_time("warning: unexpected root of instance: %s" +
-                       " (instead of ietf-taps-api:preconnection" % root.tag)
+            logger.warning("warning: unexpected root of instance: %s" +
+                           " (instead of ietf-taps-api:preconnection" % root.tag)
         precon = root
 
         # TBD: jake 2019-05-02: this api accepts only one endpoint,
@@ -197,12 +197,12 @@ class Preconnection:
         if self.remote_endpoint is None:
             raise Exception("A remote endpoint needs "
                             "to be specified to initiate")
-        print_time("Initiating connection.", color)
+        logger.info("Initiating connection.")
 
         new_connection = Connection(self)
         # Race the candidate sets
         self.loop.create_task(new_connection.race())
-        print_time("Returning connection object.", color)
+        logger.info("Returning connection object.")
         return new_connection
 
     async def listen(self):
@@ -323,6 +323,6 @@ class Preconnection:
                 if self.connection_received:
                     self.loop.create_task(
                         self.connection_received(conn))
-                    print_time("Called connection_received cb", color)
+                    logger.info("Called connection_received cb")
         except BaseException as e:
             print(e)

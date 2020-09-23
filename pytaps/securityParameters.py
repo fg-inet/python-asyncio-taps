@@ -1,7 +1,6 @@
 from .utility import *
 
-color = "magenta"
-
+logger = setup_logger(__name__, "magenta")
 
 class SecurityParameters:
     """ Class to handle the TAPS security parameters.
@@ -22,7 +21,7 @@ class SecurityParameters:
             self.identity = identity[0]
         else:
             self.identity = identity
-        print_time("Our certificate: " + str(self.identity), color)
+        logger.info("Our certificate: " + str(self.identity))
 
     def add_trust_ca(self, cert):
         """ Adds a certificate to be trusted.
@@ -30,4 +29,4 @@ class SecurityParameters:
             cert (string, required):  Certificate to be trusted.
         """
         self.trustedCA.append(cert)
-        print_time("Trusting certificate: " + str(cert), color)
+        logger.info("Trusting certificate: " + str(cert))

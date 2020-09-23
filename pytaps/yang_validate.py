@@ -14,8 +14,8 @@ def _pull_error_msgs():
         msgs.append(str(yang_glue.errmsg(i)))
     done_errcount = yang_glue.errmsg_count()
     if errcount != done_errcount:
-        msgs.append('error: libyangcheck error count changed (%d to %d)' +
-                    'while enumerating' % (errcount, done_errcount))
+        msgs.append('error: libyangcheck error count changed (%d to %d)' % (errcount, done_errcount) +
+                    'while enumerating')
         if done_errcount > errcount:
             for i in range(errcount, done_errcount):
                 msgs.append(str(yang_glue.errmsg(i)))

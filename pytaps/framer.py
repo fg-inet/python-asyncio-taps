@@ -1,8 +1,5 @@
 from .utility import *
 
-color = "magenta"
-
-
 class DeframingFailed(Exception):
     pass
 
