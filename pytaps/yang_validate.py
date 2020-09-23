@@ -1,8 +1,9 @@
-import sys
 import os.path
+import sys
+
 import yang_glue
 
-YANG_FMT_XML = 1   # MUST match LYD_XML from enum LYD_FORMAT in libyang
+YANG_FMT_XML = 1  # MUST match LYD_XML from enum LYD_FORMAT in libyang
 YANG_FMT_JSON = 2  # MUST match LYD_JSON from enum LYD_FORMAT in libyang
 
 
@@ -52,7 +53,6 @@ def validate(frmat, text):
             err_msg += ("error: libyangcheck validation"
                         "failed without error message")
             raise YangException(err_msg)
-        return False
 
     if done_errs != start_errs:
         print('warning: yang errors with passed validation:\n%s' %
@@ -82,7 +82,6 @@ def convert(from_frmat, text, to_frmat):
             err_msg += ("error: libyangcheck validation"
                         "failed without error message")
             raise YangException(err_msg)
-        return None
 
     if done_errs != start_errs:
         print('warning: yang errors with passed validation:\n%s' %

@@ -1,11 +1,6 @@
-import asyncio
-import json
-import sys
-import ssl
-from .endpoint import LocalEndpoint, RemoteEndpoint
-from .transportProperties import *
-from .utility import *
+from .endpoint import RemoteEndpoint
 from .framer import *
+
 color = "white"
 
 
@@ -26,6 +21,7 @@ class TransportLayer(asyncio.Protocol):
         remote_endpoint (RemoteEndpoint, optional):
                         RemoteEndpoint
     """
+
     def __init__(self, connection, local_endpoint=None, remote_endpoint=None):
         self.local_endpoint = local_endpoint
         self.remote_endpoint = remote_endpoint
@@ -47,8 +43,12 @@ class TransportLayer(asyncio.Protocol):
         if connection.framer:
             self.active_framer = None
             self.framer_buffer = []
+
+        self.transport = None
+
     """ Function that blocks until new data has arrived
     """
+
     async def await_data(self):
         waiter = self.loop.create_future()
         self.waiters.append(waiter)
@@ -59,6 +59,7 @@ class TransportLayer(asyncio.Protocol):
 
     """ Function that blocks until a framer has finished deframing
     """
+
     async def await_framer(self):
         self.active_framer = self.loop.create_future()
         try:
@@ -68,6 +69,7 @@ class TransportLayer(asyncio.Protocol):
 
     """ Invokes the framer to deframe newly arrived data
     """
+
     async def invoke_framer(self):
         # If there is already another deframing in progress,
         #  wait for it to complete
@@ -77,7 +79,7 @@ class TransportLayer(asyncio.Protocol):
         # Try to call the deframing function implemented
         # by the individual framer
         try:
-            ctx, msg, len, eom = await \
+            ctx, msg, length, eom = await \
                 self.connection.framer.handle_received_data(self.connection)
         except (DeframingFailed, ValueError, TypeError):
             # If the framer throws an DeframingFailed Error, stop trying
@@ -87,7 +89,7 @@ class TransportLayer(asyncio.Protocol):
             return
         # If a message was deframed successful, modify the recv buffer,
         #  add the message to the framer buffer
-        self.recv_buffer = self.recv_buffer[len:]
+        self.recv_buffer = self.recv_buffer[length:]
         self.framer_buffer.append(msg)
         self.active_framer.set_result(None)
         self.active_framer = None
@@ -104,17 +106,17 @@ class TransportLayer(asyncio.Protocol):
         """
         self.message_count += 1
         if self.connection.state is not ConnectionState.ESTABLISHED:
-            print_time("SendError occured, connection is not established.",
+            print_time("SendError occurred, connection is not established.",
                        color)
-            if self.send_error:
+            if self.connection.send_error:
                 self.loop.create_task(
-                    self.send_error(message_count, self.connection)
-                    )
+                    self.connection.send_error(self.message_count, self.connection)
+                )
             return
         self.loop.create_task(self.write(data))
         return self.message_count
 
-    async def write(self):
+    async def write(self, data):
         pass
 
     def receive(self, min_incomplete_length, max_length):
@@ -125,15 +127,16 @@ class TransportLayer(asyncio.Protocol):
         self.loop.create_task(self.read(min_incomplete_length,
                                         max_length))
 
-    async def read(self):
+    async def read(self, min_incomplete_length,
+                   max_length):
         pass
 
     async def close(self):
         pass
 
-
     """ ASYNCIO function that gets called when EOF is received
     """
+
     def eof_received(self):
         print_time("EOF received", color)
         self.connection.at_eof = True
@@ -142,9 +145,10 @@ class TransportLayer(asyncio.Protocol):
         an error.
         TODO: proper error handling
     """
+
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
-            print_time("Connection Error occured.", color)
+            print_time("Connection Error occurred.", color)
             print(err)
             if self.connection.connection_error:
                 self.loop.create_task(
@@ -155,6 +159,7 @@ class TransportLayer(asyncio.Protocol):
     """ ASYNCIO function that gets called when the connection
         is lost
     """
+
     def connection_lost(self, exc):
         if exc is None:
             print_time("Connection lost without err", color)
@@ -167,6 +172,24 @@ class TransportLayer(asyncio.Protocol):
                     self.connection.connection_error(exc, self.connection)
                 )
 
+    async def passive_open(self, transport):
+        # If there is a framer, call the start event
+        if self.connection.framer:
+            await self.connection.framer.handle_start(self.connection)
+        self.transport = transport
+        new_remote_endpoint = RemoteEndpoint()
+        print_time("Received new connection.", color)
+        # Get information about the newly connected endpoint
+        new_remote_endpoint.with_address(
+            transport.get_extra_info("peername")[0])
+        new_remote_endpoint.with_port(
+            transport.get_extra_info("peername")[1])
+        self.remote_endpoint = new_remote_endpoint
+        self.connection.state = ConnectionState.ESTABLISHED
+        if self.connection.connection_received:
+            self.loop.create_task(self.connection.connection_received(self))
+        return
+
 
 class UdpTransport(TransportLayer):
 
@@ -176,7 +199,7 @@ class UdpTransport(TransportLayer):
 
     async def active_open(self, transport):
         # If there is a framer, call the start event
-        if self.connection.framer is not None:
+        if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         for t in self.connection.pending:
@@ -188,24 +211,6 @@ class UdpTransport(TransportLayer):
         self.connection.state = ConnectionState.ESTABLISHED
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
-        return
-
-    async def passive_open(self, transport):
-        # If there is a framer, call the start event
-        if self.connection.framer is not None:
-            await self.connection.framer.handle_start(self.connection)
-        self.transport = transport
-        new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
-        # Get information about the newly connected endpoint
-        new_remote_endpoint.with_address(
-                            transport.get_extra_info("peername")[0])
-        new_remote_endpoint.with_port(
-                            transport.get_extra_info("peername")[1])
-        self.remote_endpoint = new_remote_endpoint
-        self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.connection_received:
-            self.loop.create_task(self.connection_received(self))
         return
 
     async def write(self, data):
@@ -222,7 +227,7 @@ class UdpTransport(TransportLayer):
             if self.connection.active:
                 # Frame the data
                 if self.connection.framer:
-                    data = await self.connection.framer.\
+                    data = await self.connection.framer. \
                         handle_new_sent_message(data, None, False)
                 # Write the data
                 self.transport.sendto(data)
@@ -231,7 +236,7 @@ class UdpTransport(TransportLayer):
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
         except Exception:
-            print_time("SendError occured.", color)
+            print_time("SendError occurred.", color)
             if self.connection.send_error:
                 self.loop.create_task(
                     self.connection.send_error(
@@ -268,13 +273,14 @@ class UdpTransport(TransportLayer):
                 data = self.recv_buffer.pop(0)
         if self.connection.received:
             self.loop.create_task(self.connection.received(data,
-                                  self.context, self.connection))
+                                                           self.context, self.connection))
 
     # Asyncio Callbacks
 
     """ ASYNCIO function that gets called when a new
         connection has been made, similar to TAPS ready callback.
     """
+
     def connection_made(self, transport):
         if self.connection.state == ConnectionState.ESTABLISHED:
             transport.close()
@@ -301,6 +307,8 @@ class UdpTransport(TransportLayer):
     """ ASYNCIO function that gets called when a new datagram
         is received. It stores the datagram in the recv_buffer
     """
+
+    # TODO: Do something with addr...
     def datagram_received(self, data, addr):
         if self.recv_buffer is None:
             self.recv_buffer = list()
@@ -315,6 +323,7 @@ class UdpTransport(TransportLayer):
                     w.set_result(None)
                     return
 
+
 class TcpTransport(TransportLayer):
 
     def __init__(self, *args, **kwargs):
@@ -323,7 +332,7 @@ class TcpTransport(TransportLayer):
 
     async def active_open(self, transport):
         # If there is a framer, call the start event
-        if self.connection.framer is not None:
+        if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         print_time("Connected successfully on TCP.", color)
@@ -331,24 +340,6 @@ class TcpTransport(TransportLayer):
         self.connection.sleeper_for_racing.cancel_all()
         if self.connection.ready:
             self.loop.create_task(self.connection.ready(self.connection))
-        return
-
-    async def passive_open(self, transport):
-        # If there is a framer, call the start event
-        if self.connection.framer is not None:
-            await self.connection.framer.handle_start(self.connection)
-        self.transport = transport
-        new_remote_endpoint = RemoteEndpoint()
-        print_time("Received new connection.", color)
-        # Get information about the newly connected endpoint
-        new_remote_endpoint.with_address(
-                            transport.get_extra_info("peername")[0])
-        new_remote_endpoint.with_port(
-                            transport.get_extra_info("peername")[1])
-        self.remote_endpoint = new_remote_endpoint
-        self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.connection_received:
-            self.loop.create_task(self.connection_received(self))
         return
 
     async def write(self, data):
@@ -361,15 +352,15 @@ class TcpTransport(TransportLayer):
 
             # Frame the data
             if self.connection.framer:
-                data = await self.connection.framer.\
+                data = await self.connection.framer. \
                     handle_new_sent_message(data, None, False)
             # Attempt to write data
             self.transport.write(data)
         except Exception:
-            print_time("SendError occured.", color)
-            if self.send_error:
+            print_time("SendError occurred.", color)
+            if self.connection.send_error:
                 self.loop.create_task(
-                    self.send_error(self.message_count, self.connection)
+                    self.connection.send_error(self.message_count, self.connection)
                 )
             return
         print_time("Data written successfully.", color)
@@ -404,12 +395,12 @@ class TcpTransport(TransportLayer):
         if self.at_eof:
             if self.connection.received:
                 self.loop.create_task(self.connection.received(data,
-                                      self.context, self.connection))
+                                                               self.context, self.connection))
             return
         else:
             if self.connection.received_partial:
                 self.loop.create_task(self.connection.received_partial(data,
-                                      self.context, False, self))
+                                                                       self.context, False, self))
 
     async def close(self):
         print_time("Closing connection.", color)
@@ -418,11 +409,12 @@ class TcpTransport(TransportLayer):
         if self.connection.closed:
             self.loop.create_task(self.connection.closed(self.connection))
 
-# Asyncio Callbacks
+    # Asyncio Callbacks
 
     """ ASYNCIO function that gets called when a new
         connection has been made, similar to TAPS ready callback.
     """
+
     def connection_made(self, transport):
         if self.connection.state == ConnectionState.ESTABLISHED:
             transport.close()
@@ -450,6 +442,7 @@ class TcpTransport(TransportLayer):
     """ ASYNCIO function that gets called when new data is made available
         by the OS. Stores new data in buffer and triggers the receive waiter
     """
+
     def data_received(self, data):
         print_time("Received %d bytes" % len(data), color)
 

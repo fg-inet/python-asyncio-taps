@@ -1,21 +1,16 @@
-import asyncio
-import json
-import sys
-import ssl
-import netifaces
-from .endpoint import LocalEndpoint, RemoteEndpoint
-from .transportProperties import *
-from .utility import *
-from .transports import *
-import ipaddress
 import socket
+
+import netifaces
+
+from .transports import *
+
 color = "green"
 
 # Wait for 100 ms between connection attempts when racing
 RACING_DELAY = 0.1
 
 
-class Connection():
+class Connection:
     """The TAPS connection class.
 
     Attributes:
@@ -23,16 +18,17 @@ class Connection():
                 Preconnection object from which this Connection
                 object was created.
     """
+
     def __init__(self, preconnection):
         # Initializations
         self.local_endpoint = preconnection.local_endpoint
         self.remote_endpoint = preconnection.remote_endpoint
         self.transport_properties = preconnection.transport_properties
         self.security_parameters = preconnection.security_parameters
+        self.security_context = preconnection.security_context
         self.loop = preconnection.loop
-        self.active = preconnection.active
+        self.active = False
         self.framer = preconnection.framer
-        self.set_callbacks(preconnection)
         self.sleeper_for_racing = SleepClassForRacing()
         self.pending = []
         # Security Context for SSL
@@ -41,32 +37,39 @@ class Connection():
         self.state = ConnectionState.ESTABLISHING
         # List of possible underlying transports
         self.transports = []
+        self.protocol = None
         self.multicast_open = False
+
+        # Callbacks
+        self.writer = None
+        self.reader = None
+        self.closed = None
+        self.receive_error = None
+        self.received_partial = None
+        self.received = None
+        self.connection_error = None
+        self.expired = None
+        self.send_error = None
+        self.sent = None
+        self.stopped = preconnection.stopped
+        self.listen_error = preconnection.listen_error
+        self.connection_received = preconnection.connection_received
+        self.initiate_error = preconnection.initiate_error
+        self.ready = preconnection.ready
 
     async def race(self):
         # This is an active connection attempt
         self.active = True
         # Create the set of possible protocol candidates
-        protocol_candidates = self.create_candidates()
+        protocol_candidates = create_candidates(self)
 
         if len(protocol_candidates) == 0:
             print_time("Candidate set is empty, aborting", color)
-            if self.initiate_error is not None:
+            if self.initiate_error:
                 self.loop.create_task(self.initiate_error())
             return
-        # If security_parameters were given, initialize ssl context
-        if self.security_parameters:
-            self.security_context = ssl.create_default_context(
-                                                ssl.Purpose.SERVER_AUTH)
-            if self.security_parameters.identity:
-                print_time("Identity: " +
-                           str(self.security_parameters.identity))
-                self.security_context.load_cert_chain(
-                                        self.security_parameters.identity)
-            for cert in self.security_parameters.trustedCA:
-                self.security_context.load_verify_locations(cert)
 
-        if self.remote_endpoint.host_name is not None:
+        if self.remote_endpoint.host_name:
             # Resolve address
             # FIXME: Unfortunately, asyncio getaddrinfo does not
             # FIXME: allow to resolve on specific interfaces
@@ -75,17 +78,17 @@ class Connection():
                 self.remote_endpoint.host_name, self.remote_endpoint.port)
             # Concat v6 and v4 address lists, making sure we try v6 first
             remote_addrs_v6 = list(
-                    set([
-                        info[4][0] for info in remote_info
-                        if info[0] == socket.AddressFamily.AF_INET6]
-                        )
-                )
+                set([
+                    info[4][0] for info in remote_info
+                    if info[0] == socket.AddressFamily.AF_INET6]
+                    )
+            )
             remote_addrs_v4 = list(
-                    set([
-                        info[4][0] for info in remote_info
-                        if info[0] == socket.AddressFamily.AF_INET]
-                        )
-                )
+                set([
+                    info[4][0] for info in remote_info
+                    if info[0] == socket.AddressFamily.AF_INET]
+                    )
+            )
             remote_addrs = remote_addrs_v6 + remote_addrs_v4
             print_time("Resolved " + str(self.remote_endpoint.host_name) +
                        " to " + str(remote_addrs), color)
@@ -96,7 +99,7 @@ class Connection():
                        str(self.remote_endpoint.address) + " --> " +
                        str(remote_addrs), color)
 
-        if self.local_endpoint is not None:
+        if self.local_endpoint:
             # Local interface specified -->
             # try local addresses on that interface
             for local_interface in self.local_endpoint.interface:
@@ -149,7 +152,7 @@ class Connection():
             print_time("Trying candidate protocol: " + str(candidate[0]) +
                        " and remote address: " + str(candidate[2]) +
                        (" and local address: " + str(candidate[3])
-                       if len(candidate) > 3 else ""), color)
+                        if len(candidate) > 3 else ""), color)
             if len(candidate) > 3:
                 # bind to a specific local address
                 local_address_to_use = (candidate[3], None)
@@ -165,11 +168,11 @@ class Connection():
                 self.remote_endpoint.address = candidate[2]
 
                 # Create a datagram endpoint
-                task = self.loop.create_task(
+                self.loop.create_task(
                     self.loop.create_datagram_endpoint(
                         lambda: UdpTransport(
-                                    connection=self,
-                                    remote_endpoint=self.remote_endpoint),
+                            connection=self,
+                            remote_endpoint=self.remote_endpoint),
                         remote_addr=(self.remote_endpoint.address,
                                      self.remote_endpoint.port),
                         local_addr=local_address_to_use))
@@ -184,18 +187,18 @@ class Connection():
                            ".", color)
                 self.remote_endpoint.address = candidate[2]
                 # If the protocol is tcp, create a asyncio connection
-                task = self.loop.create_task(
-                        self.loop.create_connection(
-                            lambda: TcpTransport(
-                                connection=self,
-                                remote_endpoint=self.remote_endpoint),
-                            self.remote_endpoint.address,
-                            self.remote_endpoint.port,
-                            ssl=self.security_context,
-                            server_hostname=(
-                                self.remote_endpoint.host_name
-                                if self.security_context else None),
-                            local_addr=local_address_to_use))
+                self.loop.create_task(
+                    self.loop.create_connection(
+                        lambda: TcpTransport(
+                            connection=self,
+                            remote_endpoint=self.remote_endpoint),
+                        self.remote_endpoint.address,
+                        self.remote_endpoint.port,
+                        ssl=self.security_context,
+                        server_hostname=(
+                            self.remote_endpoint.host_name
+                            if self.security_context else None),
+                        local_addr=local_address_to_use))
                 # Wait before starting next connection attempt
                 await self.sleeper_for_racing.sleep(RACING_DELAY)
 
@@ -229,79 +232,11 @@ class Connection():
         self.loop.create_task(self.transports[0].close())
         self.state = ConnectionState.CLOSING
 
-    def create_candidates(self):
-        """ Decides which protocols are candidates and then orders them
-        according to the TAPS interface draft
-        """
-        # Get the protocols know to the implementation from transportProperties
-        available_protocols = get_protocols()
-
-        # At the beginning, all protocols are candidates
-        candidate_protocols = dict([(row["name"], list((0, 0)))
-                                   for row in available_protocols])
-
-        # Iterate over all available protocols and over all properties
-        for protocol in available_protocols:
-            for transport_property in self.transport_properties.properties:
-                # If a protocol has a prohibited property remove it
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.PROHIBIT):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        del candidate_protocols[protocol["name"]]
-                # If a protocol doesn't have a required property remove it
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.REQUIRE):
-                    if (protocol[transport_property] is False and
-                            protocol["name"] in candidate_protocols):
-                        del candidate_protocols[protocol["name"]]
-                # Count how many PREFER properties each protocol has
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.PREFER):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        candidate_protocols[protocol["name"]][0] += 1
-                # Count how many AVOID properties each protocol has
-                if (self.transport_properties.properties[transport_property]
-                        is PreferenceLevel.AVOID):
-                    if (protocol[transport_property] is True and
-                            protocol["name"] in candidate_protocols):
-                        candidate_protocols[protocol["name"]][1] -= 1
-
-        # Sort candidates by number of PREFERs and then by AVOIDs on ties
-        sorted_candidates = sorted(candidate_protocols.items(),
-                                   key=lambda value: (value[1][0],
-                                   value[1][1]), reverse=True)
-
-        return sorted_candidates
-
     def parse(self, min_incomplete_length=0, max_length=0):
         """ Returns the message buffer of the
             connection.
-
-        Attributes:
-            connection (connection, required):
-                The connection object from which the
-                buffer should be returned.
         """
         return self.transports[0].recv_buffer, None, False
-
-    def set_callbacks(self, preconnection):
-        self.ready = preconnection.ready
-        self.initiate_error = preconnection.initiate_error
-        self.connection_received = preconnection.connection_received
-        self.listen_error = preconnection.listen_error
-        self.stopped = preconnection.stopped
-        self.sent = None
-        self.send_error = None
-        self.expired = None
-        self.connection_error = None
-        self.received = None
-        self.received_partial = None
-        self.receive_error = None
-        self.closed = None
-        self.reader = None
-        self.writer = None
 
     # Events for active open
     def on_ready(self, callback):
@@ -413,3 +348,6 @@ class Connection():
                 as its parameter.
         """
         self.closed = callback
+
+    def multicast_leave(self):
+        pass

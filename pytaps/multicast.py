@@ -1,7 +1,3 @@
-import asyncio
-import socket
-import sys
-import os.path
 import multicast_glue
 
 global _loop, _libhandle
@@ -11,13 +7,14 @@ _libhandle = None
 
 def added_sock_cb(loop, handle, fd, do_read):
     global _libhandle
-    assert(_libhandle is not None)
+    assert (_libhandle is not None)
+
     # sock = socket.socket(fileno=fd)
     def read_handler(do_read, handle, fd):
-
         global _libhandle
-        assert(_libhandle is not None)
+        assert (_libhandle is not None)
         return multicast_glue.receive_packets(_libhandle, do_read, handle, fd)
+
     loop.add_reader(fd, read_handler, do_read, handle, fd)
     return 0
 
@@ -29,7 +26,6 @@ def removed_sock_cb(loop, fd):
 
 
 def got_packet(listener, size, data, port):
-
     listener.preconnection.got_mc(listener, size, data, port)
     return 0
 
@@ -44,7 +40,7 @@ def do_join(listener):
         _libhandle = multicast_glue.initialize(listener.loop, added_sock_cb,
                                                removed_sock_cb)
         _loop = listener.loop
-        assert(_libhandle is not None)
+        assert (_libhandle is not None)
 
     remote = listener.remote_endpoint.address[0]
     local = listener.local_endpoint.address[0]

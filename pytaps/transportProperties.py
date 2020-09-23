@@ -1,5 +1,5 @@
-from enum import Enum
 import json
+from enum import Enum
 
 
 class PreferenceLevel(Enum):
@@ -133,6 +133,7 @@ class TransportProperties:
     """ Class to handle the TAPS transport properties.
 
     """
+
     def __init__(self):
         self.properties = {
             "reliability": PreferenceLevel.REQUIRE,

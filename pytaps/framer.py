@@ -1,5 +1,5 @@
-import asyncio
 from .utility import *
+
 color = "magenta"
 
 
@@ -7,11 +7,11 @@ class DeframingFailed(Exception):
     pass
 
 
-class Framer():
+class Framer:
     """The TAPS Framer class.
 
     Attributes:
-        eventLoop (eventLoop, optional):
+        event_loop (eventLoop, optional):
                         Event loop on which all coroutines and callbacks
                         will be scheduled, if none if given the
                         one of the current thread is used by default
@@ -20,9 +20,11 @@ class Framer():
     def __init__(self, event_loop=asyncio.get_event_loop()):
         self.loop = event_loop
         self.fail_connection = None
+        self.connection = None
 
     """ Empty functions, to be implemented by the framer implementation
     """
+
     async def start(self, connection):
         """ Function that gets called when a new connection
             has been created by the TAPS system. The framer
@@ -48,7 +50,7 @@ class Framer():
             context (context, required):
                 The message context.
             eom (boolean, required):
-                Marks wether or not this was marked
+                Marks whether or not this was marked
                 as end of message by the application.
         """
         pass
@@ -82,12 +84,6 @@ class Framer():
     async def handle_new_sent_message(self, data, context, eom):
         data = await self.new_sent_message(data, context, eom)
         return data
-
-    # Fire handle_received_data event and wait for reply of framer
-    async def handle_received(self, connection):
-        self.loop.create_task(self.handle_received_data(connection))
-        context, data, eom = await self.await_framer_receive()
-        return context, data, eom
 
     def fail_connection(self, error):
         return

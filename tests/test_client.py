@@ -68,9 +68,9 @@ class TestClient():
         if trust_ca or local_identity:
             sp = taps.SecurityParameters()
             if trust_ca:
-                sp.addTrustCA(trust_ca)
+                sp.add_trust_ca(trust_ca)
             if local_identity:
-                sp.addIdentity(local_identity)
+                sp.add_identity(local_identity)
         else:
             sp = None
 

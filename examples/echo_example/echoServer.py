@@ -74,9 +74,9 @@ class TestServer():
             # Use TLS
             sp = taps.SecurityParameters()
             if args.trust_ca:
-                sp.addTrustCA(args.trust_ca)
+                sp.add_trust_ca(args.trust_ca)
             if args.local_identity:
-                sp.addIdentity(args.local_identity)
+                sp.add_identity(args.local_identity)
             taps.print_time("Created SecurityParameters.", color)
 
         tp = taps.TransportProperties()

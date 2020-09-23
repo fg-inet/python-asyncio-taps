@@ -1,14 +1,14 @@
-import asyncio
 import ssl
-from .yang_validate import *
-import xml.etree.ElementTree as ET
+from xml.etree.ElementTree import fromstring
+
 from .connection import Connection
-from .securityParameters import SecurityParameters
-from .transportProperties import *
-from .endpoint import LocalEndpoint, RemoteEndpoint
-from .utility import *
-from .transports import *
+from .endpoint import LocalEndpoint
 from .listener import Listener
+from .securityParameters import SecurityParameters
+from .transportProperties import TransportProperties
+from .transports import *
+from .yang_validate import *
+
 color = "red"
 
 
@@ -33,10 +33,8 @@ class Preconnection:
                         Event loop on which all coroutines and callbacks
                         will be scheduled, if none if given the
                         one of the current thread is used by default
-        yangfile (file, optional):
-                        File descriptor of a JSON file containing a
-                        TAPS YANG configuration
     """
+
     def __init__(self, local_endpoint=None, remote_endpoint=None,
                  transport_properties=TransportProperties(),
                  security_parameters=None,
@@ -57,13 +55,23 @@ class Preconnection:
         self.listen_error = None
         self.stopped = None
         self.ready = None
-        self.initiate_error = None
-        self.connection_received = None
-        self.listen_error = None
-        self.stopped = None
-        self.active = False
+
         # Framer object
         self.framer = None
+
+        # If security_parameters were given, initialize ssl context
+        if self.security_parameters:
+            self.security_context = ssl.create_default_context(
+                ssl.Purpose.SERVER_AUTH)
+            if self.security_parameters.identity:
+                print_time("Identity: " +
+                           str(self.security_parameters.identity))
+                self.security_context.load_cert_chain(
+                    self.security_parameters.identity)
+            for cert in self.security_parameters.trustedCA:
+                self.security_context.load_verify_locations(cert)
+        else:
+            self.security_context = None
 
     def from_yang(self, frmat, text):
         if frmat == YANG_FMT_XML:
@@ -71,14 +79,14 @@ class Preconnection:
             xml_text = text
         else:
             xml_text = convert(frmat, text, YANG_FMT_XML)
-        root = ET.fromstring(xml_text)
+        root = fromstring(xml_text)
         ns = {'taps': 'urn:ietf:params:xml:ns:yang:ietf-taps-api'}
 
         # jake 2019-05-02: *sigh* thanks for all the hate, xml...
-        if root.tag != "{urn:ietf:params:xml:ns:yang:ietf-taps-api}" +\
-                       "preconnection":
+        if root.tag != "{urn:ietf:params:xml:ns:yang:ietf-taps-api}" + \
+                "preconnection":
             print_time("warning: unexpected root of instance: %s" +
-                       " (instead of ietf-taps-api:preconnection" % (root.tag))
+                       " (instead of ietf-taps-api:preconnection" % root.tag)
         precon = root
 
         # TBD: jake 2019-05-02: this api accepts only one endpoint,
@@ -123,9 +131,9 @@ class Preconnection:
                 trust_ca = cred.findtext('taps:trust-ca', namespaces=ns)
                 local_identity = cred.findtext('taps:identity', namespaces=ns)
                 if trust_ca:
-                    sp.addTrustCA(trust_ca)
+                    sp.add_trust_ca(trust_ca)
                 if local_identity:
-                    sp.addIdentity(local_identity)
+                    sp.add_identity(local_identity)
 
         tp = TransportProperties()
         transport = precon.find('taps:transport-properties', namespaces=ns)
@@ -167,17 +175,16 @@ class Preconnection:
         with open(fname) as infile:
             text = infile.read()
 
-        precon = None
         if fname.endswith('.xml'):
             precon = self.from_yang(YANG_FMT_XML, text)
         elif fname.endswith('.json'):
             precon = self.from_yang(YANG_FMT_JSON, text)
         else:
             try:
-                precon = self.from_yang(YANG_FMT_JSON, text)             
-            except YangException as ye:
+                precon = self.from_yang(YANG_FMT_JSON, text)
+            except YangException:
                 precon = self.from_yang(YANG_FMT_XML, text)
-        #TODO: Error handling if precon == None
+        # TODO: Error handling if precon == None
         return precon
 
     async def initiate(self):
@@ -199,19 +206,18 @@ class Preconnection:
         return new_connection
 
     async def listen(self):
-        """ Tries to start a listener, first chooses candidate protcol and
+        """ Tries to start a listener, first chooses candidate protocol and
             then tries to establish it with the appropriate asyncio function.
         """
         if self.local_endpoint is None:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
-        # This is a passive connection
-        self.active = False
         listener = Listener(self)
         # Create start_listener task so we can return right away
         self.loop.create_task(listener.start_listener())
         return listener
 
+    # TODO: Is this actually what the spec talks about?
     async def resolve(self):
         """ Resolve the address before initiating the connection.
         """
@@ -223,13 +229,14 @@ class Preconnection:
         self.remote_endpoint.address = remote_info[0][4][0]
 
     # Set the framer
-    def add_framer(self, a):
+    # TODO: Multiple framers
+    def add_framer(self, framer):
         """ Set a framer with which to frame the messages of the connection.
 
         Attributes:
             framer (framer, required): Class that implements a TAPS framer.
         """
-        self.framer = a
+        self.framer = framer
 
     # Events for active open
     def on_ready(self, callback):
@@ -285,7 +292,8 @@ class Preconnection:
         """
         self.stopped = callback
 
-    def got_mc(self, listener, size, data, port):
+    # TODO: Refactor this probably
+    def got_mc(self, listener, data, port):
         """ Method that redirects incoming multicast
             data to the relevant connection object
         """
@@ -304,7 +312,7 @@ class Preconnection:
                                        listener.transport_properties,
                                        listener.security_parameters,
                                        listener.loop)
-                if listener.framer is not None:
+                if listener.framer:
                     precon.add_framer(listener.framer)
                 conn = Connection(precon)
                 new_udp = UdpTransport(conn,
