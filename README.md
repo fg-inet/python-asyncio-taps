@@ -84,7 +84,6 @@ For a client with a model specified in `examples/yang_example/test-client2.json`
 ### Requirements:
 
 - Python 3.7 or above
-- termcolor (pip install termcolor)
 - netifaces (pip install netifaces)
 - pytest, pytest-asyncio, pytest-timeout (for tests)
 
