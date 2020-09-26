@@ -233,7 +233,7 @@ class UdpTransport(TransportLayer):
                 remote_address = self.remote_endpoint.address[0]
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
-        except Exception:
+        except InterruptedError:
             logger.warn("SendError occurred.")
             if self.connection.send_error:
                 self.loop.create_task(
@@ -306,8 +306,8 @@ class UdpTransport(TransportLayer):
         is received. It stores the datagram in the recv_buffer
     """
 
-    # TODO: Do something with addr...
     def datagram_received(self, data, addr):
+        self.context.addr = addr
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append(data)
@@ -354,7 +354,7 @@ class TcpTransport(TransportLayer):
                     handle_new_sent_message(data, None, False)
             # Attempt to write data
             self.transport.write(data)
-        except Exception:
+        except InterruptedError:
             logger.warn("SendError occurred.")
             if self.connection.send_error:
                 self.loop.create_task(
@@ -386,7 +386,7 @@ class TcpTransport(TransportLayer):
         if max_length == -1 or len(self.recv_buffer) <= max_length:
             data = self.recv_buffer
             self.recv_buffer = None
-        elif len(self.recv_buffer) > max_length:
+        else:
             data = self.recv_buffer[:max_length]
             self.recv_buffer = self.recv_buffer[max_length:]
 

@@ -33,7 +33,7 @@ class Framer:
                 The connection object that is to be
                 handled by the framer.
         """
-        pass
+        raise NotImplementedError
 
     async def new_sent_message(self, data, context, eom):
         """ Function that gets called when a new message
@@ -50,7 +50,7 @@ class Framer:
                 Marks whether or not this was marked
                 as end of message by the application.
         """
-        pass
+        raise NotImplementedError
 
     async def handle_received_data(self, connection):
         """ Function that gets called when a new message
@@ -66,7 +66,7 @@ class Framer:
                 The connection object on which new data has
                 arrived.
         """
-        return None, None, None, None
+        raise NotImplementedError
 
     async def stop(self):
         pass

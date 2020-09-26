@@ -184,7 +184,6 @@ class Preconnection:
                 precon = self.from_yang(YANG_FMT_JSON, text)
             except YangException:
                 precon = self.from_yang(YANG_FMT_XML, text)
-        # TODO: Error handling if precon == None
         return precon
 
     async def initiate(self):

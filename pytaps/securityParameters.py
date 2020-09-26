@@ -2,6 +2,7 @@ from .utility import *
 
 logger = setup_logger(__name__, "magenta")
 
+
 class SecurityParameters:
     """ Class to handle the TAPS security parameters.
 
