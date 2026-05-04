@@ -1,11 +1,21 @@
 import socket
-import netifaces
+try:
+    import netifaces
+except ImportError:
+    netifaces = None
 
 from .transports import *
 
 logger = setup_logger(__name__)
 # Wait for 100 ms between connection attempts when racing
 RACING_DELAY = 0.1
+
+
+def _require_netifaces():
+    if netifaces is None:
+        raise ImportError(
+            "Interface-constrained endpoint selection requires the 'netifaces' package."
+        )
 
 
 class Connection:
@@ -100,6 +110,7 @@ class Connection:
         if self.local_endpoint:
             # Local interface specified -->
             # try local addresses on that interface
+            _require_netifaces()
             for local_interface in self.local_endpoint.interface:
                 try:
                     # Unfortunately, link-local IPv6 addresses don't work

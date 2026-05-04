@@ -36,17 +36,23 @@ class Preconnection:
     """
 
     def __init__(self, local_endpoint=None, remote_endpoint=None,
-                 transport_properties=TransportProperties(),
+                 transport_properties=None,
                  security_parameters=None,
-                 event_loop=asyncio.get_event_loop()):
+                 event_loop=None):
 
         # Initializations from arguments
         self.local_endpoint = local_endpoint
         self.remote_endpoint = remote_endpoint
-        self.transport_properties = transport_properties
+        self.transport_properties = transport_properties or TransportProperties()
         self.security_parameters = security_parameters
 
-        self.loop = event_loop
+        if event_loop is not None:
+            self.loop = event_loop
+        else:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.loop = asyncio.get_event_loop()
 
         # Callbacks of the application
         self.read = None

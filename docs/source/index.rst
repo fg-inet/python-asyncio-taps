@@ -6,7 +6,14 @@
 Welcome to PyTAPS's documentation!
 ==================================
 
-PyTAPS is an implementation of a **transport system** as described by the **TAPS (Transport Services)** Working Group in the IETF in `draft-ietf-taps-interface-04 <https://tools.ietf.org/html/draft-ietf-taps-interface-04>`_.
+PyTAPS is an implementation of a **transport system** as described by the
+**TAPS (Transport Services)** Working Group in the IETF. This codebase started
+against an early draft of the interface and is being modernized toward the
+published RFC set:
+
+- `RFC 9621 <https://www.rfc-editor.org/rfc/rfc9621.html>`_: Transport Services Architecture
+- `RFC 9622 <https://www.rfc-editor.org/rfc/rfc9622.html>`_: Transport Services API
+- `RFC 9623 <https://www.rfc-editor.org/rfc/rfc9623.html>`_: Implementing Interfaces to Transport Services
 
 PyTAPS provides an asynchronous programming interface which allows applications to transmit and receive messages over transport protocols and network paths dynamically selected at runtime.
 
@@ -27,6 +34,7 @@ As of right now, PyTAPS supports the following features:
 
    api
    design
+   rfc-gap-analysis
    reference
    license
 

@@ -111,7 +111,7 @@ class SleepClassForRacing:
     tasks = set()
 
     async def sleep(self, delay, result=None, *, loop=None):
-        coro = asyncio.sleep(delay, result=result, loop=loop)
+        coro = asyncio.sleep(delay, result=result)
         task = asyncio.ensure_future(coro)
         self.tasks.add(task)
         try:

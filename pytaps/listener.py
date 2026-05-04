@@ -1,12 +1,22 @@
 import ipaddress
 
-import netifaces
+try:
+    import netifaces
+except ImportError:
+    netifaces = None
 
 from .connection import Connection
 from .multicast import do_join, do_leave
 from .transports import *
 
 logger = setup_logger(__name__, "cyan")
+
+
+def _require_netifaces():
+    if netifaces is None:
+        raise ImportError(
+            "Interface-constrained listeners require the 'netifaces' package."
+        )
 
 
 class Listener:
@@ -76,6 +86,7 @@ class Listener:
                         str(self.local_endpoint.address) + " --> " +
                         str(all_addrs))
         if self.local_endpoint.interface:
+            _require_netifaces()
             for local_interface in self.local_endpoint.interface:
                 try:
                     # Unfortunately, listening on link-local

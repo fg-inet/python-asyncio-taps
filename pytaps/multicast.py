@@ -1,11 +1,23 @@
-import multicast_glue
+try:
+    import multicast_glue
+except ImportError:
+    multicast_glue = None
 
 global _loop, _libhandle
 _loop = None
 _libhandle = None
 
 
+def _require_multicast_glue():
+    if multicast_glue is None:
+        raise ImportError(
+            "Multicast support requires the optional 'multicast_glue' extension. "
+            "Build the native extensions to enable multicast listeners."
+        )
+
+
 def added_sock_cb(loop, handle, fd, do_read):
+    _require_multicast_glue()
     global _libhandle
     assert (_libhandle is not None)
 
@@ -31,6 +43,7 @@ def got_packet(listener, size, data, port):
 
 
 def do_join(listener):
+    _require_multicast_glue()
     global _loop, _libhandle
     if _loop is None:
         if listener.loop is None:
@@ -60,6 +73,7 @@ def do_join(listener):
 
 
 def do_leave(listener):
+    _require_multicast_glue()
     if not hasattr(listener, '_join_ctx') or listener._join_ctx is None:
         raise Exception('leaving a connection not joined')
 

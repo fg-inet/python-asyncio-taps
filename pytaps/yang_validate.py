@@ -1,13 +1,25 @@
 import os.path
 import sys
 
-import yang_glue
+try:
+    import yang_glue
+except ImportError:
+    yang_glue = None
 
 YANG_FMT_XML = 1  # MUST match LYD_XML from enum LYD_FORMAT in libyang
 YANG_FMT_JSON = 2  # MUST match LYD_JSON from enum LYD_FORMAT in libyang
 
 
+def _require_yang_glue():
+    if yang_glue is None:
+        raise ImportError(
+            "YANG support requires the optional 'yang_glue' extension. "
+            "Build the native extensions or install the package with YANG support enabled."
+        )
+
+
 def _pull_error_msgs():
+    _require_yang_glue()
     errcount = yang_glue.errmsg_count()
     msgs = []
     for i in range(errcount):
@@ -33,6 +45,7 @@ class YangException(Exception):
 
 
 def validate(frmat, text):
+    _require_yang_glue()
     start_errs = yang_glue.errmsg_count()
     err_msg = None
     if start_errs:
@@ -62,6 +75,7 @@ def validate(frmat, text):
 
 
 def convert(from_frmat, text, to_frmat):
+    _require_yang_glue()
     start_errs = yang_glue.errmsg_count()
     err_msg = None
     if start_errs:
@@ -91,6 +105,7 @@ def convert(from_frmat, text, to_frmat):
 
 
 def _on_load():
+    _require_yang_glue()
     tapspath = os.path.abspath(os.path.dirname(__file__))
     modulepath = os.path.join(tapspath, 'modules')
     try:
@@ -102,4 +117,5 @@ def _on_load():
         raise e
 
 
-_on_load()
+if yang_glue is not None:
+    _on_load()

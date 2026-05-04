@@ -1,80 +1,104 @@
 #!/usr/bin/env python3
 
-from setuptools import setup, find_packages
-from distutils.core import setup, Extension
 import os
-import os.path
+from pathlib import Path
 
-include_dirs = ['/usr/local/include']
-library_dirs = ['/usr/local/lib']
+from setuptools import Extension, find_packages, setup
 
-install_path = os.getenv('INSTALL_PATH', None)
+
+ROOT = Path(__file__).parent
+README = ROOT / "README.md"
+
+
+def env_flag(name: str) -> bool:
+    value = os.getenv(name, "")
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+include_dirs = ["/usr/local/include"]
+library_dirs = ["/usr/local/lib"]
+
+install_path = os.getenv("INSTALL_PATH")
 if install_path:
-    include_dirs.append('%s/include' % install_path)
-    library_dirs.append('%s/lib' % install_path)
+    include_dirs.append(f"{install_path}/include")
+    library_dirs.append(f"{install_path}/lib")
 
-yangcheck_ext = Extension('yang_glue',
-                    define_macros = [('MAJOR_VERSION', '1'),
-                                     ('MINOR_VERSION', '0')],
-                    include_dirs = include_dirs,
-                    libraries = ['yang'],
-                    library_dirs = library_dirs,
-                    sources = ['pytaps/yang_glue.cxx'])
+ext_modules = []
+if env_flag("PYTAPS_BUILD_EXTENSIONS"):
+    ext_modules = [
+        Extension(
+            "yang_glue",
+            define_macros=[("MAJOR_VERSION", "1"), ("MINOR_VERSION", "0")],
+            include_dirs=include_dirs,
+            libraries=["yang"],
+            library_dirs=library_dirs,
+            sources=["pytaps/yang_glue.cxx"],
+        ),
+        Extension(
+            "multicast_glue",
+            define_macros=[("MAJOR_VERSION", "1"), ("MINOR_VERSION", "0")],
+            include_dirs=include_dirs,
+            libraries=["mcrx"],
+            library_dirs=library_dirs,
+            sources=["pytaps/multicast_glue.cxx"],
+        ),
+    ]
 
-multicast_glue_ext = Extension('multicast_glue',
-                    define_macros = [('MAJOR_VERSION', '1'),
-                                     ('MINOR_VERSION', '0')],
-                    include_dirs = include_dirs,
-                    libraries = ['mcrx'],
-                    library_dirs = library_dirs,
-                    sources = ['pytaps/multicast_glue.cxx'])
 
 setup(
     name="pytaps",
-    version="0.1",
-    packages=find_packages(),
-
-    package_data={
-        # If any package contains *.txt or *.rst files, include them:
-        '': ['*.txt', '*.rst'],
-    },
-
-    # metadata to display on PyPI
+    version="0.1.0",
+    description="Asyncio-based Transport Services (TAPS) reference implementation",
+    long_description=README.read_text(encoding="utf-8"),
+    long_description_content_type="text/markdown",
     author="Max Franke",
     author_email="mfranke@inet.tu-berlin.de",
-    description="TAPS (Transport Services) API Reference implementation for IETF",
-    keywords="taps ietf implementation",
     url="https://github.com/fg-inet/python-asyncio-taps",
     project_urls={
         "Working Group": "https://datatracker.ietf.org/wg/taps/about/",
+        "Architecture RFC": "https://www.rfc-editor.org/rfc/rfc9621.html",
+        "API RFC": "https://www.rfc-editor.org/rfc/rfc9622.html",
+        "Implementation RFC": "https://www.rfc-editor.org/rfc/rfc9623.html",
         "Documentation": "https://pytaps.readthedocs.io/en/latest/index.html",
         "Source Code": "https://github.com/fg-inet/python-asyncio-taps",
     },
-    classifiers=[
-        'License :: OSI Approved :: Python Software Foundation License'
+    packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        "pytaps": ["modules/*.yang"],
+    },
+    python_requires=">=3.10",
+    install_requires=[
+        "netifaces>=0.11",
     ],
-    data_files=[('pytaps/modules', [
-        'pytaps/modules/ietf-taps-api.yang',
-        'pytaps/modules/iana-if-type@2019-02-08.yang',
-        'pytaps/modules/ietf-interfaces@2018-02-20.yang',
-        'pytaps/modules/ietf-yang-types@2013-07-15.yang',
-        'pytaps/modules/ietf-inet-types@2013-07-15.yang',])],
-    ext_modules=[yangcheck_ext, multicast_glue_ext],
-    long_description='''
-This is an implementation of a transport system as described by the TAPS (Transport Services) Working Group in the IETF in https://tools.ietf.org/html/draft-ietf-taps-interface-04. The full documentation can be found on https://pytaps.readthedocs.io/en/latest/index.html.
-
-A transport system is a novel way to offer transport layer services to the application layer.
-
-It provides an interface on top of multiple different transport protocols, such as TCP, SCTP, UDP, or QUIC. Instead of having to choose a transport protocol itself, the application only provides abstract requirements (*Transport Properties*), e.g., *Reliable Data Transfer*. The transport system maps then maps these properties to specific transport protocols, possibly trying out multiple different protocols in parallel. Furthermore, it can select between multiple local interfaces and remote IP addresses.
-
-TAPS is currently being standardized in the [IETF TAPS Working Group](https://datatracker.ietf.org/wg/taps/about/):
-
-- [Architecture](https://datatracker.ietf.org/doc/draft-ietf-taps-arch/)
-- [Interface](https://datatracker.ietf.org/doc/draft-ietf-taps-interface/)
-- [Implementation considerations](https://datatracker.ietf.org/doc/draft-ietf-taps-impl/)
-
-People interested in participating in TAPS can [join the mailing list](https://www.ietf.org/mailman/listinfo/taps).
-'''
-
-    # could also include long_description, download_url, etc.
+    extras_require={
+        "test": [
+            "pytest>=8",
+            "pytest-asyncio>=0.23",
+            "pytest-timeout>=2.3",
+        ],
+        "docs": [
+            "sphinx>=7",
+        ],
+        "yang": [],
+        "multicast": [],
+        "dev": [
+            "ruff>=0.11",
+        ],
+    },
+    ext_modules=ext_modules,
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Python Software Foundation License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Topic :: Internet",
+    ],
+    keywords="taps ietf transport-services asyncio reference-implementation",
 )

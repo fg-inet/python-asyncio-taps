@@ -14,8 +14,14 @@ class Framer:
                         one of the current thread is used by default
     """
 
-    def __init__(self, event_loop=asyncio.get_event_loop()):
-        self.loop = event_loop
+    def __init__(self, event_loop=None):
+        if event_loop is not None:
+            self.loop = event_loop
+        else:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.loop = asyncio.get_event_loop()
         self.fail_connection = None
         self.connection = None
 
