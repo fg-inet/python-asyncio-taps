@@ -1,8 +1,6 @@
 import asyncio
 from pathlib import Path
 import pytest
-import sys
-import time
 import pytaps as taps
 
 TEST_TIMEOUT = 5
@@ -53,7 +51,7 @@ class ClientHarness:
         self.connection.on_received(self.handle_received)
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_closed(self.handle_closed)
-        msgref = await self.connection.send_message(self.data_to_send)
+        await self.connection.send_message(self.data_to_send)
 
     async def main(self,
                    data_to_send="Hello\n",
@@ -114,7 +112,7 @@ def test_sending():
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(stop_at_sent=True))
+        loop.create_task(client.main(stop_at_sent=True))
         loop.run_forever()
 
         assert True
@@ -134,7 +132,7 @@ def test_echo_udp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(data_to_send=teststring))
+        loop.create_task(client.main(data_to_send=teststring))
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -156,8 +154,8 @@ def test_echo_yang_udp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(client_loop)
-        task = client_loop.create_task(client.main(data_to_send=teststring,
-                                                   yangfile=yangfile_client))
+        client_loop.create_task(client.main(data_to_send=teststring,
+                                            yangfile=yangfile_client))
 
         client_loop.run_forever()
         print("Started client")
@@ -181,8 +179,8 @@ def test_echo_yang_tcp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(data_to_send=teststring,
-                                            yangfile=yangfile))
+        loop.create_task(client.main(data_to_send=teststring,
+                                     yangfile=yangfile))
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -203,10 +201,10 @@ def test_echo_tls(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(data_to_send=teststring,
-                                            remote_port=6667,
-                                            reliable=True,
-                                            trust_ca="keys/MyRootCA.pem"))
+        loop.create_task(client.main(data_to_send=teststring,
+                                     remote_port=6667,
+                                     reliable=True,
+                                     trust_ca="keys/MyRootCA.pem"))
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -229,8 +227,8 @@ def test_echo_tls_yang(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(data_to_send=teststring,
-                                            yangfile=yangfile))
+        loop.create_task(client.main(data_to_send=teststring,
+                                     yangfile=yangfile))
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -247,10 +245,10 @@ def test_http():
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        task = loop.create_task(client.main(data_to_send=teststring,
-                                            remote_hostname=hostname,
-                                            remote_port=80,
-                                            reliable=True))
+        loop.create_task(client.main(data_to_send=teststring,
+                                     remote_hostname=hostname,
+                                     remote_port=80,
+                                     reliable=True))
         loop.run_forever()
 
         assert "HTTP" in client.received_data.decode()

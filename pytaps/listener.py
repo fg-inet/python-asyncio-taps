@@ -184,8 +184,7 @@ class Listener:
 
     # TODO: Fix this...
     async def do_multicast_receive(self):
-        if multicast.do_receive():
-            self.loop.create_task(multicast.do_receive())
+        raise NotImplementedError("Multicast receive callback path is not implemented.")
 
     """ ASYNCIO function that gets called when leaving a multicast flow
     """

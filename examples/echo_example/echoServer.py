@@ -38,7 +38,7 @@ class TestServer:
                                       connection):
         logger.info("Received partial message " + str(data) + ".")
         await self.connection.receive(min_incomplete_length=1, max_length=5)
-        msgref = await self.connection.send_message(data)
+        await self.connection.send_message(data)
 
     async def handle_received(self, data, context, connection):
         logger.info("Received message " + str(data) + ".")

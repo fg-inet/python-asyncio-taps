@@ -32,7 +32,7 @@ class TestServer():
                                       connection):
         taps.print_time("Received partial message " + str(data) + ".", color)
         await self.connection.receive(min_incomplete_length=1, max_length=5)
-        msgref = await self.connection.send_message(str(data))
+        await self.connection.send_message(str(data))
 
     async def handle_received(self, data, context, connection):
         taps.print_time("Received message " + str(data) + ".", color)

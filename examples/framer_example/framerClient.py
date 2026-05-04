@@ -103,10 +103,10 @@ class TestClient:
         self.connection.on_received(self.handle_received)
         logger.info("Connection cbs set.")
 
-        msgref = await self.connection.send_message(("STR", "Hello there"))
-        msgref = await self.connection.send_message(("STR", "This is a test"))
-        msgref = await self.connection.send_message(("INT", 334353))
-        msgref = await self.connection.send_message(("STR", "Hope it worked"))
+        await self.connection.send_message(("STR", "Hello there"))
+        await self.connection.send_message(("STR", "This is a test"))
+        await self.connection.send_message(("INT", 334353))
+        await self.connection.send_message(("STR", "Hope it worked"))
         # Send message
         """
         msgref = await self.connection.send_message("This")

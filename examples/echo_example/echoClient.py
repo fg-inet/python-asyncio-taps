@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import pytaps as taps
+import pytaps as taps  # noqa: E402
 
 color = "yellow"
 
@@ -62,14 +62,14 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send messages
-        msgref = await self.connection.send_message("Hello\n")
-        msgref = await self.connection.send_message("There")
-        msgref = await self.connection.send_message("Friend")
-        msgref = await self.connection.send_message("How")
-        msgref = await self.connection.send_message("Are")
-        msgref = await self.connection.send_message("You\n")
-        msgref = await self.connection.send_message("Today?\n")
-        msgref = await self.connection.send_message("343536")
+        await self.connection.send_message("Hello\n")
+        await self.connection.send_message("There")
+        await self.connection.send_message("Friend")
+        await self.connection.send_message("How")
+        await self.connection.send_message("Are")
+        await self.connection.send_message("You\n")
+        await self.connection.send_message("Today?\n")
+        await self.connection.send_message("343536")
         taps.print_time("send_message called.", color)
 
     async def main(self, args):

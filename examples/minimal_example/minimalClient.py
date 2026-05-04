@@ -11,7 +11,7 @@ import pytaps as taps  # noqa: E402
 
 class TestClient():
     async def handle_ready(self, connection):
-        msgref = await self.connection.send_message("Hello\n")
+        await self.connection.send_message("Hello\n")
 
     async def main(self):
         ep = taps.RemoteEndpoint()

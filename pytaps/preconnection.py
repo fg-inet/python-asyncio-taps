@@ -7,6 +7,7 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .listener import Listener
 from .securityParameters import SecurityParameters
 from .transportProperties import TransportProperties, normalize_direction
+from .transports import UdpTransport
 from .utility import setup_logger
 from .yang_validate import (
     YANG_FMT_JSON,
@@ -100,8 +101,11 @@ class Preconnection:
         # jake 2019-05-02: *sigh* thanks for all the hate, xml...
         if root.tag != "{urn:ietf:params:xml:ns:yang:ietf-taps-api}" + \
                 "preconnection":
-            logger.warning("warning: unexpected root of instance: %s" +
-                           " (instead of ietf-taps-api:preconnection" % root.tag)
+            logger.warning(
+                "warning: unexpected root of instance: %s "
+                "(instead of ietf-taps-api:preconnection)",
+                root.tag,
+            )
         precon = root
 
         # TBD: jake 2019-05-02: this api accepts only one endpoint,

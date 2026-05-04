@@ -219,11 +219,11 @@ class Connection:
                     logger.info("Trying addresses of local interface " +
                                 str(self.local_endpoint.interface) + " --> " +
                                 str(local_v6_addrs) + ", " +
-                                str(local_v4_addrs), color)
+                                str(local_v4_addrs))
                 except ValueError as err:
                     logger.critical("Cannot get IP addresses for " +
                                     str(self.local_endpoint.interface) + ": " +
-                                    str(err), color)
+                                    str(err))
                     # TODO throw error
             # Build candidate set for racing
             # based on combinations of protocol, local and remote IP address
