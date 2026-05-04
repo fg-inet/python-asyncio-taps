@@ -10,7 +10,12 @@ from .connection import Connection
 from .endpoint import RemoteEndpoint
 from .multicast import do_join, do_leave
 from .transports import TcpTransport, UdpTransport
-from .utility import ConnectionState, build_protocol_candidates, setup_logger
+from .utility import (
+    ConnectionState,
+    build_protocol_candidates,
+    schedule_callback,
+    setup_logger,
+)
 
 logger = setup_logger(__name__, "cyan")
 
@@ -41,10 +46,16 @@ class Listener:
         self.security_context = preconnection.security_context
         self.loop = preconnection.loop
         self.framer = preconnection.framer
-        self.security_context = None
         self.active_ports = {}
         self.protocol = None
         self.listen_task = None
+        self.state = ConnectionState.ESTABLISHING
+        self._listen_waiter = self.loop.create_future()
+        self._connection_waiters = []
+        self._servers = []
+        self._datagram_transports = []
+        self._stopped_waiter = self.loop.create_future()
+        self.last_error = None
 
         # Callbacks
         self.stopped = preconnection.stopped
@@ -52,6 +63,75 @@ class Listener:
         self.connection_received = preconnection.connection_received
         self.initiate_error = preconnection.initiate_error
         self.ready = preconnection.ready
+
+    async def wait_listening(self):
+        await self._listen_waiter
+        return self
+
+    def accept(self):
+        waiter = self.loop.create_future()
+        self._connection_waiters.append(waiter)
+        return waiter
+
+    def _mark_listening(self):
+        self.state = ConnectionState.ESTABLISHED
+        if not self._listen_waiter.done():
+            self._listen_waiter.set_result(self)
+
+    def _mark_stopped(self):
+        self.state = ConnectionState.CLOSED
+        if not self._stopped_waiter.done():
+            self._stopped_waiter.set_result(self)
+        for waiter in self._connection_waiters:
+            if not waiter.done():
+                waiter.set_exception(ConnectionAbortedError("Listener stopped"))
+        self._connection_waiters.clear()
+
+    def _fail_listen(self, error):
+        self.last_error = error
+        self.state = ConnectionState.CLOSED
+        if not self._listen_waiter.done():
+            self._listen_waiter.set_exception(error)
+        schedule_callback(
+            self.loop,
+            self.listen_error,
+            (error, self),
+            (self,),
+            (),
+        )
+
+    def _deliver_connection(self, connection):
+        if self._connection_waiters:
+            waiter = self._connection_waiters.pop(0)
+            if not waiter.done():
+                waiter.set_result(connection)
+        schedule_callback(self.loop, self.connection_received, (connection,))
+
+    def get_properties(self):
+        return {
+            "selection": self.transport_properties.get_selection_properties(),
+            "connection": self.transport_properties.get_connection_properties(),
+            "readOnly": {
+                "state": self.state.name,
+                "protocol": self.protocol,
+                "localEndpoint": self.local_endpoint,
+                "remoteEndpoint": self.remote_endpoint,
+                "lastError": str(self.last_error) if self.last_error else None,
+            },
+        }
+
+    async def wait_stopped(self):
+        await self._stopped_waiter
+        return self
+
+    async def stop(self):
+        for server in list(self._servers):
+            server.close()
+            await server.wait_closed()
+        for transport in list(self._datagram_transports):
+            transport.close()
+        self._mark_stopped()
+        schedule_callback(self.loop, self.stopped, ())
 
     async def start_listener(self):
         """ method wrapped by listen
@@ -73,8 +153,7 @@ class Listener:
         # If the candidate set is empty issue an InitiateError cb
         if not protocol_candidates:
             logger.warning("Protocol selection Error occurred.")
-            if self.listen_error:
-                self.loop.create_task(self.listen_error())
+            self._fail_listen(RuntimeError("Protocol selection error"))
             return
 
         all_addrs = []
@@ -119,6 +198,7 @@ class Listener:
                          for protocol in protocol_candidates]
 
         # Attempt to set up the appropriate listener for the candidate protocol
+        started = False
         for candidate in candidate_set:
             try:
                 if candidate[0] == 'udp':
@@ -144,31 +224,52 @@ class Listener:
                             # multicast_receiver = True
                             self.loop.create_task(self.multicast_join())
                     else:
-                        await self.loop.create_datagram_endpoint(
+                        transport, _ = await self.loop.create_datagram_endpoint(
                             lambda: DatagramHandler(self),
                             local_addr=(
                                 self.local_endpoint.address[0],
                                 self.local_endpoint.port))
-                elif candidate[0] == 'tcp':
-                    self.protocol = 'tcp'
+                        self._datagram_transports.append(transport)
+                        started = True
+                elif candidate[0] in {'tcp', 'tls-tcp'}:
+                    if candidate[0] == "tls-tcp" and self.security_context is None:
+                        logger.info(
+                            "Skipping tls-tcp listener candidate on %s:%s because no security context is configured.",
+                            self.local_endpoint.address,
+                            self.local_endpoint.port,
+                        )
+                        continue
+                    self.protocol = candidate[0]
                     self.local_endpoint.address = [candidate[1]]
                     logger.info("TCP local endpoint: address " +
                                 str(self.local_endpoint.address) +
                                 " port: " + str(self.local_endpoint.port))
-                    await self.loop.create_server(
+                    server = await self.loop.create_server(
                         lambda: StreamHandler(self),
                         self.local_endpoint.address[0],
                         self.local_endpoint.port,
-                        ssl=self.security_context)
+                        ssl=self.security_context if candidate[0] == "tls-tcp" else None)
+                    self._servers.append(server)
+                    started = True
             except Exception as err:
                 logger.warning("Listen Error occurred: " + str(err))
-                if self.listen_error:
-                    self.loop.create_task(self.listen_error())
+                self.last_error = err
+                schedule_callback(
+                    self.loop,
+                    self.listen_error,
+                    (err, self),
+                    (self,),
+                    (),
+                )
 
             logger.info("Started " + self.protocol + " Listener on " +
                         (str(self.local_endpoint.address) if
                          self.local_endpoint.address else "default") + ":" +
                         str(self.local_endpoint.port))
+        if started:
+            self._mark_listening()
+        elif not self._listen_waiter.done():
+            self._fail_listen(RuntimeError("Listener failed to start any candidates."))
         return
 
     """ ASYNCIO function that gets called when joining a multicast flow
@@ -178,6 +279,7 @@ class Listener:
         logger.info("Joining multicast session.")
         DatagramHandler(self)
         do_join(self)
+        self._mark_listening()
 
     """ ASYNCIO function that receives data from multicast flows
     """
@@ -193,6 +295,7 @@ class Listener:
         logger.info("Leaving multicast session.")
         self.multicast_false = True
         do_leave(self)
+        self._mark_stopped()
 
 
 class DatagramHandler(asyncio.Protocol):
@@ -228,10 +331,8 @@ class DatagramHandler(asyncio.Protocol):
                                new_connection.local_endpoint,
                                new_remote_endpoint)
         new_udp.transport = self.transport
-        if new_connection.connection_received:
-            new_connection.loop.create_task(
-                new_connection.connection_received(new_connection))
-            logger.info("Called connection_received cb")
+        self.preconnection._deliver_connection(new_connection)
+        logger.info("Delivered new connection to listener.")
         new_udp.datagram_received(data, addr)
         self.remotes[addr] = new_connection
         return
@@ -257,10 +358,7 @@ class StreamHandler(asyncio.Protocol):
                                new_remote_endpoint)
         new_tcp.transport = transport
         self.connection.state = ConnectionState.ESTABLISHED
-        if self.connection.connection_received:
-            self.connection.loop.create_task(
-                self.connection.connection_received(self.connection)
-            )
+        self.connection._originating_preconnection._deliver_connection(self.connection)
         return
 
     def eof_received(self):

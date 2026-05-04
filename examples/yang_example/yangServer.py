@@ -38,7 +38,9 @@ class TestServer():
             + ").",
             color,
         )
-        await self.connection.receive(min_incomplete_length=1, max_length=5)
+        self.loop.create_task(
+            self.connection.receive(min_incomplete_length=1, max_length=5)
+        )
         await self.connection.send(str(data))
 
     async def handle_received(self, data, context, connection):
@@ -50,7 +52,9 @@ class TestServer():
             + ".",
             color,
         )
-        await self.connection.receive(min_incomplete_length=1, max_length=5)
+        self.loop.create_task(
+            self.connection.receive(min_incomplete_length=1, max_length=5)
+        )
         await self.connection.send(data)
 
     async def handle_listen_error(self):

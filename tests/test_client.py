@@ -100,6 +100,10 @@ class ClientHarness:
                               security_parameters=sp,
                               event_loop=self.loop
                               )
+        if remote_hostname:
+            self.preconnection.remote_endpoint.with_hostname(remote_hostname)
+        if remote_port:
+            self.preconnection.remote_endpoint.with_port(remote_port)
         self.preconnection.on_ready(self.handle_ready)
         self.connection = await self.preconnection.initiate()
 
@@ -132,7 +136,12 @@ def test_echo_udp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        loop.create_task(client.main(data_to_send=teststring))
+        loop.create_task(
+            client.main(
+                data_to_send=teststring,
+                remote_port=echo_servers["echo_port"],
+            )
+        )
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -154,8 +163,13 @@ def test_echo_yang_udp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(client_loop)
-        client_loop.create_task(client.main(data_to_send=teststring,
-                                            yangfile=yangfile_client))
+        client_loop.create_task(
+            client.main(
+                data_to_send=teststring,
+                remote_port=echo_servers["echo_port"],
+                yangfile=yangfile_client,
+            )
+        )
 
         client_loop.run_forever()
         print("Started client")
@@ -179,8 +193,13 @@ def test_echo_yang_tcp(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        loop.create_task(client.main(data_to_send=teststring,
-                                     yangfile=yangfile))
+        loop.create_task(
+            client.main(
+                data_to_send=teststring,
+                remote_port=echo_servers["echo_port"],
+                yangfile=yangfile,
+            )
+        )
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -201,10 +220,14 @@ def test_echo_tls(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        loop.create_task(client.main(data_to_send=teststring,
-                                     remote_port=6667,
-                                     reliable=True,
-                                     trust_ca="keys/MyRootCA.pem"))
+        loop.create_task(
+            client.main(
+                data_to_send=teststring,
+                remote_port=echo_servers["tls_port"],
+                reliable=True,
+                trust_ca="keys/MyRootCA.pem",
+            )
+        )
         loop.run_forever()
 
         assert client.received_data.decode() == teststring
@@ -227,8 +250,13 @@ def test_echo_tls_yang(echo_servers):
     try:
         client = ClientHarness()
         asyncio.set_event_loop(loop)
-        loop.create_task(client.main(data_to_send=teststring,
-                                     yangfile=yangfile))
+        loop.create_task(
+            client.main(
+                data_to_send=teststring,
+                remote_port=echo_servers["tls_port"],
+                yangfile=yangfile,
+            )
+        )
         loop.run_forever()
 
         assert client.received_data.decode() == teststring

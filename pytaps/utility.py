@@ -68,6 +68,27 @@ def setup_logger(module, color="white"):
     return logger
 
 
+def schedule_callback(loop, callback, *arg_variants):
+    if callback is None:
+        return False
+
+    if not arg_variants:
+        arg_variants = ((),)
+
+    last_error = None
+    for args in arg_variants:
+        try:
+            loop.create_task(callback(*args))
+            return True
+        except TypeError as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise last_error
+    return False
+
+
 @dataclass(frozen=True)
 class Candidate:
     protocol: str

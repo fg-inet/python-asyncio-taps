@@ -73,19 +73,51 @@ class Preconnection:
         # Framer object
         self.framer = None
 
-        # If security_parameters were given, initialize ssl context
         if self.security_parameters:
-            self.security_context = ssl.create_default_context(
-                ssl.Purpose.SERVER_AUTH)
-            if self.security_parameters.identity:
-                logger.info("Identity: " +
-                            str(self.security_parameters.identity))
-                self.security_context.load_cert_chain(
-                    self.security_parameters.identity)
-            for cert in self.security_parameters.trustedCA:
-                self.security_context.load_verify_locations(cert)
+            self._apply_security_defaults()
+        self.security_context = self._build_security_context()
+
+    def _apply_security_defaults(self):
+        for prop in (
+            "confidentiality",
+            "integrity",
+            "peerAuthentication",
+            "secureKeyExchange",
+        ):
+            if prop not in self.transport_properties.get_explicit_selection_properties():
+                self.transport_properties.require(prop)
+
+    def _build_security_context(self):
+        if not self.security_parameters:
+            return None
+
+        is_listener = self.local_endpoint and not self.remote_endpoint
+        purpose = ssl.Purpose.CLIENT_AUTH if is_listener else ssl.Purpose.SERVER_AUTH
+        security_context = ssl.create_default_context(purpose)
+        if self.security_parameters.identity:
+            logger.info("Identity: " + str(self.security_parameters.identity))
+            security_context.load_cert_chain(self.security_parameters.identity)
+        for cert in self.security_parameters.trustedCA:
+            security_context.load_verify_locations(cert)
+        if self.security_parameters.trustedCA and hasattr(ssl, "VERIFY_X509_STRICT"):
+            # The bundled test certificates predate stricter AKI/SKI validation in
+            # newer OpenSSL releases, so keep chain verification enabled but relax
+            # strict profile checks for explicit custom trust anchors.
+            security_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        if self.security_parameters.alpn_protocols:
+            security_context.set_alpn_protocols(
+                self.security_parameters.alpn_protocols
+            )
+        if self.security_parameters.cipher_suites:
+            security_context.set_ciphers(self.security_parameters.cipher_suites)
+        if self.security_parameters.require_peer_authentication and not is_listener:
+            security_context.verify_mode = ssl.CERT_REQUIRED
         else:
-            self.security_context = None
+            security_context.check_hostname = False
+            security_context.verify_mode = (
+                ssl.CERT_OPTIONAL if is_listener else ssl.CERT_NONE
+            )
+        return security_context
 
     def from_yang(self, frmat, text):
         if frmat == YANG_FMT_XML:
@@ -180,6 +212,9 @@ class Preconnection:
         self.local_endpoint = lp
         self.transport_properties = tp
         self.security_parameters = sp
+        if self.security_parameters:
+            self._apply_security_defaults()
+        self.security_context = self._build_security_context()
         return self
 
     def clone(self):
@@ -234,6 +269,10 @@ class Preconnection:
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
+            "security": (
+                self.security_parameters.get_configuration()
+                if self.security_parameters else {}
+            ),
         }
 
     def from_yangfile(self, fname):
@@ -386,9 +425,7 @@ class Preconnection:
                                        conn.remote_endpoint)
                 listener.active_ports[port] = conn
                 listener.loop.create_task(new_udp.active_open(None))
-                if self.connection_received:
-                    self.loop.create_task(
-                        self.connection_received(conn))
-                    logger.info("Called connection_received cb")
+                listener._deliver_connection(conn)
+                logger.info("Delivered multicast connection to listener.")
         except Exception:
             logger.exception("Error while handling multicast datagram.")

@@ -39,8 +39,8 @@ The default SecurityParameters result in the client using the default certificat
 To specify a Certificate Authority to trust or to set a certificate as the local identity, set SecurityParameters as follows::
 
 	security = taps.SecurityParameters()
-	security.addTrustCA(args.trust_ca)
-	security.addIdentity(args.local_identity)
+	security.add_trust_ca(args.trust_ca)
+	security.add_identity(args.local_identity)
 
 To enforce using **UDP, set TransportProperties** that prohibit the use of TCP, for example:
 
@@ -122,7 +122,7 @@ Sending data
 
 An application can send Messages through an established Connection as follows::
 
-	await connection.send_message(data)
+	await connection.send(data)
 
 Optionally, the application can specify a callback function to be called once the message has been sent, i.e., once PyTAPS has handed the data to the underlying implementation of the used transport protocol::
 
@@ -137,7 +137,7 @@ Receiving data
 PyTAPS is a message-oriented API, and by default, applications receive entire messages.
 This works well with a transport protocol that supports message boundaries, such as SCTP, or when using a Deframer. However, a stream-oriented transport protocol such as TCP does not preserve message boundaries.
 
-In this case, the application should receive partial messages. For this, the application has to set a callback to be called when it receives data, and then call receive::
+In this case, the application should receive partial messages. For this, the application can either await ``receive()`` directly or set a callback to be called when it receives data, and then call receive::
 
 	async def handle_received_partial(self, data, context, end_of_message):
 		print("Received data: " + str(data))

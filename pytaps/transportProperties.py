@@ -27,6 +27,10 @@ PROPERTY_ALIASES = {
 
 SELECTION_PROPERTY_DEFAULTS = {
     "reliability": PreferenceLevel.REQUIRE,
+    "confidentiality": PreferenceLevel.IGNORE,
+    "integrity": PreferenceLevel.IGNORE,
+    "peerAuthentication": PreferenceLevel.IGNORE,
+    "secureKeyExchange": PreferenceLevel.IGNORE,
     "preserveMsgBoundaries": PreferenceLevel.PREFER,
     "perMessageReliability": PreferenceLevel.IGNORE,
     "preserveOrder": PreferenceLevel.REQUIRE,
@@ -71,6 +75,10 @@ PROTOCOLS = [
     {
         "name": "tcp",
         "reliability": True,
+        "confidentiality": False,
+        "integrity": False,
+        "peerAuthentication": False,
+        "secureKeyExchange": False,
         "preserveMsgBoundaries": False,
         "perMessageReliability": False,
         "preserveOrder": True,
@@ -88,6 +96,10 @@ PROTOCOLS = [
     {
         "name": "udp",
         "reliability": False,
+        "confidentiality": False,
+        "integrity": False,
+        "peerAuthentication": False,
+        "secureKeyExchange": False,
         "preserveMsgBoundaries": True,
         "perMessageReliability": False,
         "preserveOrder": False,
@@ -105,6 +117,10 @@ PROTOCOLS = [
     {
         "name": "tls-tcp",
         "reliability": True,
+        "confidentiality": True,
+        "integrity": True,
+        "peerAuthentication": True,
+        "secureKeyExchange": True,
         "preserveMsgBoundaries": False,
         "perMessageReliability": False,
         "preserveOrder": True,

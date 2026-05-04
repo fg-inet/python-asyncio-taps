@@ -94,7 +94,23 @@ class Framer:
     def prepend_protocol(self, framer):
         return
 
-    async def send(self, data):
+    def parse(self, connection, min_incomplete_length=0, max_length=0):
+        return connection.parse(min_incomplete_length, max_length)
+
+    def advance_receive_cursor(self, connection, length):
+        if connection.transports[0].recv_buffer is None:
+            return
+        connection.transports[0].recv_buffer = connection.transports[0].recv_buffer[length:]
+
+    def deliver(self, connection, context, data, eom=True):
+        context.end_of_message = eom
+        return connection._deliver_received(data, context)
+
+    def deliver_and_advance_receive_cursor(self, connection, context, data, length, eom=True):
+        self.advance_receive_cursor(connection, length)
+        return self.deliver(connection, context, data, eom)
+
+    async def send(self, data, context=None, end_of_message=True):
         """ Should be called with framed data after a
             new_sent_message() event.
 
@@ -102,4 +118,4 @@ class Framer:
             data (string, required):
                 The framed message.
         """
-        self.connection.send_data(data, -1)
+        return await self.connection.send(data, context, end_of_message)

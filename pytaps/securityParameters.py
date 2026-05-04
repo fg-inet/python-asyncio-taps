@@ -11,6 +11,10 @@ class SecurityParameters:
     def __init__(self):
         self.identity = None
         self.trustedCA = []
+        self.alpn_protocols = []
+        self.server_name = None
+        self.require_peer_authentication = True
+        self.cipher_suites = None
 
     def add_identity(self, identity):
         """ Adds a local identity with which to
@@ -31,3 +35,29 @@ class SecurityParameters:
         """
         self.trustedCA.append(cert)
         logger.info("Trusting certificate: " + str(cert))
+
+    def add_alpn_protocol(self, protocol):
+        self.alpn_protocols.append(protocol)
+        logger.info("Offering ALPN protocol: " + str(protocol))
+
+    def with_server_name(self, server_name):
+        self.server_name = server_name
+        logger.info("Setting server name: " + str(server_name))
+
+    def disable_peer_authentication(self):
+        self.require_peer_authentication = False
+        logger.info("Peer authentication disabled.")
+
+    def set_cipher_suites(self, cipher_suites):
+        self.cipher_suites = cipher_suites
+        logger.info("Configured cipher suites.")
+
+    def get_configuration(self):
+        return {
+            "identity": self.identity,
+            "trustedCAs": list(self.trustedCA),
+            "alpnProtocols": list(self.alpn_protocols),
+            "serverName": self.server_name,
+            "requirePeerAuthentication": self.require_peer_authentication,
+            "cipherSuites": self.cipher_suites,
+        }

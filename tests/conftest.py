@@ -1,4 +1,5 @@
 import os
+import ssl
 import socket
 import subprocess
 import sys
@@ -26,17 +27,46 @@ def _wait_for_tcp_port(host, port, timeout=5.0):
     raise RuntimeError(f"Timed out waiting for TCP server on [{host}]:{port}")
 
 
+def _wait_for_tls_port(host, port, cafile, server_name="localhost", timeout=5.0):
+    deadline = time.time() + timeout
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            try:
+                wrapped = context.wrap_socket(
+                    sock,
+                    server_hostname=server_name,
+                )
+                wrapped.connect((host, port))
+                wrapped.close()
+                return
+            except OSError:
+                time.sleep(0.1)
+    raise RuntimeError(f"Timed out waiting for TLS server on [{host}]:{port}")
+
+
+def _reserve_ipv6_port():
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+        sock.bind(("::1", 0))
+        return sock.getsockname()[1]
+
+
 @pytest.fixture(scope="session")
 def echo_servers():
     env = os.environ.copy()
     python = sys.executable
+    echo_port = _reserve_ipv6_port()
+    tls_port = _reserve_ipv6_port()
     processes = [
         subprocess.Popen(
             [
                 python,
                 str(ECHO_SERVER),
                 "--local-address=::1",
-                "--local-port=6666",
+                f"--local-port={echo_port}",
                 "--reliable",
                 "both",
             ],
@@ -50,7 +80,7 @@ def echo_servers():
                 python,
                 str(ECHO_SERVER),
                 "--local-address=::1",
-                "--local-port=6667",
+                f"--local-port={tls_port}",
                 "--local-identity",
                 "keys/localhost.pem",
             ],
@@ -61,11 +91,14 @@ def echo_servers():
         ),
     ]
 
-    _wait_for_tcp_port("::1", 6666)
-    _wait_for_tcp_port("::1", 6667)
+    _wait_for_tcp_port("::1", echo_port)
+    _wait_for_tls_port("::1", tls_port, str(TESTS_DIR / "keys" / "MyRootCA.pem"))
 
     try:
-        yield
+        yield {
+            "echo_port": echo_port,
+            "tls_port": tls_port,
+        }
     finally:
         for process in processes:
             process.terminate()

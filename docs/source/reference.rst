@@ -37,8 +37,12 @@ Security Parameters
 -------------------
 	.. autoclass:: SecurityParameters
 
-		.. automethod:: addIdentity
-		.. automethod:: addTrustCA
+		.. automethod:: add_identity
+		.. automethod:: add_trust_ca
+		.. automethod:: add_alpn_protocol
+		.. automethod:: with_server_name
+		.. automethod:: disable_peer_authentication
+		.. automethod:: set_cipher_suites
 
 Preconnection
 -------------
@@ -58,8 +62,17 @@ Connection
 ----------
 	.. autoclass:: Connection
 
+		.. automethod:: new_message_context
+		.. automethod:: get_message_properties
+		.. automethod:: send
 		.. automethod:: send_message
+		.. automethod:: send_batch
+		.. automethod:: enqueue_message
+		.. automethod:: flush_messages
 		.. automethod:: receive
+		.. automethod:: receive_message
+		.. automethod:: wait_ready
+		.. automethod:: wait_closed
 		.. automethod:: close
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
@@ -79,7 +92,6 @@ Framer
 		.. automethod:: start
 		.. automethod:: new_sent_message
 		.. automethod:: handle_received_data
-		.. automethod:: make_connection_ready
 		.. automethod:: send
 		.. automethod:: parse
 		.. automethod:: advance_receive_cursor

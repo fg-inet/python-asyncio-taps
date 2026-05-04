@@ -43,6 +43,7 @@ class TransportLayer(asyncio.Protocol):
             self.framer_buffer = []
 
         self.transport = None
+        self.current_message_context = None
 
     def _new_message_context(self, *, end_of_message=True, framer_context=None):
         context = MessageContext(
@@ -168,8 +169,17 @@ class TransportLayer(asyncio.Protocol):
         )
         if context.message_id is None:
             context.message_id = self.message_count
-        self.loop.create_task(self.write(data, context, end_of_message))
+        if context.is_expired():
+            self.connection._report_expired(context)
+            return self.message_count
+        self.loop.create_task(self._write_with_expiration(data, context, end_of_message))
         return self.message_count
+
+    async def _write_with_expiration(self, data, message_context, end_of_message):
+        if message_context.is_expired():
+            self.connection._report_expired(message_context)
+            return
+        await self.write(data, message_context, end_of_message)
 
     async def write(self, data, message_context, end_of_message):
         pass
@@ -195,6 +205,15 @@ class TransportLayer(asyncio.Protocol):
     def eof_received(self):
         logger.info("EOF received")
         self.connection.at_eof = True
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=True
+            )
+        else:
+            self.current_message_context.end_of_message = True
+        for waiter in self.waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     """ ASYNCIO function that gets called when the connection has
         an error.
@@ -204,10 +223,7 @@ class TransportLayer(asyncio.Protocol):
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
             logger.warning("Connection Error occurred.")
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(err, self.connection)
-                )
+            self.connection._report_connection_error(err)
             return
 
     """ ASYNCIO function that gets called when the connection
@@ -217,14 +233,13 @@ class TransportLayer(asyncio.Protocol):
     def connection_lost(self, exc):
         if exc is None:
             logger.warning("Connection lost without error.")
-            if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
-                self.loop.create_task(self.connection.closed(self.connection))
+            if self.connection.state == ConnectionState.CLOSING:
+                self.connection._report_closed()
+            else:
+                self.connection._mark_closed()
         else:
             logger.warning("Connection lost with error.")
-            if self.connection.connection_error:
-                self.loop.create_task(
-                    self.connection.connection_error(exc, self.connection)
-                )
+            self.connection._report_connection_error(exc)
 
     async def passive_open(self, transport):
         # If there is a framer, call the start event
@@ -239,11 +254,9 @@ class TransportLayer(asyncio.Protocol):
         new_remote_endpoint.with_port(
             transport.get_extra_info("peername")[1])
         self.remote_endpoint = new_remote_endpoint
-        self.connection.state = ConnectionState.ESTABLISHED
-        if not self.connection._ready_waiter.done():
-            self.connection._ready_waiter.set_result(self.connection)
-        if self.connection.connection_received:
-            self.loop.create_task(self.connection.connection_received(self))
+        self.connection._mark_ready()
+        if hasattr(self.connection._originating_preconnection, "_deliver_connection"):
+            self.connection._originating_preconnection._deliver_connection(self.connection)
         return
 
 
@@ -254,21 +267,18 @@ class UdpTransport(TransportLayer):
         if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
-        for t in self.connection.pending:
-            t.cancel()
         logger.info("Connected successfully UDP to " +
                     str(self.connection.remote_endpoint.address) +
                     ":" + str(self.connection.remote_endpoint.port) +
                     ".")
-        self.connection.state = ConnectionState.ESTABLISHED
-        if not self.connection._ready_waiter.done():
-            self.connection._ready_waiter.set_result(self.connection)
+        self.connection._mark_ready()
         if self.connection._pending_message:
             data, context, eom = self.connection._pending_message
             self.connection._pending_message = None
-            await self.write(data, context, eom)
-        if self.connection.ready:
-            self.loop.create_task(self.connection.ready(self.connection))
+            if context.is_expired():
+                self.connection._report_expired(context)
+            else:
+                await self.write(data, context, eom)
         return
 
     async def write(self, data, message_context, end_of_message):
@@ -314,9 +324,7 @@ class UdpTransport(TransportLayer):
     async def close(self):
         logger.info("Closing connection.")
         self.transport.close()
-        self.connection.state = ConnectionState.CLOSED
-        if self.connection.closed:
-            self.loop.create_task(self.connection.closed(self.connection))
+        self.connection._report_closed()
 
     async def read(self, min_incomplete_length, max_length):
         if self.connection.framer:
@@ -331,10 +339,7 @@ class UdpTransport(TransportLayer):
                 self.recv_buffer = None
             else:
                 data, context = self.recv_buffer.pop(0)
-        if self.connection.received:
-            self.loop.create_task(
-                self.connection.received(data, context, self.connection)
-            )
+        self.connection._deliver_received(data, context)
 
     # Asyncio Callbacks
 
@@ -372,6 +377,7 @@ class UdpTransport(TransportLayer):
     def datagram_received(self, data, addr):
         context = self._new_message_context(end_of_message=True)
         context.addr = addr
+        self.current_message_context = context
         if self.recv_buffer is None:
             self.recv_buffer = list()
         self.recv_buffer.append((data, context))
@@ -394,16 +400,14 @@ class TcpTransport(TransportLayer):
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         logger.info("Connected successfully on TCP.")
-        self.connection.state = ConnectionState.ESTABLISHED
-        self.connection.sleeper_for_racing.cancel_all()
-        if not self.connection._ready_waiter.done():
-            self.connection._ready_waiter.set_result(self.connection)
+        self.connection._mark_ready()
         if self.connection._pending_message:
             data, context, eom = self.connection._pending_message
             self.connection._pending_message = None
-            await self.write(data, context, eom)
-        if self.connection.ready:
-            self.loop.create_task(self.connection.ready(self.connection))
+            if context.is_expired():
+                self.connection._report_expired(context)
+            else:
+                await self.write(data, context, eom)
         return
 
     async def write(self, data, message_context, end_of_message):
@@ -442,10 +446,7 @@ class TcpTransport(TransportLayer):
             if len(self.framer_buffer) == 0:
                 await self.await_data()
             data, context, _ = self.framer_buffer.pop(0)
-            if self.connection.received:
-                self.loop.create_task(
-                    self.connection.received(data, context, self.connection)
-                )
+            self.connection._deliver_received(data, context)
             return
 
         while self.recv_buffer is None or (
@@ -460,26 +461,16 @@ class TcpTransport(TransportLayer):
 
         if self.at_eof:
             context = self._new_message_context(end_of_message=True)
-            if self.connection.received:
-                self.loop.create_task(
-                    self.connection.received(data, context, self.connection)
-                )
+            self.connection._deliver_received(data, context)
             return
         else:
             context = self._new_message_context(end_of_message=False)
-            if self.connection.received_partial:
-                self.loop.create_task(
-                    self.connection.received_partial(
-                        data, context, False, self.connection
-                    )
-                )
+            self.connection._deliver_received_partial(data, context)
 
     async def close(self):
         logger.info("Closing connection.")
         self.transport.close()
-        self.connection.state = ConnectionState.CLOSED
-        if self.connection.closed:
-            self.loop.create_task(self.connection.closed(self.connection))
+        self.connection._report_closed()
 
     # Asyncio Callbacks
 
@@ -517,6 +508,9 @@ class TcpTransport(TransportLayer):
 
     def data_received(self, data):
         logger.info("Received %d bytes" % len(data))
+        self.current_message_context = self._new_message_context(
+            end_of_message=False
+        )
 
         # See if we already have so data buffered
         if self.recv_buffer is None:
