@@ -41,6 +41,7 @@ class Listener:
         self.security_context = None
         self.active_ports = {}
         self.protocol = None
+        self.listen_task = None
 
         # Callbacks
         self.stopped = preconnection.stopped
@@ -135,7 +136,7 @@ class Listener:
                         # application set the direction of communication
                         # to receive only
                         if self.transport_properties.properties. \
-                                get('direction') == 'unidirection-receive':
+                                get('direction') == 'Unidirectional Receive':
                             logger.info("direction is unicast receive")
                             # multicast_receiver = True
                             self.loop.create_task(self.multicast_join())

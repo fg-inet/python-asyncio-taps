@@ -2,10 +2,10 @@ import ssl
 from xml.etree.ElementTree import fromstring
 
 from .connection import Connection
-from .endpoint import LocalEndpoint
+from .endpoint import LocalEndpoint, RemoteEndpoint
 from .listener import Listener
 from .securityParameters import SecurityParameters
-from .transportProperties import TransportProperties
+from .transportProperties import TransportProperties, normalize_direction
 from .transports import *
 from .yang_validate import *
 
@@ -45,6 +45,7 @@ class Preconnection:
         self.remote_endpoint = remote_endpoint
         self.transport_properties = transport_properties or TransportProperties()
         self.security_parameters = security_parameters
+        self._frozen = False
 
         if event_loop is not None:
             self.loop = event_loop
@@ -80,6 +81,7 @@ class Preconnection:
             self.security_context = None
 
     def from_yang(self, frmat, text):
+        self._ensure_mutable()
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
             xml_text = text
@@ -160,7 +162,7 @@ class Preconnection:
                     fn = fn_mapping.get(node.text)
                     fn(tp, prop_name)
                 elif prop_name == 'direction':
-                    tp.properties["direction"] = node.text
+                    tp.set_property("direction", normalize_direction(node.text))
                 else:
                     # TBD jake 2019-05-07: interface name/type, pvd
                     pass
@@ -170,6 +172,58 @@ class Preconnection:
         self.transport_properties = tp
         self.security_parameters = sp
         return self
+
+    def _ensure_mutable(self):
+        if self._frozen:
+            raise RuntimeError(
+                "Preconnection configuration is immutable after initiate() or listen()."
+            )
+
+    def _freeze(self):
+        self._frozen = True
+
+    def is_frozen(self):
+        return self._frozen
+
+    def add_local_endpoint(self, endpoint):
+        self._ensure_mutable()
+        self.local_endpoint = endpoint
+        return self
+
+    def add_remote_endpoint(self, endpoint):
+        self._ensure_mutable()
+        self.remote_endpoint = endpoint
+        return self
+
+    def add_local_address(self, address):
+        self._ensure_mutable()
+        if self.local_endpoint is None:
+            self.local_endpoint = LocalEndpoint()
+        self.local_endpoint.with_address(address)
+        return self
+
+    def add_remote_address(self, address):
+        self._ensure_mutable()
+        if self.remote_endpoint is None:
+            self.remote_endpoint = RemoteEndpoint()
+        self.remote_endpoint.with_address(address)
+        return self
+
+    def add_framer(self, framer):
+        self._ensure_mutable()
+        self.framer = framer
+        return self
+
+    def set_property(self, prop, value):
+        self._ensure_mutable()
+        self.transport_properties.set_property(prop, value)
+        return self
+
+    def get_properties(self):
+        return {
+            "selection": self.transport_properties.get_selection_properties(),
+            "connection": self.transport_properties.get_connection_properties(),
+        }
 
     def from_yangfile(self, fname):
         """ Loads the configuration of a the preconnection,
@@ -203,10 +257,11 @@ class Preconnection:
             raise Exception("A remote endpoint needs "
                             "to be specified to initiate")
         logger.info("Initiating connection.")
+        self._freeze()
 
         new_connection = Connection(self)
         # Race the candidate sets
-        self.loop.create_task(new_connection.race())
+        new_connection.race_task = self.loop.create_task(new_connection.race())
         logger.info("Returning connection object.")
         return new_connection
 
@@ -217,9 +272,10 @@ class Preconnection:
         if self.local_endpoint is None:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
+        self._freeze()
         listener = Listener(self)
         # Create start_listener task so we can return right away
-        self.loop.create_task(listener.start_listener())
+        listener.listen_task = self.loop.create_task(listener.start_listener())
         return listener
 
     # TODO: Is this actually what the spec talks about?
@@ -231,17 +287,8 @@ class Preconnection:
                             "to be specified to resolve")
         remote_info = await self.loop.getaddrinfo(
             self.remote_endpoint.host_name, self.remote_endpoint.port)
-        self.remote_endpoint.address = remote_info[0][4][0]
-
-    # Set the framer
-    # TODO: Multiple framers
-    def add_framer(self, framer):
-        """ Set a framer with which to frame the messages of the connection.
-
-        Attributes:
-            framer (framer, required): Class that implements a TAPS framer.
-        """
-        self.framer = framer
+        self.remote_endpoint.address = [remote_info[0][4][0]]
+        return self.remote_endpoint.address
 
     # Events for active open
     def on_ready(self, callback):

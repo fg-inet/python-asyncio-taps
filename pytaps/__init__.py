@@ -1,4 +1,5 @@
 from .connection import Connection
+from .connection_group import ConnectionGroup
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .framer import Framer, DeframingFailed
 from .listener import Listener

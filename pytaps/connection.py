@@ -4,6 +4,8 @@ try:
 except ImportError:
     netifaces = None
 
+from .connection_group import ConnectionGroup
+from .transportProperties import TransportProperties, canonicalize_property_name
 from .transports import *
 
 logger = setup_logger(__name__)
@@ -29,9 +31,18 @@ class Connection:
 
     def __init__(self, preconnection):
         # Initializations
-        self.local_endpoint = preconnection.local_endpoint
-        self.remote_endpoint = preconnection.remote_endpoint
-        self.transport_properties = preconnection.transport_properties
+        self.local_endpoint = (
+            preconnection.local_endpoint.clone()
+            if preconnection.local_endpoint else None
+        )
+        self.remote_endpoint = (
+            preconnection.remote_endpoint.clone()
+            if preconnection.remote_endpoint else None
+        )
+        self.transport_properties = TransportProperties(
+            selection_properties=preconnection.transport_properties.get_selection_properties(),
+            connection_properties=preconnection.transport_properties.get_connection_properties(),
+        )
         self.security_parameters = preconnection.security_parameters
         self.security_context = preconnection.security_context
         self.loop = preconnection.loop
@@ -47,6 +58,8 @@ class Connection:
         self.transports = []
         self.protocol = None
         self.multicast_open = False
+        self.connection_group = ConnectionGroup(self)
+        self.race_task = None
 
         # Callbacks
         self.writer = None
@@ -64,6 +77,80 @@ class Connection:
         self.connection_received = preconnection.connection_received
         self.initiate_error = preconnection.initiate_error
         self.ready = preconnection.ready
+
+    def set_property(self, prop, value):
+        self.transport_properties.set_property(prop, value)
+        canonical = canonicalize_property_name(prop)
+        if self.connection_group is not None:
+            self.connection_group.set_property(canonical, value)
+        return None
+
+    def get_properties(self):
+        return {
+            "selection": self.transport_properties.get_selection_properties(),
+            "connection": self.transport_properties.get_connection_properties(),
+        }
+
+    def add_remote(self, remote_endpoints):
+        for endpoint in remote_endpoints:
+            endpoint_copy = endpoint.clone()
+            for address in endpoint_copy.address:
+                if self.remote_endpoint is None:
+                    self.remote_endpoint = endpoint_copy
+                    break
+                self.remote_endpoint.with_address(address)
+            if self.remote_endpoint and endpoint_copy.host_name and not self.remote_endpoint.host_name:
+                self.remote_endpoint.host_name = endpoint_copy.host_name
+        return self.remote_endpoint
+
+    def remove_remote(self, remote_endpoints):
+        if self.remote_endpoint is None:
+            return None
+        for endpoint in remote_endpoints:
+            for address in endpoint.address:
+                self.remote_endpoint.without_address(address)
+        return self.remote_endpoint
+
+    def add_local(self, local_endpoints):
+        for endpoint in local_endpoints:
+            endpoint_copy = endpoint.clone()
+            if self.local_endpoint is None:
+                self.local_endpoint = endpoint_copy
+                continue
+            for address in endpoint_copy.address:
+                self.local_endpoint.with_address(address)
+            for interface in endpoint_copy.interface:
+                self.local_endpoint.with_interface(interface)
+        return self.local_endpoint
+
+    def remove_local(self, local_endpoints):
+        if self.local_endpoint is None:
+            return None
+        for endpoint in local_endpoints:
+            for address in endpoint.address:
+                self.local_endpoint.without_address(address)
+            for interface in endpoint.interface:
+                self.local_endpoint.without_interface(interface)
+        return self.local_endpoint
+
+    def clone(self):
+        cloned_connection = self.__class__.__new__(self.__class__)
+        cloned_connection.__dict__ = self.__dict__.copy()
+        cloned_connection.local_endpoint = (
+            self.local_endpoint.clone() if self.local_endpoint else None
+        )
+        cloned_connection.remote_endpoint = (
+            self.remote_endpoint.clone() if self.remote_endpoint else None
+        )
+        cloned_connection.transport_properties = TransportProperties(
+            selection_properties=self.transport_properties.get_selection_properties(),
+            connection_properties=self.transport_properties.get_connection_properties(),
+        )
+        cloned_connection.transports = []
+        cloned_connection.pending = []
+        cloned_connection.sleeper_for_racing = SleepClassForRacing()
+        self.connection_group.add_connection(cloned_connection)
+        return cloned_connection
 
     async def race(self):
         # This is an active connection attempt

@@ -4,7 +4,11 @@ import logging
 import warnings
 from enum import Enum
 
-from pytaps.transportProperties import get_protocols, PreferenceLevel
+from pytaps.transportProperties import (
+    PreferenceLevel,
+    canonicalize_property_name,
+    get_protocols,
+)
 
 colors = {
     "red": "\x1b[31;1m",
@@ -70,29 +74,53 @@ def create_candidates(connection):
 
     # Iterate over all available protocols and over all properties
     for protocol in available_protocols:
-        for transport_property in connection.transport_properties.properties:
+        for transport_property in connection.transport_properties.selection_properties:
+            canonical_property = canonicalize_property_name(transport_property)
+            property_value = connection.transport_properties.selection_properties[
+                canonical_property
+            ]
+
+            if canonical_property in {"direction", "interface", "pvd"}:
+                continue
+
+            if canonical_property not in protocol:
+                continue
+
+            protocol_supports_property = protocol[canonical_property] is not False
+
+            if canonical_property == "multipath" and isinstance(property_value, str):
+                if property_value != "Disabled" and not protocol_supports_property:
+                    if protocol["name"] in candidate_protocols:
+                        del candidate_protocols[protocol["name"]]
+                elif property_value != "Disabled" and protocol_supports_property:
+                    candidate_protocols[protocol["name"]][0] += 1
+                continue
+
+            if canonical_property == "advertisesAltaddr" and property_value:
+                if not protocol_supports_property and protocol["name"] in candidate_protocols:
+                    del candidate_protocols[protocol["name"]]
+                elif protocol_supports_property:
+                    candidate_protocols[protocol["name"]][0] += 1
+                continue
+
             # If a protocol has a prohibited property remove it
-            if (connection.transport_properties.properties[transport_property]
-                    is PreferenceLevel.PROHIBIT):
-                if (protocol[transport_property] is True and
+            if property_value is PreferenceLevel.PROHIBIT:
+                if (protocol_supports_property and
                         protocol["name"] in candidate_protocols):
                     del candidate_protocols[protocol["name"]]
             # If a protocol doesnt have a required property remove it
-            if (connection.transport_properties.properties[transport_property]
-                    is PreferenceLevel.REQUIRE):
-                if (protocol[transport_property] is False and
+            if property_value is PreferenceLevel.REQUIRE:
+                if (not protocol_supports_property and
                         protocol["name"] in candidate_protocols):
                     del candidate_protocols[protocol["name"]]
             # Count how many PREFER properties each protocol has
-            if (connection.transport_properties.properties[transport_property]
-                    is PreferenceLevel.PREFER):
-                if (protocol[transport_property] is True and
+            if property_value is PreferenceLevel.PREFER:
+                if (protocol_supports_property and
                         protocol["name"] in candidate_protocols):
                     candidate_protocols[protocol["name"]][0] += 1
             # Count how many AVOID properties each protocol has
-            if (connection.transport_properties.properties[transport_property]
-                    is PreferenceLevel.AVOID):
-                if (protocol[transport_property] is True and
+            if property_value is PreferenceLevel.AVOID:
+                if (protocol_supports_property and
                         protocol["name"] in candidate_protocols):
                     candidate_protocols[protocol["name"]][1] -= 1
 
