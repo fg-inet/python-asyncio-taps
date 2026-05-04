@@ -2,6 +2,10 @@
 __pycache__/
 .DS_Store
 *.pyc
+.idea/
+.pytest_cache/
+.venv/
+venv/
 docs/build
 .*.sw?
 *.so

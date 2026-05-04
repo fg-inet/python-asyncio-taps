@@ -1,5 +1,8 @@
+import asyncio
+
 from .endpoint import RemoteEndpoint
-from .framer import *
+from .framer import DeframingFailed
+from .utility import ConnectionState, setup_logger
 
 logger = setup_logger(__name__, "blue")
 
@@ -105,8 +108,8 @@ class TransportLayer(asyncio.Protocol):
         """ Function responsible for sending data.
         """
         self.message_count += 1
-        if self.connection.state is not ConnectionState.ESTABLISHED:
-            logger.warn("SendError occurred, connection is not established.")
+        if self.connection.state != ConnectionState.ESTABLISHED:
+            logger.warning("SendError occurred, connection is not established.")
             if self.connection.send_error:
                 self.loop.create_task(
                     self.connection.send_error(self.message_count, self.connection)
@@ -147,7 +150,7 @@ class TransportLayer(asyncio.Protocol):
 
     def error_received(self, err):
         if type(err) is ConnectionRefusedError:
-            logger.warn("Connection Error occurred.")
+            logger.warning("Connection Error occurred.")
             if self.connection.connection_error:
                 self.loop.create_task(
                     self.connection.connection_error(err, self.connection)
@@ -160,11 +163,11 @@ class TransportLayer(asyncio.Protocol):
 
     def connection_lost(self, exc):
         if exc is None:
-            logger.warn("Connection lost without error.")
+            logger.warning("Connection lost without error.")
             if self.connection.closed and self.connection.state != ConnectionState.CLOSED:
                 self.loop.create_task(self.connection.closed(self.connection))
         else:
-            logger.warn("Connection lost with error.")
+            logger.warning("Connection lost with error.")
             if self.connection.connection_error:
                 self.loop.create_task(
                     self.connection.connection_error(exc, self.connection)
@@ -234,7 +237,7 @@ class UdpTransport(TransportLayer):
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
         except InterruptedError:
-            logger.warn("SendError occurred.")
+            logger.warning("SendError occurred.")
             if self.connection.send_error:
                 self.loop.create_task(
                     self.connection.send_error(
@@ -355,7 +358,7 @@ class TcpTransport(TransportLayer):
             # Attempt to write data
             self.transport.write(data)
         except InterruptedError:
-            logger.warn("SendError occurred.")
+            logger.warning("SendError occurred.")
             if self.connection.send_error:
                 self.loop.create_task(
                     self.connection.send_error(self.message_count, self.connection)

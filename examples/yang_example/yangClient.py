@@ -1,8 +1,12 @@
 import asyncio
-import sys
 import argparse
-import ipaddress
-sys.path.append(sys.path[0] + "/../..")
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytaps as taps  # noqa: E402
 
 color = "yellow"
@@ -12,7 +16,7 @@ class TestClient():
     def __init__(self):
         self.connection = None
         self.preconnection = None
-        self.loop = asyncio.get_event_loop()
+        self.loop = None
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
@@ -72,7 +76,8 @@ class TestClient():
         taps.print_time("send_message called.", color)
 
     async def main(self, args):
-        fname = args.file[0]
+        self.loop = asyncio.get_running_loop()
+        fname = args.file
         self.preconnection = taps.Preconnection().from_yangfile(fname)
         taps.print_time("Loaded YANG file: %s." % fname, color)
 
@@ -88,10 +93,13 @@ class TestClient():
 if __name__ == "__main__":
     # Parse arguments
     ap = argparse.ArgumentParser(description='PyTAPS test client.')
-    ap.add_argument('--file', '-f', nargs=1, default=None)
+    ap.add_argument('--file', '-f', default=None)
     args = ap.parse_args()
     print(args)
     # Start testclient
     client = TestClient()
-    client.loop.create_task(client.main(args))
-    client.loop.run_forever()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    client.loop = loop
+    loop.create_task(client.main(args))
+    loop.run_forever()

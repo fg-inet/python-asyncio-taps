@@ -6,7 +6,13 @@ except ImportError:
 
 from .connection_group import ConnectionGroup
 from .transportProperties import TransportProperties, canonicalize_property_name
-from .transports import *
+from .transports import TcpTransport, UdpTransport
+from .utility import (
+    ConnectionState,
+    SleepClassForRacing,
+    create_candidates,
+    setup_logger,
+)
 
 logger = setup_logger(__name__)
 # Wait for 100 ms between connection attempts when racing
@@ -159,7 +165,7 @@ class Connection:
         protocol_candidates = create_candidates(self)
 
         if len(protocol_candidates) == 0:
-            logger.CRITICAL("Candidate set is empty, aborting")
+            logger.critical("Candidate set is empty, aborting")
             if self.initiate_error:
                 self.loop.create_task(self.initiate_error())
             return

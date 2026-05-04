@@ -1,7 +1,12 @@
 import asyncio
-import sys
 import argparse
-sys.path.append(sys.path[0] + "/../..")
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytaps as taps  # noqa: E402
 
 color = "blue"
@@ -10,7 +15,7 @@ color = "blue"
 class TestServer():
     def __init__(self):
         self.preconnection = None
-        self.loop = asyncio.get_event_loop()
+        self.loop = None
         self.connection = None
 
     async def handle_connection_received(self, connection):
@@ -59,7 +64,7 @@ class TestServer():
 if __name__ == "__main__":
     # Parse arguments
     ap = argparse.ArgumentParser(description='PyTAPS test server.')
-    ap.add_argument('--file', '-f', nargs=1, default=None)
+    ap.add_argument('--file', '-f', default=None)
     args = ap.parse_args()
     print(args)
     if not args.file:
@@ -67,5 +72,8 @@ if __name__ == "__main__":
         exit()
     # Start testserver
     server = TestServer()
-    server.loop.create_task(server.main(args.file[0]))
-    server.loop.run_forever()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    server.loop = loop
+    loop.create_task(server.main(args.file))
+    loop.run_forever()

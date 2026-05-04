@@ -1,8 +1,12 @@
 import asyncio
-import sys
 import argparse
+import sys
+from pathlib import Path
 
-sys.path.append(sys.path[0] + "/../..")
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytaps as taps  # noqa: E402
 
 logger = taps.setup_logger("Echo Server", "yellow")
@@ -16,7 +20,7 @@ class TestServer:
 
     def __init__(self, reliable=True):
         self.preconnection = None
-        self.loop = asyncio.get_event_loop()
+        self.loop = None
         self.connection = None
         self.reliable = reliable
 
@@ -42,7 +46,7 @@ class TestServer:
         await self.connection.send_message(data)
 
     async def handle_listen_error(self):
-        logger.warn("Listen Error occured.")
+        logger.warning("Listen Error occured.")
         self.loop.stop()
 
     async def handle_sent(self, message_ref, connection):
@@ -103,14 +107,14 @@ class TestServer:
 if __name__ == "__main__":
     # Parse arguments
     ap = argparse.ArgumentParser(description='PyTAPS test server.')
-    ap.add_argument('--interface', '-i', nargs=1, default=None)
+    ap.add_argument('--interface', '-i', default=None)
     ap.add_argument('--local-address', '--address', '-a', nargs='?',
                     default=None)
     ap.add_argument('--local-host', '--host', '-H', nargs='?',
                     default=None)
     ap.add_argument('--local-port', '--port', '-l', type=int, nargs='?',
                     default=6666)
-    ap.add_argument('--local-identity', type=str, nargs=1, default=None)
+    ap.add_argument('--local-identity', type=str, default=None)
     ap.add_argument('--trust-ca', type=str, default=None)
     ap.add_argument('--secure', '-s', nargs='?', const=True, type=bool,
                     default=False)
@@ -118,16 +122,20 @@ if __name__ == "__main__":
     args = ap.parse_args()
     print(args)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     # Start testserver
     if args.reliable in ["yes", "true"]:
         server_tcp = TestServer(reliable="True")
+        server_tcp.loop = loop
         loop.create_task(server_tcp.main(args))
     if args.reliable in ["no", "false"]:
         server_udp = TestServer(reliable="False")
+        server_udp.loop = loop
         loop.create_task(server_udp.main(args))
     if args.reliable in ["both"]:
         server_both = TestServer(reliable="Both")
+        server_both.loop = loop
         loop.create_task(server_both.main(args))
 
     loop.run_forever()

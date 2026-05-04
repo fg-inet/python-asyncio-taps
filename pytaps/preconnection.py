@@ -1,3 +1,4 @@
+import asyncio
 import ssl
 from xml.etree.ElementTree import fromstring
 
@@ -6,8 +7,14 @@ from .endpoint import LocalEndpoint, RemoteEndpoint
 from .listener import Listener
 from .securityParameters import SecurityParameters
 from .transportProperties import TransportProperties, normalize_direction
-from .transports import *
-from .yang_validate import *
+from .utility import setup_logger
+from .yang_validate import (
+    YANG_FMT_JSON,
+    YANG_FMT_XML,
+    YangException,
+    convert,
+    validate,
+)
 
 logger = setup_logger(__name__, "green")
 
@@ -376,5 +383,5 @@ class Preconnection:
                     self.loop.create_task(
                         self.connection_received(conn))
                     logger.info("Called connection_received cb")
-        except BaseException as e:
-            print(e)
+        except Exception:
+            logger.exception("Error while handling multicast datagram.")

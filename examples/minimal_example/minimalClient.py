@@ -1,6 +1,11 @@
 import asyncio
 import sys
-sys.path.append(sys.path[0] + "/../..")
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytaps as taps  # noqa: E402
 
 
@@ -26,5 +31,7 @@ class TestClient():
 
 if __name__ == "__main__":
     client = TestClient()
-    asyncio.get_event_loop().create_task(client.main())
-    asyncio.get_event_loop().run_forever()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(client.main())
+    loop.run_forever()

@@ -1,8 +1,12 @@
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.append(sys.path[0] + "/../..")
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytaps as taps  # noqa: E402
 
 logger = taps.setup_logger("Framer Client", "yellow")
@@ -26,7 +30,7 @@ class TestFramer(taps.Framer):
         try:
             tlv = byte_stream.split("/")
         except Exception:
-            logger.warn("Error splitting")
+            logger.warning("Error splitting")
             raise taps.DeframingFailed
 
         if len(tlv) < 3:
@@ -54,7 +58,7 @@ class TestClient:
     def __init__(self):
         self.connection = None
         self.preconnection = None
-        self.loop = asyncio.get_event_loop()
+        self.loop = None
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
@@ -112,6 +116,7 @@ class TestClient:
         logger.info("send_message called.")
 
     async def main(self, args):
+        self.loop = asyncio.get_running_loop()
 
         # Create endpoint objects
         ep = taps.RemoteEndpoint()
@@ -128,7 +133,7 @@ class TestClient:
             if args.interface:
                 lp.with_interface(args.interface)
             if args.local_address:
-                lp.with_port(args.local_address)
+                lp.with_address(args.local_address)
             if args.local_port:
                 lp.with_port(args.local_port)
 
@@ -173,12 +178,12 @@ if __name__ == "__main__":
     # Parse arguments
     ap = argparse.ArgumentParser(description='PyTAPS test client.')
     ap.add_argument('--remote-host', '--host', nargs='?', default="localhost")
-    ap.add_argument('--remote-address', nargs=1)
+    ap.add_argument('--remote-address')
     ap.add_argument('--remote-port', '--port', type=int, default=6666)
-    ap.add_argument('--interface', '-i', nargs=1, default=None)
-    ap.add_argument('--local-address', nargs=1, default=None)
-    ap.add_argument('--local-port', '-l', type=int, nargs=1, default=None)
-    ap.add_argument('--local-identity', type=str, nargs=1, default=None)
+    ap.add_argument('--interface', '-i', default=None)
+    ap.add_argument('--local-address', default=None)
+    ap.add_argument('--local-port', '-l', type=int, default=None)
+    ap.add_argument('--local-identity', type=str, default=None)
     ap.add_argument('--trust-ca', type=str, default=None)
     ap.add_argument('--secure', '-s', nargs='?', const=True,
                     type=bool, default=False)
@@ -186,5 +191,8 @@ if __name__ == "__main__":
     print(args)
     # Start testclient
     client = TestClient()
-    client.loop.create_task(client.main(args))
-    client.loop.run_forever()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    client.loop = loop
+    loop.create_task(client.main(args))
+    loop.run_forever()

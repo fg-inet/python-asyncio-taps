@@ -1,17 +1,30 @@
 import asyncio
+from pathlib import Path
 import pytest
 import sys
 import time
 import pytaps as taps
 
 TEST_TIMEOUT = 5
+TESTS_DIR = Path(__file__).resolve().parent
+YANG_GLUE_AVAILABLE = True
+
+try:
+    import yang_glue  # noqa: F401
+except ImportError:
+    YANG_GLUE_AVAILABLE = False
 
 
-class TestClient():
+class ClientHarness:
+    def __init__(self):
+        self.loop = None
+        self.connection = None
+        self.preconnection = None
+        self.received_data = None
 
     async def handle_closed(self, conn):
         print("Closed")
-        asyncio.get_event_loop().stop()
+        self.loop.stop()
 
     async def handle_received(self, data, context, connection):
         print("Receive message: " + str(data))
@@ -30,7 +43,7 @@ class TestClient():
 
     async def sent_and_stop(self, message_ref, connection):
         print("Sent and stop")
-        asyncio.get_event_loop().stop()
+        self.loop.stop()
 
     async def handle_ready(self, connection):
         if self.stop_at_sent:
@@ -54,6 +67,7 @@ class TestClient():
         self.data_to_send = data_to_send
         self.stop_at_sent = stop_at_sent
         self.yangfile = yangfile
+        self.loop = asyncio.get_running_loop()
 
         ep = taps.RemoteEndpoint()
         ep.with_hostname(remote_hostname)
@@ -68,9 +82,9 @@ class TestClient():
         if trust_ca or local_identity:
             sp = taps.SecurityParameters()
             if trust_ca:
-                sp.add_trust_ca(trust_ca)
+                sp.add_trust_ca(str(TESTS_DIR / trust_ca))
             if local_identity:
-                sp.add_identity(local_identity)
+                sp.add_identity(str(TESTS_DIR / local_identity))
         else:
             sp = None
 
@@ -79,14 +93,14 @@ class TestClient():
                 Preconnection(remote_endpoint=ep,
                               transport_properties=tp,
                               security_parameters=sp,
-                              event_loop=asyncio.get_event_loop()
-                              ).from_yangfile(self.yangfile)
+                              event_loop=self.loop
+                              ).from_yangfile(str(TESTS_DIR / self.yangfile))
         else:
             self.preconnection = taps.\
                 Preconnection(remote_endpoint=ep,
                               transport_properties=tp,
                               security_parameters=sp,
-                              event_loop=asyncio.get_event_loop()
+                              event_loop=self.loop
                               )
         self.preconnection.on_ready(self.handle_ready)
         self.connection = await self.preconnection.initiate()
@@ -98,7 +112,7 @@ class TestClient():
 def test_sending():
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(stop_at_sent=True))
         loop.run_forever()
@@ -114,11 +128,11 @@ def test_sending():
 
 
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_udp():
+def test_echo_udp(echo_servers):
     teststring = "Hello\n"
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(data_to_send=teststring))
         loop.run_forever()
@@ -133,13 +147,14 @@ def test_echo_udp():
 # --local-address=::1 --local-port=6666  --reliable both
 
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_yang_udp():
+@pytest.mark.skipif(not YANG_GLUE_AVAILABLE, reason="optional yang_glue extension not built")
+def test_echo_yang_udp(echo_servers):
     teststring = "Hello\n"
     yangfile_client = "udp-client.json"
 
     client_loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(client_loop)
         task = client_loop.create_task(client.main(data_to_send=teststring,
                                                    yangfile=yangfile_client))
@@ -158,12 +173,13 @@ def test_echo_yang_udp():
 
 
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_yang_tcp():
+@pytest.mark.skipif(not YANG_GLUE_AVAILABLE, reason="optional yang_glue extension not built")
+def test_echo_yang_tcp(echo_servers):
     teststring = "Hello\n"
     yangfile = "tcp-client.json"
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(data_to_send=teststring,
                                             yangfile=yangfile))
@@ -181,11 +197,11 @@ def test_echo_yang_tcp():
 
 
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_tls():
+def test_echo_tls(echo_servers):
     teststring = "Hello\n"
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(data_to_send=teststring,
                                             remote_port=6667,
@@ -205,12 +221,13 @@ def test_echo_tls():
 
 
 @pytest.mark.timeout(TEST_TIMEOUT)
-def test_echo_tls_yang():
+@pytest.mark.skipif(not YANG_GLUE_AVAILABLE, reason="optional yang_glue extension not built")
+def test_echo_tls_yang(echo_servers):
     teststring = "Hello\n"
     yangfile = "tls-client.json"
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(data_to_send=teststring,
                                             yangfile=yangfile))
@@ -222,12 +239,13 @@ def test_echo_tls_yang():
 
 
 @pytest.mark.timeout(TEST_TIMEOUT)
+@pytest.mark.external_network
 def test_http():
     hostname = "www.ietf.org"
     teststring = "GET / HTTP/1.1\r\nHost: " + hostname + "\r\n\r\n"
     loop = asyncio.new_event_loop()
     try:
-        client = TestClient()
+        client = ClientHarness()
         asyncio.set_event_loop(loop)
         task = loop.create_task(client.main(data_to_send=teststring,
                                             remote_hostname=hostname,

@@ -1,4 +1,4 @@
-from .utility import *
+import asyncio
 
 class DeframingFailed(Exception):
     pass

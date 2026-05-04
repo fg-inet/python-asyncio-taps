@@ -37,8 +37,8 @@ Requirements:
 You should first create and activate a virtual environment:
 
 ~~~
-python3 -m venv pytaps
-source pytaps/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 ~~~
 
 Build & Install requirements on Linux(Debian):
@@ -78,6 +78,12 @@ INSTALL_PATH=${HOME}/local_install \
   python -m pip install .
 ~~~
 
+For local development with tests:
+
+~~~
+python -m pip install -e '.[test,dev]'
+~~~
+
 ### Use
 
 You'll need the path to load the dependent dynamic libraries set whenever pytaps is imported:
@@ -101,8 +107,19 @@ For a client with a model specified in `examples/yang_example/test-client2.json`
 
 ### Running
 
-	cd tests/
-	./run_tests.sh
+By default, the core test suite runs without optional native extensions:
+
+~~~
+python -m pytest -q
+~~~
+
+Tests that depend on the optional `yang_glue` extension are skipped unless that
+extension is built and importable. The legacy external HTTP check is also
+skipped by default; enable it explicitly with:
+
+~~~
+python -m pytest -q --run-external
+~~~
 
 ## Modernization Roadmap
 

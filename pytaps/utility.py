@@ -52,12 +52,17 @@ def color_emit(emit):
 
 def setup_logger(module, color="white"):
     logger = logging.getLogger(module)
+    if getattr(logger, "_pytaps_configured", False):
+        return logger
+
     logger.setLevel(logging.INFO)
+    logger.propagate = False
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter(f'%(asctime)s - {colors[color]}%(name)s \x1b[0m- %(levelname)s: %(message)s'))
     ch.emit = color_emit(ch.emit)
     logger.addHandler(ch)
+    logger._pytaps_configured = True
     return logger
 
 
@@ -140,7 +145,7 @@ class SleepClassForRacing:
 
     async def sleep(self, delay, result=None, *, loop=None):
         coro = asyncio.sleep(delay, result=result)
-        task = asyncio.ensure_future(coro)
+        task = asyncio.create_task(coro)
         self.tasks.add(task)
         try:
             return await task

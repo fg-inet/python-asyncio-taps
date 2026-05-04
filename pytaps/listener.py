@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 
 try:
@@ -6,8 +7,10 @@ except ImportError:
     netifaces = None
 
 from .connection import Connection
+from .endpoint import RemoteEndpoint
 from .multicast import do_join, do_leave
-from .transports import *
+from .transports import TcpTransport, UdpTransport
+from .utility import ConnectionState, create_candidates, setup_logger
 
 logger = setup_logger(__name__, "cyan")
 
@@ -69,7 +72,7 @@ class Listener:
                 self.remote_endpoint.address = [remote_info[0][4][0]]
         # If the candidate set is empty issue an InitiateError cb
         if not protocol_candidates:
-            logger.warn("Protocol selection Error occurred.")
+            logger.warning("Protocol selection Error occurred.")
             if self.listen_error:
                 self.loop.create_task(self.listen_error())
             return
@@ -158,7 +161,7 @@ class Listener:
                         self.local_endpoint.port,
                         ssl=self.security_context)
             except Exception as err:
-                logger.warn("Listen Error occurred: " + str(err))
+                logger.warning("Listen Error occurred: " + str(err))
                 if self.listen_error:
                     self.loop.create_task(self.listen_error())
 
