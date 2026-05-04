@@ -1,6 +1,7 @@
 import asyncio
 import ssl
 from copy import deepcopy
+from dataclasses import dataclass
 from xml.etree.ElementTree import fromstring
 
 from .connection import Connection
@@ -19,6 +20,24 @@ from .yang_validate import (
 )
 
 logger = setup_logger(__name__, "green")
+
+
+@dataclass
+class RendezvousResult:
+    connection: "Connection"
+    listener: "Listener"
+
+    async def wait_ready(self, timeout=None):
+        return await self.connection.wait_ready(timeout=timeout)
+
+    async def wait_listening(self, timeout=None):
+        return await self.listener.wait_listening(timeout=timeout)
+
+    async def close(self):
+        self.connection.close()
+        await self.listener.stop()
+        await self.connection.wait_closed()
+        return self
 
 
 class Preconnection:
@@ -69,6 +88,8 @@ class Preconnection:
         self.listen_error = None
         self.stopped = None
         self.ready = None
+        self.establishment_error = None
+        self.rendezvous_done = None
 
         # Framer object
         self.framer = None
@@ -92,11 +113,19 @@ class Preconnection:
             return None
 
         is_listener = self.local_endpoint and not self.remote_endpoint
-        purpose = ssl.Purpose.CLIENT_AUTH if is_listener else ssl.Purpose.SERVER_AUTH
-        security_context = ssl.create_default_context(purpose)
+        if is_listener:
+            security_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        else:
+            security_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         if self.security_parameters.identity:
             logger.info("Identity: " + str(self.security_parameters.identity))
             security_context.load_cert_chain(self.security_parameters.identity)
+        elif self.security_parameters.public_key:
+            logger.info("Public key certificate: " + str(self.security_parameters.public_key))
+            security_context.load_cert_chain(
+                self.security_parameters.public_key,
+                keyfile=self.security_parameters.private_key,
+            )
         for cert in self.security_parameters.trustedCA:
             security_context.load_verify_locations(cert)
         if self.security_parameters.trustedCA and hasattr(ssl, "VERIFY_X509_STRICT"):
@@ -108,15 +137,33 @@ class Preconnection:
             security_context.set_alpn_protocols(
                 self.security_parameters.alpn_protocols
             )
+        allowed_protocols = {
+            protocol.lower().replace(".", "").replace("_", "")
+            for protocol in self.security_parameters.allowed_security_protocols
+        }
+        if allowed_protocols:
+            if hasattr(ssl, "TLSVersion"):
+                if allowed_protocols == {"tls13"}:
+                    security_context.minimum_version = ssl.TLSVersion.TLSv1_3
+                    security_context.maximum_version = ssl.TLSVersion.TLSv1_3
+                elif allowed_protocols == {"tls12"}:
+                    security_context.minimum_version = ssl.TLSVersion.TLSv1_2
+                    security_context.maximum_version = ssl.TLSVersion.TLSv1_2
         if self.security_parameters.cipher_suites:
             security_context.set_ciphers(self.security_parameters.cipher_suites)
-        if self.security_parameters.require_peer_authentication and not is_listener:
+        security_context.check_hostname = False
+        if is_listener:
+            if (
+                self.security_parameters.require_peer_authentication
+                and self.security_parameters.trustedCA
+            ):
+                security_context.verify_mode = ssl.CERT_REQUIRED
+            else:
+                security_context.verify_mode = ssl.CERT_NONE
+        elif self.security_parameters.require_peer_authentication:
             security_context.verify_mode = ssl.CERT_REQUIRED
         else:
-            security_context.check_hostname = False
-            security_context.verify_mode = (
-                ssl.CERT_OPTIONAL if is_listener else ssl.CERT_NONE
-            )
+            security_context.verify_mode = ssl.CERT_NONE
         return security_context
 
     def from_yang(self, frmat, text):
@@ -179,10 +226,52 @@ class Preconnection:
             for cred in security.findall('taps:credentials', namespaces=ns):
                 trust_ca = cred.findtext('taps:trust-ca', namespaces=ns)
                 local_identity = cred.findtext('taps:identity', namespaces=ns)
+                allowed_security_protocol = cred.findtext(
+                    'taps:allowed-security-protocol',
+                    namespaces=ns,
+                )
+                pinned_server_certificate = cred.findtext(
+                    'taps:pinned-server-certificate',
+                    namespaces=ns,
+                )
+                algorithm = cred.findtext('taps:algorithm', namespaces=ns)
+                pre_shared_key = cred.findtext('taps:pre-shared-key', namespaces=ns)
+                private_key = cred.findtext('taps:private-key', namespaces=ns)
+                private_key_callback_handle = cred.findtext(
+                    'taps:private-key-callback-handle',
+                    namespaces=ns,
+                )
+                public_key = cred.findtext('taps:public-key', namespaces=ns)
                 if trust_ca:
                     sp.add_trust_ca(trust_ca)
                 if local_identity:
                     sp.add_identity(local_identity)
+                if allowed_security_protocol:
+                    sp.add_allowed_security_protocol(allowed_security_protocol)
+                if pinned_server_certificate:
+                    sp.add_pinned_server_certificate(pinned_server_certificate)
+                if algorithm:
+                    sp.add_security_algorithm(algorithm)
+                if pre_shared_key:
+                    sp.add_pre_shared_key(pre_shared_key)
+                if private_key:
+                    sp.add_private_key(private_key)
+                if private_key_callback_handle:
+                    sp.add_private_key_callback_handle(private_key_callback_handle)
+                if public_key:
+                    sp.add_public_key(public_key)
+            session_cache_capacity = security.findtext(
+                'taps:session-cache-capacity',
+                namespaces=ns,
+            )
+            session_cache_lifetime = security.findtext(
+                'taps:session-cache-lifetime',
+                namespaces=ns,
+            )
+            if session_cache_capacity:
+                sp.set_session_cache_capacity(int(session_cache_capacity))
+            if session_cache_lifetime:
+                sp.set_session_cache_lifetime(int(session_cache_lifetime))
 
         tp = TransportProperties()
         transport = precon.find('taps:transport-properties', namespaces=ns)
@@ -234,6 +323,8 @@ class Preconnection:
         cloned.listen_error = self.listen_error
         cloned.stopped = self.stopped
         cloned.ready = self.ready
+        cloned.establishment_error = self.establishment_error
+        cloned.rendezvous_done = self.rendezvous_done
         cloned.framer = self.framer
         return cloned
 
@@ -296,7 +387,7 @@ class Preconnection:
                 precon = self.from_yang(YANG_FMT_XML, text)
         return precon
 
-    async def initiate(self):
+    async def initiate(self, timeout=None):
         """ Initiates the preconnection, i.e. chooses candidate protocol,
             initializes security parameters if an encrypted connection
             was requested, resolves address and finally calls relevant
@@ -312,14 +403,30 @@ class Preconnection:
         # Race the candidate sets
         new_connection.race_task = self.loop.create_task(new_connection.race())
         logger.info("Returning connection object.")
+        if timeout is not None:
+            try:
+                await new_connection.wait_ready(timeout=timeout)
+            except BaseException:
+                if new_connection.race_task is not None and not new_connection.race_task.done():
+                    new_connection.race_task.cancel()
+                new_connection.abort(reason="Initiate timed out")
+                raise
         return new_connection
 
-    async def initiate_with_send(self, data, message_context=None, end_of_message=True):
+    async def initiate_with_send(
+        self,
+        data,
+        message_context=None,
+        end_of_message=True,
+        timeout=None,
+    ):
         connection = await self.initiate()
         connection._pending_message = (data, message_context, end_of_message)
+        if timeout is not None:
+            await connection.wait_ready(timeout=timeout)
         return connection
 
-    async def listen(self):
+    async def listen(self, timeout=None):
         """ Tries to start a listener, first chooses candidate protocol and
             then tries to establish it with the appropriate asyncio function.
         """
@@ -329,7 +436,44 @@ class Preconnection:
         listener = Listener(self)
         # Create start_listener task so we can return right away
         listener.listen_task = self.loop.create_task(listener.start_listener())
+        if timeout is not None:
+            try:
+                await listener.wait_listening(timeout=timeout)
+            except BaseException:
+                if listener.listen_task is not None and not listener.listen_task.done():
+                    listener.listen_task.cancel()
+                await listener.stop()
+                raise
         return listener
+
+    async def rendezvous(self, timeout=None):
+        if self.local_endpoint is None:
+            raise Exception("A local endpoint needs to be specified to rendezvous")
+        if self.remote_endpoint is None:
+            raise Exception("A remote endpoint needs to be specified to rendezvous")
+
+        listener_preconnection = self.clone()
+        connection_preconnection = self.clone()
+        connection_preconnection._rendezvous_mode = True
+
+        listener = await listener_preconnection.listen()
+        await listener.wait_listening(timeout=timeout)
+        connection = await connection_preconnection.initiate()
+        result = RendezvousResult(connection=connection, listener=listener)
+        if timeout is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        result.wait_listening(),
+                        result.wait_ready(),
+                    ),
+                    timeout,
+                )
+            except BaseException:
+                connection.abort(reason="Rendezvous failed")
+                await listener.stop()
+                raise
+        return result
 
     # TODO: Is this actually what the spec talks about?
     async def resolve(self):
@@ -364,6 +508,9 @@ class Preconnection:
         """
         self.initiate_error = callback
 
+    def on_establishment_error(self, callback):
+        self.establishment_error = callback
+
     # Events for passive open
     def on_connection_received(self, callback):
         """ Set callback for connection received events that get thrown when a
@@ -396,6 +543,9 @@ class Preconnection:
                 callback.
         """
         self.stopped = callback
+
+    def on_rendezvous_done(self, callback):
+        self.rendezvous_done = callback
 
     # TODO: Refactor this probably
     def got_mc(self, listener, data, port):

@@ -128,6 +128,10 @@ class TransportLayer(asyncio.Protocol):
         except (DeframingFailed, ValueError, TypeError):
             # If the framer throws an DeframingFailed Error, stop trying
             # to deframe until new data arrives
+            self.connection._report_receive_error(
+                self.current_message_context,
+                DeframingFailed("Framer could not parse received data"),
+            )
             self.active_framer.set_result(None)
             self.active_framer = None
             return
@@ -204,7 +208,7 @@ class TransportLayer(asyncio.Protocol):
 
     def eof_received(self):
         logger.info("EOF received")
-        self.connection.at_eof = True
+        self.at_eof = True
         if self.current_message_context is None:
             self.current_message_context = self._new_message_context(
                 end_of_message=True
@@ -231,6 +235,11 @@ class TransportLayer(asyncio.Protocol):
     """
 
     def connection_lost(self, exc):
+        if self.recv_buffer and self.current_message_context is not None and not self.at_eof:
+            self.connection._report_receive_error(
+                self.current_message_context,
+                exc or ConnectionError("Receive terminated before the current message completed"),
+            )
         if exc is None:
             logger.warning("Connection lost without error.")
             if self.connection.state == ConnectionState.CLOSING:
@@ -254,6 +263,14 @@ class TransportLayer(asyncio.Protocol):
         new_remote_endpoint.with_port(
             transport.get_extra_info("peername")[1])
         self.remote_endpoint = new_remote_endpoint
+        sockname = transport.get_extra_info("sockname")
+        if sockname:
+            self.connection.note_path_change(
+                local_address=sockname[0],
+                local_port=sockname[1],
+                remote_address=new_remote_endpoint.address[0],
+                remote_port=new_remote_endpoint.port,
+            )
         self.connection._mark_ready()
         if hasattr(self.connection._originating_preconnection, "_deliver_connection"):
             self.connection._originating_preconnection._deliver_connection(self.connection)
@@ -271,6 +288,14 @@ class UdpTransport(TransportLayer):
                     str(self.connection.remote_endpoint.address) +
                     ":" + str(self.connection.remote_endpoint.port) +
                     ".")
+        sockname = transport.get_extra_info("sockname") if transport else None
+        if sockname:
+            self.connection.note_path_change(
+                local_address=sockname[0],
+                local_port=sockname[1],
+                remote_address=self.connection.remote_endpoint.address[0],
+                remote_port=self.connection.remote_endpoint.port,
+            )
         self.connection._mark_ready()
         if self.connection._pending_message:
             data, context, eom = self.connection._pending_message
@@ -400,6 +425,14 @@ class TcpTransport(TransportLayer):
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
         logger.info("Connected successfully on TCP.")
+        sockname = transport.get_extra_info("sockname")
+        if sockname:
+            self.connection.note_path_change(
+                local_address=sockname[0],
+                local_port=sockname[1],
+                remote_address=self.connection.remote_endpoint.address[0],
+                remote_port=self.connection.remote_endpoint.port,
+            )
         self.connection._mark_ready()
         if self.connection._pending_message:
             data, context, eom = self.connection._pending_message
@@ -459,13 +492,22 @@ class TcpTransport(TransportLayer):
             data = self.recv_buffer[:max_length]
             self.recv_buffer = self.recv_buffer[max_length:]
 
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=self.at_eof
+            )
+
+        context = self.current_message_context
+        context.end_of_message = self.at_eof
+
         if self.at_eof:
-            context = self._new_message_context(end_of_message=True)
+            context.final = True
             self.connection._deliver_received(data, context)
+            self.connection._received_final_message = True
+            self.current_message_context = None
             return
-        else:
-            context = self._new_message_context(end_of_message=False)
-            self.connection._deliver_received_partial(data, context)
+
+        self.connection._deliver_received_partial(data, context)
 
     async def close(self):
         logger.info("Closing connection.")
@@ -508,9 +550,12 @@ class TcpTransport(TransportLayer):
 
     def data_received(self, data):
         logger.info("Received %d bytes" % len(data))
-        self.current_message_context = self._new_message_context(
-            end_of_message=False
-        )
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=False
+            )
+        else:
+            self.current_message_context.end_of_message = False
 
         # See if we already have so data buffered
         if self.recv_buffer is None:

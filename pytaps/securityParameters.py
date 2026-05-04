@@ -11,10 +11,19 @@ class SecurityParameters:
     def __init__(self):
         self.identity = None
         self.trustedCA = []
+        self.allowed_security_protocols = []
+        self.pinned_server_certificates = []
+        self.security_algorithms = []
+        self.pre_shared_key = None
+        self.private_key = None
+        self.private_key_callback_handle = None
+        self.public_key = None
         self.alpn_protocols = []
         self.server_name = None
         self.require_peer_authentication = True
         self.cipher_suites = None
+        self.session_cache_capacity = None
+        self.session_cache_lifetime = None
 
     def add_identity(self, identity):
         """ Adds a local identity with which to
@@ -36,6 +45,34 @@ class SecurityParameters:
         self.trustedCA.append(cert)
         logger.info("Trusting certificate: " + str(cert))
 
+    def add_allowed_security_protocol(self, protocol):
+        self.allowed_security_protocols.append(protocol)
+        logger.info("Allowing security protocol: " + str(protocol))
+
+    def add_pinned_server_certificate(self, certificate_chain):
+        self.pinned_server_certificates.append(certificate_chain)
+        logger.info("Configured pinned server certificate chain.")
+
+    def add_security_algorithm(self, algorithm):
+        self.security_algorithms.append(algorithm)
+        logger.info("Allowing security algorithm: " + str(algorithm))
+
+    def add_pre_shared_key(self, pre_shared_key):
+        self.pre_shared_key = pre_shared_key
+        logger.info("Configured pre-shared key.")
+
+    def add_private_key(self, private_key):
+        self.private_key = private_key
+        logger.info("Configured private key path.")
+
+    def add_private_key_callback_handle(self, handle):
+        self.private_key_callback_handle = handle
+        logger.info("Configured external private key callback handle.")
+
+    def add_public_key(self, public_key):
+        self.public_key = public_key
+        logger.info("Configured public key path.")
+
     def add_alpn_protocol(self, protocol):
         self.alpn_protocols.append(protocol)
         logger.info("Offering ALPN protocol: " + str(protocol))
@@ -52,12 +89,29 @@ class SecurityParameters:
         self.cipher_suites = cipher_suites
         logger.info("Configured cipher suites.")
 
+    def set_session_cache_capacity(self, capacity):
+        self.session_cache_capacity = capacity
+        logger.info("Configured session cache capacity: " + str(capacity))
+
+    def set_session_cache_lifetime(self, lifetime):
+        self.session_cache_lifetime = lifetime
+        logger.info("Configured session cache lifetime: " + str(lifetime))
+
     def get_configuration(self):
         return {
             "identity": self.identity,
             "trustedCAs": list(self.trustedCA),
+            "allowedSecurityProtocols": list(self.allowed_security_protocols),
+            "pinnedServerCertificate": list(self.pinned_server_certificates),
+            "securityAlgorithms": list(self.security_algorithms),
+            "preSharedKey": self.pre_shared_key,
+            "privateKey": self.private_key,
+            "privateKeyCallbackHandle": self.private_key_callback_handle,
+            "publicKey": self.public_key,
             "alpnProtocols": list(self.alpn_protocols),
             "serverName": self.server_name,
             "requirePeerAuthentication": self.require_peer_authentication,
             "cipherSuites": self.cipher_suites,
+            "sessionCacheCapacity": self.session_cache_capacity,
+            "sessionCacheLifetime": self.session_cache_lifetime,
         }

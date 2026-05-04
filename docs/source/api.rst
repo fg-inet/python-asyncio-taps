@@ -117,6 +117,15 @@ Now the application can get the event loop, call the listen the coroutine and th
 	loop.create_task(preconnection.listen())
 	loop.run_forever()
 
+Rendezvous
+----------
+
+To simultaneously listen and initiate from the same preconnection template, call ``rendezvous()``. The returned ``RendezvousResult`` gives access to both the actively initiated connection and the passive listener::
+
+	result = await preconnection.rendezvous(timeout=5)
+	connection = result.connection
+	listener = result.listener
+
 Sending data
 ------------
 

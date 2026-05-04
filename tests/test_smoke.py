@@ -1,11 +1,17 @@
 import asyncio
 import socket
 import ssl
+from textwrap import dedent
+from pathlib import Path
 
+import pytest
 import pytaps as taps
 from pytaps.listener import Listener
 from pytaps.transports import TcpTransport, UdpTransport
 from pytaps.utility import build_protocol_candidates, create_candidates
+from pytaps.yang_validate import YANG_FMT_XML
+
+TESTS_DIR = Path(__file__).resolve().parent
 
 
 def test_import_and_basic_objects():
@@ -24,13 +30,24 @@ def test_import_and_basic_objects():
 
 
 def test_message_context_properties_round_trip():
-    context = taps.MessageContext(priority=7, ordered=False, final=False, idempotent=True)
+    context = taps.MessageContext(
+        priority=7,
+        ordered=False,
+        reliable=False,
+        final=False,
+        safely_replayable=True,
+        no_fragmentation=True,
+        no_segmentation=True,
+    )
     properties = context.get_properties()
 
-    assert properties["priority"] == 7
-    assert properties["ordered"] is False
+    assert properties["msgPriority"] == 7
+    assert properties["msgOrdered"] is False
+    assert properties["msgReliable"] is False
     assert properties["final"] is False
-    assert properties["idempotent"] is True
+    assert properties["safelyReplayable"] is True
+    assert properties["noFragmentation"] is True
+    assert properties["noSegmentation"] is True
 
 
 def test_transport_property_aliases_are_canonicalized():
@@ -212,12 +229,18 @@ def test_connection_message_property_helpers():
         event_loop=asyncio.new_event_loop(),
     )
     connection = taps.Connection(preconnection)
-    context = connection.new_message_context(priority=5, final=False, idempotent=True)
+    context = connection.new_message_context(
+        msgPriority=5,
+        msgReliable=False,
+        final=False,
+        safelyReplayable=True,
+    )
     connection.loop.close()
 
-    assert connection.get_message_properties(context)["priority"] == 5
+    assert connection.get_message_properties(context)["msgPriority"] == 5
+    assert connection.get_message_properties(context)["msgReliable"] is False
     assert connection.get_message_properties(context)["final"] is False
-    assert connection.get_message_properties(context)["idempotent"] is True
+    assert connection.get_message_properties(context)["safelyReplayable"] is True
 
 
 def test_connection_send_batch_assigns_shared_batch_id():
@@ -276,9 +299,9 @@ def test_flush_messages_prefers_higher_priority():
 
     transport = DummyTransport()
     connection.transports = [transport]
-    low = taps.MessageContext(priority=0)
-    high = taps.MessageContext(priority=10)
-    mid = taps.MessageContext(priority=5)
+    low = taps.MessageContext(priority=100, final=False)
+    high = taps.MessageContext(priority=10, final=False)
+    mid = taps.MessageContext(priority=50, final=False)
 
     connection.enqueue_message("low", low)
     connection.enqueue_message("high", high)
@@ -289,8 +312,8 @@ def test_flush_messages_prefers_higher_priority():
     assert result == [1, 2, 3]
     assert transport.calls == [
         (b"high", 10),
-        (b"mid", 5),
-        (b"low", 0),
+        (b"mid", 50),
+        (b"low", 100),
     ]
 
 
@@ -314,9 +337,9 @@ def test_flush_messages_preserves_fifo_for_equal_priority():
     transport = DummyTransport()
     connection.transports = [transport]
 
-    connection.enqueue_message("one", taps.MessageContext(priority=1))
-    connection.enqueue_message("two", taps.MessageContext(priority=1))
-    connection.enqueue_message("three", taps.MessageContext(priority=1))
+    connection.enqueue_message("one", taps.MessageContext(priority=1, final=False))
+    connection.enqueue_message("two", taps.MessageContext(priority=1, final=False))
+    connection.enqueue_message("three", taps.MessageContext(priority=1, final=False))
     connection.loop.run_until_complete(connection.flush_messages())
     connection.loop.close()
 
@@ -357,6 +380,46 @@ def test_flush_messages_reports_expired_queued_message():
     assert expired["connection"] is connection
 
 
+def test_final_message_is_sent_last_and_blocks_future_sends():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.state = taps.ConnectionState.ESTABLISHED
+    send_errors = []
+
+    class DummyTransport:
+        def __init__(self):
+            self.calls = []
+
+        def send(self, data, message_context=None, end_of_message=True):
+            self.calls.append((data, message_context.final))
+            return len(self.calls)
+
+    async def handle_send_error(message_ref, failed_connection):
+        send_errors.append((message_ref, failed_connection))
+
+    connection.on_send_error(handle_send_error)
+    connection.transports = [DummyTransport()]
+    connection.enqueue_message("body", taps.MessageContext(priority=100, final=False))
+    connection.enqueue_message("trailer", taps.MessageContext(priority=0, final=True))
+    connection.loop.run_until_complete(connection.flush_messages())
+    blocked = connection.loop.run_until_complete(
+        connection.send("after", taps.MessageContext(final=False))
+    )
+    connection.loop.run_until_complete(asyncio.sleep(0))
+    connection.loop.close()
+
+    assert connection.transports[0].calls == [
+        (b"body", False),
+        (b"trailer", True),
+    ]
+    assert blocked is None
+    assert send_errors[0][1] is connection
+
+
 def test_message_expired_callback_fires_before_send():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
@@ -395,6 +458,41 @@ def test_message_expired_callback_fires_before_send():
     assert expired["connection"] is connection
 
 
+def test_udp_send_requires_safely_replayable():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(4444)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+    connection.state = taps.ConnectionState.ESTABLISHED
+    connection.protocol = "udp"
+    send_errors = {}
+
+    class DummyTransport:
+        def send(self, data, message_context=None, end_of_message=True):
+            raise AssertionError("send should not be called for invalid UDP message")
+
+    async def handle_send_error(context, reason, failed_connection):
+        send_errors["context"] = context
+        send_errors["reason"] = reason
+        send_errors["connection"] = failed_connection
+
+    connection.on_send_error(handle_send_error)
+    connection.transports = [DummyTransport()]
+    context = taps.MessageContext(final=False, safely_replayable=False)
+
+    result = loop.run_until_complete(connection.send("hello", context))
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.close()
+
+    assert result is None
+    assert send_errors["context"] is context
+    assert send_errors["connection"] is connection
+    assert "safely replayable" in str(send_errors["reason"]).lower()
+
+
 def test_pending_message_can_expire_before_active_open():
     remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(4444)
     loop = asyncio.new_event_loop()
@@ -425,7 +523,7 @@ def test_received_message_exposes_message_properties():
     context = taps.MessageContext(priority=3, final=False)
     received = taps.ReceivedMessage(b"hello", context, object())
 
-    assert received.get_properties()["priority"] == 3
+    assert received.get_properties()["msgPriority"] == 3
     assert received.get_properties()["final"] is False
 
 
@@ -541,6 +639,60 @@ def test_receive_returns_partial_stream_delivery():
     assert received_message.data == b"he"
     assert received_message.context.end_of_message is False
     assert received_message.connection is connection
+    assert received_message.context.final is False
+
+
+def test_partial_stream_receive_reuses_message_context_until_eof():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(4444)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+    transport = TcpTransport(connection=connection, remote_endpoint=remote)
+
+    first_task = loop.create_task(connection.receive(1, 2))
+    transport.data_received(b"hello")
+    first_message = loop.run_until_complete(first_task)
+
+    second_task = loop.create_task(connection.receive(1, 2))
+    second_message = loop.run_until_complete(second_task)
+
+    transport.eof_received()
+    third_task = loop.create_task(connection.receive(1, -1))
+    third_message = loop.run_until_complete(third_task)
+    loop.close()
+
+    assert first_message.data == b"he"
+    assert second_message.data == b"ll"
+    assert third_message.data == b"o"
+    assert first_message.context is second_message.context
+    assert second_message.context is third_message.context
+    assert third_message.end_of_message is True
+    assert third_message.context.final is True
+
+
+def test_receive_timeout_cleans_up_waiter():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+
+    class DummyTransport:
+        def receive(self, min_incomplete_length, max_length):
+            return None
+
+    connection.transports = [DummyTransport()]
+
+    with pytest.raises(asyncio.TimeoutError):
+        loop.run_until_complete(connection.receive(1, -1, timeout=0.01))
+    loop.close()
+
+    assert connection._receive_waiters == []
 
 
 def test_listener_wait_listening_and_accept():
@@ -564,6 +716,23 @@ def test_listener_wait_listening_and_accept():
     assert waited_listener is listener
     assert accepted is accepted_connection
     assert listener.get_properties()["readOnly"]["state"] == "ESTABLISHED"
+
+
+def test_listener_accept_timeout_cleans_up_waiter():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        event_loop=loop,
+    )
+    listener = Listener(preconnection)
+    accept_task = listener.accept(timeout=0.01)
+
+    with pytest.raises(asyncio.TimeoutError):
+        loop.run_until_complete(accept_task)
+    loop.close()
+
+    assert listener._connection_waiters == []
 
 
 def test_listener_stop_transitions_to_closed():
@@ -624,6 +793,45 @@ def test_connection_wait_closed_completes():
     assert connection.state is taps.ConnectionState.CLOSED
 
 
+def test_wait_helpers_support_timeout():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    loop = asyncio.new_event_loop()
+
+    connection = taps.Connection(
+        taps.Preconnection(remote_endpoint=remote, event_loop=loop)
+    )
+    listener = Listener(
+        taps.Preconnection(local_endpoint=local, event_loop=loop)
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        loop.run_until_complete(connection.wait_ready(timeout=0.01))
+    with pytest.raises(asyncio.TimeoutError):
+        loop.run_until_complete(listener.wait_listening(timeout=0.01))
+    with pytest.raises(asyncio.TimeoutError):
+        loop.run_until_complete(listener.wait_stopped(timeout=0.01))
+    loop.close()
+
+
+def test_connection_read_only_properties_follow_rfc_names():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+    read_only = connection.get_properties()["readOnly"]
+    loop.close()
+
+    assert read_only["connState"] == "Establishing"
+    assert read_only["canSend"] is False
+    assert read_only["canReceive"] is False
+    assert read_only["sendMsgMaxLen"] == 0
+    assert read_only["recvMsgMaxLen"] == 0
+
+
 def test_failed_initiate_reports_error_and_closes():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
@@ -650,6 +858,32 @@ def test_failed_initiate_reports_error_and_closes():
     assert callback["error"] is failure
     assert callback["connection"] is connection
     assert connection.state is taps.ConnectionState.CLOSED
+
+
+def test_establishment_error_callback_alias_fires():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+    callback = {}
+    ready_task = loop.create_task(connection.wait_ready())
+
+    async def handle_establishment_error(error, failed_connection):
+        callback["error"] = error
+        callback["connection"] = failed_connection
+
+    connection.on_establishment_error(handle_establishment_error)
+    failure = RuntimeError("boom")
+    connection._fail_initiate(failure)
+    loop.run_until_complete(asyncio.sleep(0))
+    assert isinstance(ready_task.exception(), RuntimeError)
+    loop.close()
+
+    assert callback["error"] is failure
+    assert callback["connection"] is connection
 
 
 def test_failed_listener_reports_error():
@@ -683,9 +917,19 @@ def test_failed_listener_reports_error():
 def test_security_parameters_build_context_and_properties():
     remote = taps.RemoteEndpoint().with_hostname("example.com").with_port(443)
     security = taps.SecurityParameters()
+    cert_path = str(TESTS_DIR / "keys" / "localhost.pem")
+    security.add_allowed_security_protocol("TLS1.3")
+    security.add_pinned_server_certificate(cert_path)
+    security.add_security_algorithm("TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256")
+    security.add_pre_shared_key("shared-secret")
+    security.add_private_key(cert_path)
+    security.add_private_key_callback_handle("pkcb")
+    security.add_public_key(cert_path)
     security.add_alpn_protocol("h2")
     security.with_server_name("svc.example.com")
     security.disable_peer_authentication()
+    security.set_session_cache_capacity(16)
+    security.set_session_cache_lifetime(3600)
 
     preconnection = taps.Preconnection(
         remote_endpoint=remote,
@@ -698,8 +942,17 @@ def test_security_parameters_build_context_and_properties():
     assert preconnection.security_context is not None
     assert preconnection.security_context.verify_mode == ssl.CERT_NONE
     assert properties["alpnProtocols"] == ["h2"]
+    assert properties["allowedSecurityProtocols"] == ["TLS1.3"]
+    assert properties["pinnedServerCertificate"] == [cert_path]
     assert properties["serverName"] == "svc.example.com"
     assert properties["requirePeerAuthentication"] is False
+    assert properties["securityAlgorithms"] == ["TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"]
+    assert properties["preSharedKey"] == "shared-secret"
+    assert properties["privateKey"] == cert_path
+    assert properties["privateKeyCallbackHandle"] == "pkcb"
+    assert properties["publicKey"] == cert_path
+    assert properties["sessionCacheCapacity"] == 16
+    assert properties["sessionCacheLifetime"] == 3600
 
 
 def test_security_parameters_require_secure_transport_by_default():
@@ -719,6 +972,67 @@ def test_security_parameters_require_secure_transport_by_default():
     assert candidates == ["tls-tcp"]
 
 
+def test_preconnection_rendezvous_returns_listener_and_connection():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(port)
+    remote = taps.RemoteEndpoint().with_hostname("127.0.0.1").with_port(port)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    preconnection.transport_properties.require("reliability")
+    events = {}
+
+    async def handle_rendezvous_done(connection):
+        events["rendezvous"] = connection
+
+    preconnection.on_rendezvous_done(handle_rendezvous_done)
+    result = loop.run_until_complete(preconnection.rendezvous(timeout=1))
+    loop.run_until_complete(asyncio.sleep(0.05))
+    result.connection.close()
+    loop.run_until_complete(result.connection.wait_closed(timeout=1))
+    loop.run_until_complete(result.listener.stop())
+    loop.close()
+
+    assert isinstance(result, taps.RendezvousResult)
+    assert result.connection.state is taps.ConnectionState.CLOSED
+    assert result.listener.state is taps.ConnectionState.CLOSED
+    assert events["rendezvous"] is result.connection
+
+
+def test_receive_error_fires_for_incomplete_stream_termination():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(4444)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(preconnection)
+    transport = TcpTransport(connection=connection, remote_endpoint=remote)
+    callback = {}
+
+    async def handle_receive_error(context, reason, failed_connection):
+        callback["context"] = context
+        callback["reason"] = reason
+        callback["connection"] = failed_connection
+
+    connection.on_receive_error(handle_receive_error)
+    transport.data_received(b"partial")
+    transport.connection_lost(RuntimeError("stream aborted"))
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.close()
+
+    assert callback["context"] is not None
+    assert callback["connection"] is connection
+    assert "aborted" in str(callback["reason"]).lower()
+
+
 def test_connection_and_listener_preserve_security_context():
     remote = taps.RemoteEndpoint().with_hostname("example.com").with_port(443)
     local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
@@ -736,3 +1050,48 @@ def test_connection_and_listener_preserve_security_context():
 
     assert connection.security_context is preconnection.security_context
     assert listener.security_context is preconnection.security_context
+
+
+def test_from_yang_reads_extended_security_credentials():
+    pytest.importorskip("yang_glue")
+    cert_path = str(TESTS_DIR / "keys" / "localhost.pem")
+    ca_path = str(TESTS_DIR / "keys" / "MyRootCA.pem")
+    xml_text = dedent(
+        """\
+        <preconnection xmlns="urn:ietf:params:xml:ns:yang:ietf-taps-api">
+          <remote-endpoints>
+            <id>remote-1</id>
+            <remote-host>example.com</remote-host>
+            <remote-port>443</remote-port>
+          </remote-endpoints>
+            <security>
+              <credentials>
+                <id>cred-1</id>
+                <identity>{cert_path}</identity>
+                <trust-ca>{ca_path}</trust-ca>
+                <algorithm>TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256</algorithm>
+                <pre-shared-key>shared-secret</pre-shared-key>
+                <private-key>{cert_path}</private-key>
+                <private-key-callback-handle>pkcb</private-key-callback-handle>
+                <public-key>{cert_path}</public-key>
+              </credentials>
+              <session-cache-capacity>32</session-cache-capacity>
+              <session-cache-lifetime>900</session-cache-lifetime>
+            </security>
+          </preconnection>
+            """
+    ).format(cert_path=cert_path, ca_path=ca_path)
+    preconnection = taps.Preconnection(event_loop=asyncio.new_event_loop())
+    preconnection = preconnection.from_yang(YANG_FMT_XML, xml_text)
+    security = preconnection.security_parameters.get_configuration()
+    preconnection.loop.close()
+
+    assert security["identity"] == cert_path
+    assert security["trustedCAs"] == [ca_path]
+    assert security["securityAlgorithms"] == ["TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"]
+    assert security["preSharedKey"] == "shared-secret"
+    assert security["privateKey"] == cert_path
+    assert security["privateKeyCallbackHandle"] == "pkcb"
+    assert security["publicKey"] == cert_path
+    assert security["sessionCacheCapacity"] == 32
+    assert security["sessionCacheLifetime"] == 900

@@ -44,14 +44,26 @@ class TestServer:
         self.loop.create_task(
             self.connection.receive(min_incomplete_length=1, max_length=5)
         )
-        await self.connection.send(data)
+        reply_context = None
+        if self.connection.protocol == "udp":
+            reply_context = self.connection.new_message_context(
+                safelyReplayable=True,
+                final=False,
+            )
+        await self.connection.send(data, reply_context)
 
     async def handle_received(self, data, context, connection):
         logger.info("Received message %s from %s.", data, context.addr)
         self.loop.create_task(
             self.connection.receive(min_incomplete_length=1, max_length=5)
         )
-        await self.connection.send(data)
+        reply_context = None
+        if self.connection.protocol == "udp":
+            reply_context = self.connection.new_message_context(
+                safelyReplayable=True,
+                final=False,
+            )
+        await self.connection.send(data, reply_context)
 
     async def handle_listen_error(self):
         logger.warning("Listen Error occured.")

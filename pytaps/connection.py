@@ -7,7 +7,11 @@ except ImportError:
 
 from .connection_group import ConnectionGroup
 from .message import MessageContext, ReceivedMessage
-from .transportProperties import TransportProperties, canonicalize_property_name
+from .transportProperties import (
+    PreferenceLevel,
+    TransportProperties,
+    canonicalize_property_name,
+)
 from .transports import TcpTransport, UdpTransport
 from .utility import (
     Candidate,
@@ -78,6 +82,13 @@ class Connection:
         self._batch_counter = 0
         self._send_sequence = 0
         self._queued_messages = []
+        self._sent_final_message = False
+        self._received_final_message = False
+        self._rendezvous_mode = getattr(preconnection, "_rendezvous_mode", False)
+        self._current_path = {
+            "local": None,
+            "remote": None,
+        }
 
         # Callbacks
         self.writer = None
@@ -90,23 +101,54 @@ class Connection:
         self.expired = None
         self.send_error = None
         self.sent = None
-        self.stopped = preconnection.stopped
-        self.listen_error = preconnection.listen_error
-        self.connection_received = preconnection.connection_received
-        self.initiate_error = preconnection.initiate_error
-        self.ready = preconnection.ready
+        self.soft_error = None
+        self.path_change = None
+        self.establishment_error = None
+        self.rendezvous_done = None
+        self.stopped = getattr(preconnection, "stopped", None)
+        self.listen_error = getattr(preconnection, "listen_error", None)
+        self.connection_received = getattr(preconnection, "connection_received", None)
+        self.initiate_error = getattr(preconnection, "initiate_error", None)
+        self.ready = getattr(preconnection, "ready", None)
+        self.establishment_error = getattr(preconnection, "establishment_error", None)
+        self.rendezvous_done = getattr(preconnection, "rendezvous_done", None)
 
     def _coerce_message_context(self, message_context=None, *, end_of_message=True):
         if message_context is None:
-            return MessageContext(end_of_message=end_of_message).ensure_created()
+            message_context = MessageContext(end_of_message=end_of_message)
         message_context.end_of_message = end_of_message
-        return message_context.ensure_created()
+        return self._apply_message_defaults(message_context.ensure_created())
+
+    def _apply_message_defaults(self, context):
+        if context.ordered is None:
+            if self.protocol in {"tcp", "tls-tcp"}:
+                context.ordered = True
+            elif self.protocol == "udp":
+                context.ordered = False
+            else:
+                context.ordered = (
+                    self.transport_properties.get("preserveOrder")
+                    is not PreferenceLevel.PROHIBIT
+                )
+        if context.reliable is None:
+            if self.protocol in {"tcp", "tls-tcp"}:
+                context.reliable = True
+            elif self.protocol == "udp":
+                context.reliable = False
+            else:
+                context.reliable = (
+                    self.transport_properties.get("reliability")
+                    is not PreferenceLevel.PROHIBIT
+                )
+        if context.capacity_profile is None:
+            context.capacity_profile = self.transport_properties.get("connCapacityProfile")
+        return context
 
     def new_message_context(self, **properties):
         context = MessageContext()
         for name, value in properties.items():
             context.set_property(name, value)
-        return context.ensure_created()
+        return self._apply_message_defaults(context.ensure_created())
 
     def get_message_properties(self, message_or_context):
         if isinstance(message_or_context, ReceivedMessage):
@@ -124,6 +166,8 @@ class Connection:
         if not self._ready_waiter.done():
             self._ready_waiter.set_result(self)
         schedule_callback(self.loop, self.ready, (self,))
+        if self._rendezvous_mode:
+            schedule_callback(self.loop, self.rendezvous_done, (self,))
 
     def _mark_closed(self):
         self._set_state(ConnectionState.CLOSED)
@@ -141,10 +185,46 @@ class Connection:
             (self,),
             (),
         )
+        schedule_callback(
+            self.loop,
+            self.establishment_error,
+            (error, self),
+            (self,),
+            (),
+        )
 
     def _report_connection_error(self, error):
         self.last_error = error
         schedule_callback(self.loop, self.connection_error, (error, self))
+
+    def _report_receive_error(self, message_context, reason=None):
+        schedule_callback(
+            self.loop,
+            self.receive_error,
+            (message_context, reason, self),
+            (message_context, self),
+            (self,),
+            (),
+        )
+
+    def _report_soft_error(self, reason):
+        schedule_callback(
+            self.loop,
+            self.soft_error,
+            (reason, self),
+            (self,),
+            (),
+        )
+
+    def _report_path_change(self, previous_path, current_path):
+        schedule_callback(
+            self.loop,
+            self.path_change,
+            (previous_path, current_path, self),
+            (current_path, self),
+            (self,),
+            (),
+        )
 
     def _report_closed(self):
         self._mark_closed()
@@ -191,6 +271,80 @@ class Connection:
             )
         return received_message
 
+    def _check_send_allowed(self, message_context=None):
+        if self._sent_final_message:
+            error = RuntimeError("Cannot send after a final message has been sent")
+            self.last_error = error
+            schedule_callback(
+                self.loop,
+                self.send_error,
+                (message_context, error, self),
+                (message_context, self),
+                (self,),
+                (),
+            )
+            return False
+        return True
+
+    def _send_limits(self):
+        if self.protocol == "udp":
+            return {
+                "singularTransmissionMsgMaxLen": 65507,
+                "sendMsgMaxLen": 65507,
+                "recvMsgMaxLen": 65507,
+            }
+        return {
+            "singularTransmissionMsgMaxLen": 0,
+            "sendMsgMaxLen": 0,
+            "recvMsgMaxLen": 0,
+        }
+
+    def _can_send(self):
+        return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING}
+
+    def _can_receive(self):
+        return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING} and not self._received_final_message
+
+    def _validate_message_context(self, data, context):
+        connection_reliable = self._apply_message_defaults(MessageContext()).reliable
+        if (
+            context.reliable is not None
+            and context.reliable != connection_reliable
+            and self.transport_properties.get("perMessageReliability")
+            is not PreferenceLevel.REQUIRE
+        ):
+            return RuntimeError(
+                "Per-message reliability overrides require perMessageReliability support"
+            )
+        if self.protocol == "udp" and not context.safely_replayable:
+            return RuntimeError(
+                "UDP messages must be marked safely replayable to satisfy RFC 9622 semantics"
+            )
+        limits = self._send_limits()
+        data_len = len(data)
+        send_limit = limits["sendMsgMaxLen"]
+        singular_limit = limits["singularTransmissionMsgMaxLen"]
+        if send_limit and data_len > send_limit:
+            return RuntimeError("Message exceeds sendMsgMaxLen")
+        if (
+            (context.no_segmentation or context.no_fragmentation)
+            and singular_limit
+            and data_len > singular_limit
+        ):
+            return RuntimeError("Message exceeds singularTransmissionMsgMaxLen")
+        return None
+
+    def _report_send_error(self, message_context, reason):
+        self.last_error = reason
+        schedule_callback(
+            self.loop,
+            self.send_error,
+            (message_context, reason, self),
+            (message_context, self),
+            (self,),
+            (),
+        )
+
     def set_property(self, prop, value):
         self.transport_properties.set_property(prop, value)
         canonical = canonicalize_property_name(prop)
@@ -199,11 +353,17 @@ class Connection:
         return None
 
     def get_properties(self):
+        limits = self._send_limits()
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
             "readOnly": {
-                "state": self.state.name,
+                "connState": self.state.name.title(),
+                "canSend": self._can_send(),
+                "canReceive": self._can_receive(),
+                "singularTransmissionMsgMaxLen": limits["singularTransmissionMsgMaxLen"],
+                "sendMsgMaxLen": limits["sendMsgMaxLen"],
+                "recvMsgMaxLen": limits["recvMsgMaxLen"],
                 "protocol": self.protocol,
                 "localEndpoint": self.local_endpoint,
                 "remoteEndpoint": self.remote_endpoint,
@@ -212,12 +372,18 @@ class Connection:
             },
         }
 
-    async def wait_ready(self):
-        await self._ready_waiter
+    async def wait_ready(self, timeout=None):
+        if timeout is None:
+            await self._ready_waiter
+        else:
+            await asyncio.wait_for(self._ready_waiter, timeout)
         return self
 
-    async def wait_closed(self):
-        await self._closed_waiter
+    async def wait_closed(self, timeout=None):
+        if timeout is None:
+            await self._closed_waiter
+        else:
+            await asyncio.wait_for(self._closed_waiter, timeout)
         return self
 
     def add_remote(self, remote_endpoints):
@@ -281,10 +447,19 @@ class Connection:
             message_context,
             end_of_message=end_of_message,
         )
+        if not self._check_send_allowed(context):
+            return None
+        validation_error = self._validate_message_context(data, context)
+        if validation_error is not None:
+            self._report_send_error(context, validation_error)
+            return None
         if context.is_expired():
             self._report_expired(context)
             return None
-        return self.transports[0].send(data, context, end_of_message)
+        result = self.transports[0].send(data, context, end_of_message)
+        if result is not None and context.final:
+            self._sent_final_message = True
+        return result
 
     async def send_batch(self, messages):
         self._batch_counter += 1
@@ -318,6 +493,8 @@ class Connection:
             message_context,
             end_of_message=end_of_message,
         )
+        if not self._check_send_allowed(context):
+            return None
         self._send_sequence += 1
         if context.message_id is None:
             context.message_id = self._send_sequence
@@ -334,8 +511,9 @@ class Connection:
     async def flush_messages(self):
         def sort_key(entry):
             context = entry["context"]
+            final_rank = 1 if context.final else 0
             ordered_rank = 0 if context.ordered else 1
-            return (-context.priority, ordered_rank, entry["sequence"])
+            return (final_rank, context.priority, ordered_rank, entry["sequence"])
 
         self._queued_messages.sort(key=sort_key)
         queued_messages = self._queued_messages
@@ -584,7 +762,7 @@ class Connection:
             data = data.encode()
         return await self.send(data, message_context, end_of_message)
 
-    async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
+    async def receive(self, min_incomplete_length=float("inf"), max_length=-1, timeout=None):
         """ Queues the reception of a message.
         Attributes:
             min_incomplete_length (integer, optional):
@@ -593,13 +771,28 @@ class Connection:
             max_length (integer, optional):
                 The maximum length a message can have.
         """
+        if self._received_final_message:
+            error = RuntimeError("No more messages can be received after a final message")
+            self._report_receive_error(None, error)
+            raise error
         waiter = self.loop.create_future()
         self._receive_waiters.append(waiter)
         self.transports[0].receive(min_incomplete_length, max_length)
-        return await waiter
+        try:
+            if timeout is None:
+                return await waiter
+            return await asyncio.wait_for(waiter, timeout)
+        finally:
+            if waiter in self._receive_waiters:
+                self._receive_waiters.remove(waiter)
 
-    async def receive_message(self, min_incomplete_length=float("inf"), max_length=-1):
-        return await self.receive(min_incomplete_length, max_length)
+    async def receive_message(
+        self,
+        min_incomplete_length=float("inf"),
+        max_length=-1,
+        timeout=None,
+    ):
+        return await self.receive(min_incomplete_length, max_length, timeout=timeout)
 
     def close(self):
         """ Attempts to close the connection, issues a closed event
@@ -620,6 +813,45 @@ class Connection:
             getattr(transport, "current_message_context", None),
             getattr(transport, "at_eof", False),
         )
+
+    def note_path_change(
+        self,
+        *,
+        local_address=None,
+        local_port=None,
+        remote_address=None,
+        remote_port=None,
+    ):
+        previous_path = self._current_path.copy()
+        if local_address is not None:
+            if self.local_endpoint is None:
+                origin = getattr(self._originating_preconnection, "local_endpoint", None)
+                if origin is not None:
+                    self.local_endpoint = origin.clone()
+            if self.local_endpoint is None:
+                return self._current_path
+            self.local_endpoint.address = [local_address]
+        if local_port is not None and self.local_endpoint is not None:
+            self.local_endpoint.port = local_port
+        if remote_address is not None:
+            if self.remote_endpoint is None:
+                origin = getattr(self._originating_preconnection, "remote_endpoint", None)
+                if origin is not None:
+                    self.remote_endpoint = origin.clone()
+            if self.remote_endpoint is None:
+                return self._current_path
+            self.remote_endpoint.address = [remote_address]
+        if remote_port is not None and self.remote_endpoint is not None:
+            self.remote_endpoint.port = remote_port
+        current_path = {
+            "local": (self.local_endpoint.address[0], self.local_endpoint.port)
+            if self.local_endpoint and self.local_endpoint.address else None,
+            "remote": (self.remote_endpoint.address[0], self.remote_endpoint.port)
+            if self.remote_endpoint and self.remote_endpoint.address else None,
+        }
+        self._current_path = current_path.copy()
+        self._report_path_change(previous_path, current_path)
+        return current_path
 
     # Events for active open
     def on_ready(self, callback):
@@ -719,6 +951,18 @@ class Connection:
                 callback.
         """
         self.connection_error = callback
+
+    def on_soft_error(self, callback):
+        self.soft_error = callback
+
+    def on_path_change(self, callback):
+        self.path_change = callback
+
+    def on_establishment_error(self, callback):
+        self.establishment_error = callback
+
+    def on_rendezvous_done(self, callback):
+        self.rendezvous_done = callback
 
     # Events for closing a connection
     def on_closed(self, callback):

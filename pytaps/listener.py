@@ -52,6 +52,7 @@ class Listener:
         self.state = ConnectionState.ESTABLISHING
         self._listen_waiter = self.loop.create_future()
         self._connection_waiters = []
+        self._accepted_connections = []
         self._servers = []
         self._datagram_transports = []
         self._stopped_waiter = self.loop.create_future()
@@ -64,14 +65,33 @@ class Listener:
         self.initiate_error = preconnection.initiate_error
         self.ready = preconnection.ready
 
-    async def wait_listening(self):
-        await self._listen_waiter
+    async def wait_listening(self, timeout=None):
+        if timeout is None:
+            await self._listen_waiter
+        else:
+            await asyncio.wait_for(self._listen_waiter, timeout)
         return self
 
-    def accept(self):
+    def accept(self, timeout=None):
+        if self._accepted_connections:
+            async def _return_queued_connection():
+                return self._accepted_connections.pop(0)
+
+            return self.loop.create_task(_return_queued_connection())
+
         waiter = self.loop.create_future()
         self._connection_waiters.append(waiter)
-        return waiter
+
+        async def _wait_for_connection():
+            try:
+                if timeout is None:
+                    return await waiter
+                return await asyncio.wait_for(waiter, timeout)
+            finally:
+                if waiter in self._connection_waiters:
+                    self._connection_waiters.remove(waiter)
+
+        return self.loop.create_task(_wait_for_connection())
 
     def _mark_listening(self):
         self.state = ConnectionState.ESTABLISHED
@@ -86,6 +106,7 @@ class Listener:
             if not waiter.done():
                 waiter.set_exception(ConnectionAbortedError("Listener stopped"))
         self._connection_waiters.clear()
+        self._accepted_connections.clear()
 
     def _fail_listen(self, error):
         self.last_error = error
@@ -105,6 +126,8 @@ class Listener:
             waiter = self._connection_waiters.pop(0)
             if not waiter.done():
                 waiter.set_result(connection)
+        else:
+            self._accepted_connections.append(connection)
         schedule_callback(self.loop, self.connection_received, (connection,))
 
     def get_properties(self):
@@ -120,8 +143,11 @@ class Listener:
             },
         }
 
-    async def wait_stopped(self):
-        await self._stopped_waiter
+    async def wait_stopped(self, timeout=None):
+        if timeout is None:
+            await self._stopped_waiter
+        else:
+            await asyncio.wait_for(self._stopped_waiter, timeout)
         return self
 
     async def stop(self):

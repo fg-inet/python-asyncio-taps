@@ -51,7 +51,13 @@ class ClientHarness:
         self.connection.on_received(self.handle_received)
         self.connection.on_received_partial(self.handle_received_partial)
         self.connection.on_closed(self.handle_closed)
-        await self.connection.send_message(self.data_to_send)
+        context = None
+        if not self.reliable:
+            context = self.connection.new_message_context(
+                safelyReplayable=True,
+                final=False,
+            )
+        await self.connection.send_message(self.data_to_send, context)
 
     async def main(self,
                    data_to_send="Hello\n",
@@ -65,6 +71,7 @@ class ClientHarness:
         self.data_to_send = data_to_send
         self.stop_at_sent = stop_at_sent
         self.yangfile = yangfile
+        self.reliable = reliable
         self.loop = asyncio.get_running_loop()
 
         ep = taps.RemoteEndpoint()

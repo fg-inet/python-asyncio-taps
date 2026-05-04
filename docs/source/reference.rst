@@ -39,6 +39,8 @@ Security Parameters
 
 		.. automethod:: add_identity
 		.. automethod:: add_trust_ca
+		.. automethod:: add_allowed_security_protocol
+		.. automethod:: add_pinned_server_certificate
 		.. automethod:: add_alpn_protocol
 		.. automethod:: with_server_name
 		.. automethod:: disable_peer_authentication
@@ -49,14 +51,26 @@ Preconnection
 	.. autoclass:: Preconnection
 
 		.. automethod:: initiate
+		.. automethod:: initiate_with_send
 		.. automethod:: listen
+		.. automethod:: rendezvous
 		.. automethod:: resolve
 		.. automethod:: add_framer
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
+		.. automethod:: on_establishment_error
 		.. automethod:: on_connection_received
 		.. automethod:: on_listen_error
 		.. automethod:: on_stopped
+		.. automethod:: on_rendezvous_done
+
+Rendezvous Result
+-----------------
+	.. autoclass:: RendezvousResult
+
+		.. automethod:: wait_ready
+		.. automethod:: wait_listening
+		.. automethod:: close
 
 Connection
 ----------
@@ -73,17 +87,38 @@ Connection
 		.. automethod:: receive_message
 		.. automethod:: wait_ready
 		.. automethod:: wait_closed
+		.. automethod:: note_path_change
 		.. automethod:: close
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
+		.. automethod:: on_establishment_error
+		.. automethod:: on_rendezvous_done
 		.. automethod:: on_sent
 		.. automethod:: on_send_error
 		.. automethod:: on_expired
 		.. automethod:: on_received
 		.. automethod:: on_received_partial
 		.. automethod:: on_receive_error
+		.. automethod:: on_soft_error
+		.. automethod:: on_path_change
 		.. automethod:: on_connection_error
 		.. automethod:: on_closed
+
+Listener
+--------
+	.. autoclass:: Listener
+
+		.. automethod:: wait_listening
+		.. automethod:: accept
+		.. automethod:: wait_stopped
+		.. automethod:: stop
+
+Connection Group
+----------------
+	.. autoclass:: ConnectionGroup
+
+		.. automethod:: close
+		.. automethod:: abort
 
 Framer
 ------

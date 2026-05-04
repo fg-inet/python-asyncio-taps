@@ -76,14 +76,23 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send messages
-        await self.connection.send("Hello\n")
-        await self.connection.send("There")
-        await self.connection.send("Friend")
-        await self.connection.send("How")
-        await self.connection.send("Are")
-        await self.connection.send("You\n")
-        await self.connection.send("Today?\n")
-        await self.connection.send("343536")
+        async def send_message(data):
+            send_context = None
+            if self.connection.protocol == "udp":
+                send_context = self.connection.new_message_context(
+                    safelyReplayable=True,
+                    final=False,
+                )
+            await self.connection.send(data, send_context)
+
+        await send_message("Hello\n")
+        await send_message("There")
+        await send_message("Friend")
+        await send_message("How")
+        await send_message("Are")
+        await send_message("You\n")
+        await send_message("Today?\n")
+        await send_message("343536")
         taps.print_time("send called.", color)
 
     async def main(self, args):
