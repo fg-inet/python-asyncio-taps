@@ -20,11 +20,25 @@ class TestClient():
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        taps.print_time("Received partial message " + str(data) + ".", color)
+        taps.print_time(
+            "Received partial message "
+            + str(data)
+            + " (end_of_message="
+            + str(context.end_of_message)
+            + ").",
+            color,
+        )
         # self.loop.stop()
 
     async def handle_received(self, data, context, connection):
-        taps.print_time("Received message " + str(data) + ".", color)
+        taps.print_time(
+            "Received message "
+            + str(data)
+            + " from "
+            + str(context.addr)
+            + ".",
+            color,
+        )
         # self.loop.stop()
 
     async def handle_sent(self, message_ref, connection):
@@ -62,15 +76,15 @@ class TestClient():
         taps.print_time("Connection cbs set.", color)
 
         # Send messages
-        await self.connection.send_message("Hello\n")
-        await self.connection.send_message("There")
-        await self.connection.send_message("Friend")
-        await self.connection.send_message("How")
-        await self.connection.send_message("Are")
-        await self.connection.send_message("You\n")
-        await self.connection.send_message("Today?\n")
-        await self.connection.send_message("343536")
-        taps.print_time("send_message called.", color)
+        await self.connection.send("Hello\n")
+        await self.connection.send("There")
+        await self.connection.send("Friend")
+        await self.connection.send("How")
+        await self.connection.send("Are")
+        await self.connection.send("You\n")
+        await self.connection.send("Today?\n")
+        await self.connection.send("343536")
+        taps.print_time("send called.", color)
 
     async def main(self, args):
         self.loop = asyncio.get_running_loop()

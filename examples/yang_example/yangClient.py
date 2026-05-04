@@ -20,11 +20,25 @@ class TestClient():
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        taps.print_time("Received partial message " + str(data) + ".", color)
+        taps.print_time(
+            "Received partial message "
+            + str(data)
+            + " (end_of_message="
+            + str(context.end_of_message)
+            + ").",
+            color,
+        )
         # self.loop.stop()
 
     async def handle_received(self, data, context, connection):
-        taps.print_time("Received message " + str(data) + ".", color)
+        taps.print_time(
+            "Received message "
+            + str(data)
+            + " from "
+            + str(context.addr)
+            + ".",
+            color,
+        )
         # self.loop.stop()
 
     async def handle_sent(self, message_ref, connection):
@@ -72,8 +86,8 @@ class TestClient():
         msgref = await self.connection.send_message("Today?\n")
         msgref = await self.connection.send_message("343536")"""
 
-        await self.connection.send_message("Hello\n")
-        taps.print_time("send_message called.", color)
+        await self.connection.send("Hello\n")
+        taps.print_time("send called.", color)
 
     async def main(self, args):
         self.loop = asyncio.get_running_loop()

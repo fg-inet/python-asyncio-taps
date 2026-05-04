@@ -1,5 +1,6 @@
 import asyncio
 import ssl
+from copy import deepcopy
 from xml.etree.ElementTree import fromstring
 
 from .connection import Connection
@@ -53,8 +54,6 @@ class Preconnection:
         self.remote_endpoint = remote_endpoint
         self.transport_properties = transport_properties or TransportProperties()
         self.security_parameters = security_parameters
-        self._frozen = False
-
         if event_loop is not None:
             self.loop = event_loop
         else:
@@ -89,7 +88,6 @@ class Preconnection:
             self.security_context = None
 
     def from_yang(self, frmat, text):
-        self._ensure_mutable()
         if frmat == YANG_FMT_XML:
             validate(frmat, text)
             xml_text = text
@@ -184,49 +182,51 @@ class Preconnection:
         self.security_parameters = sp
         return self
 
-    def _ensure_mutable(self):
-        if self._frozen:
-            raise RuntimeError(
-                "Preconnection configuration is immutable after initiate() or listen()."
-            )
-
-    def _freeze(self):
-        self._frozen = True
-
-    def is_frozen(self):
-        return self._frozen
+    def clone(self):
+        cloned = Preconnection(
+            local_endpoint=self.local_endpoint.clone() if self.local_endpoint else None,
+            remote_endpoint=self.remote_endpoint.clone() if self.remote_endpoint else None,
+            transport_properties=TransportProperties(
+                selection_properties=self.transport_properties.get_selection_properties(),
+                connection_properties=self.transport_properties.get_connection_properties(),
+            ),
+            security_parameters=deepcopy(self.security_parameters),
+            event_loop=self.loop,
+        )
+        cloned.read = self.read
+        cloned.initiate_error = self.initiate_error
+        cloned.connection_received = self.connection_received
+        cloned.listen_error = self.listen_error
+        cloned.stopped = self.stopped
+        cloned.ready = self.ready
+        cloned.framer = self.framer
+        return cloned
 
     def add_local_endpoint(self, endpoint):
-        self._ensure_mutable()
         self.local_endpoint = endpoint
         return self
 
     def add_remote_endpoint(self, endpoint):
-        self._ensure_mutable()
         self.remote_endpoint = endpoint
         return self
 
     def add_local_address(self, address):
-        self._ensure_mutable()
         if self.local_endpoint is None:
             self.local_endpoint = LocalEndpoint()
         self.local_endpoint.with_address(address)
         return self
 
     def add_remote_address(self, address):
-        self._ensure_mutable()
         if self.remote_endpoint is None:
             self.remote_endpoint = RemoteEndpoint()
         self.remote_endpoint.with_address(address)
         return self
 
     def add_framer(self, framer):
-        self._ensure_mutable()
         self.framer = framer
         return self
 
     def set_property(self, prop, value):
-        self._ensure_mutable()
         self.transport_properties.set_property(prop, value)
         return self
 
@@ -268,13 +268,17 @@ class Preconnection:
             raise Exception("A remote endpoint needs "
                             "to be specified to initiate")
         logger.info("Initiating connection.")
-        self._freeze()
 
         new_connection = Connection(self)
         # Race the candidate sets
         new_connection.race_task = self.loop.create_task(new_connection.race())
         logger.info("Returning connection object.")
         return new_connection
+
+    async def initiate_with_send(self, data, message_context=None, end_of_message=True):
+        connection = await self.initiate()
+        connection._pending_message = (data, message_context, end_of_message)
+        return connection
 
     async def listen(self):
         """ Tries to start a listener, first chooses candidate protocol and
@@ -283,7 +287,6 @@ class Preconnection:
         if self.local_endpoint is None:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
-        self._freeze()
         listener = Listener(self)
         # Create start_listener task so we can return right away
         listener.listen_task = self.loop.create_task(listener.start_listener())

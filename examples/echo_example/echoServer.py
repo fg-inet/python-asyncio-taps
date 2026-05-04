@@ -36,14 +36,18 @@ class TestServer:
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        logger.info("Received partial message " + str(data) + ".")
+        logger.info(
+            "Received partial message %s (end_of_message=%s).",
+            data,
+            context.end_of_message,
+        )
         await self.connection.receive(min_incomplete_length=1, max_length=5)
-        await self.connection.send_message(data)
+        await self.connection.send(data)
 
     async def handle_received(self, data, context, connection):
-        logger.info("Received message " + str(data) + ".")
+        logger.info("Received message %s from %s.", data, context.addr)
         await self.connection.receive(min_incomplete_length=1, max_length=5)
-        await self.connection.send_message(data)
+        await self.connection.send(data)
 
     async def handle_listen_error(self):
         logger.warning("Listen Error occured.")

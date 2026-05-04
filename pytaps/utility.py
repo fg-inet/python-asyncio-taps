@@ -1,7 +1,9 @@
 import asyncio
 import datetime
 import logging
+import socket
 import warnings
+from dataclasses import dataclass
 from enum import Enum
 
 from pytaps.transportProperties import (
@@ -66,75 +68,145 @@ def setup_logger(module, color="white"):
     return logger
 
 
-def create_candidates(connection):
-    """ Decides which protocols are candidates and then orders them
-    according to the TAPS interface draft
-    """
-    # Get the protocols know to the implementation from transportProperties
-    available_protocols = get_protocols()
+@dataclass(frozen=True)
+class Candidate:
+    protocol: str
+    remote_address: str
+    address_family: int
+    path: str = "default"
+    local_address: str | None = None
 
-    # At the beginning, all protocols are candidates
-    candidate_protocols = dict([(row["name"], list((0, 0)))
-                                for row in available_protocols])
 
-    # Iterate over all available protocols and over all properties
-    for protocol in available_protocols:
-        for transport_property in connection.transport_properties.selection_properties:
-            canonical_property = canonicalize_property_name(transport_property)
-            property_value = connection.transport_properties.selection_properties[
-                canonical_property
-            ]
+def _preference_weight(property_name, transport_properties):
+    if property_name in transport_properties.get_explicit_selection_properties():
+        return 2
+    return 1
 
+
+def _supports_selection_property(protocol, property_name, property_value):
+    if property_name not in protocol:
+        return None
+    supported_value = protocol[property_name]
+    if property_name == "multipath" and isinstance(property_value, str):
+        return property_value == "Disabled" or supported_value is not False
+    if property_name == "advertisesAltaddr":
+        return bool(supported_value) if property_value else True
+    return supported_value is not False
+
+
+def rank_protocol_candidates(transport_properties):
+    """Rank protocol branches per RFC 9623 sorting guidance."""
+    ranked_protocols = []
+    for protocol in get_protocols():
+        prefer_score = 0
+        avoid_score = 0
+        excluded = False
+
+        for property_name, property_value in transport_properties.selection_properties.items():
+            canonical_property = canonicalize_property_name(property_name)
             if canonical_property in {"direction", "interface", "pvd"}:
                 continue
 
-            if canonical_property not in protocol:
+            support = _supports_selection_property(protocol, canonical_property, property_value)
+            if support is None:
                 continue
 
-            protocol_supports_property = protocol[canonical_property] is not False
+            weight = _preference_weight(canonical_property, transport_properties)
+            if property_value is PreferenceLevel.PROHIBIT and support:
+                excluded = True
+                break
+            if property_value is PreferenceLevel.REQUIRE and not support:
+                excluded = True
+                break
+            if property_value is PreferenceLevel.PREFER and support:
+                prefer_score += weight
+            if property_value is PreferenceLevel.AVOID and support:
+                avoid_score += weight
 
-            if canonical_property == "multipath" and isinstance(property_value, str):
-                if property_value != "Disabled" and not protocol_supports_property:
-                    if protocol["name"] in candidate_protocols:
-                        del candidate_protocols[protocol["name"]]
-                elif property_value != "Disabled" and protocol_supports_property:
-                    candidate_protocols[protocol["name"]][0] += 1
-                continue
+        if not excluded:
+            ranked_protocols.append((protocol, prefer_score, avoid_score))
 
-            if canonical_property == "advertisesAltaddr" and property_value:
-                if not protocol_supports_property and protocol["name"] in candidate_protocols:
-                    del candidate_protocols[protocol["name"]]
-                elif protocol_supports_property:
-                    candidate_protocols[protocol["name"]][0] += 1
-                continue
+    ranked_protocols.sort(
+        key=lambda value: (
+            -value[1],
+            value[2],
+            value[0]["name"],
+        )
+    )
+    return ranked_protocols
 
-            # If a protocol has a prohibited property remove it
-            if property_value is PreferenceLevel.PROHIBIT:
-                if (protocol_supports_property and
-                        protocol["name"] in candidate_protocols):
-                    del candidate_protocols[protocol["name"]]
-            # If a protocol doesnt have a required property remove it
-            if property_value is PreferenceLevel.REQUIRE:
-                if (not protocol_supports_property and
-                        protocol["name"] in candidate_protocols):
-                    del candidate_protocols[protocol["name"]]
-            # Count how many PREFER properties each protocol has
-            if property_value is PreferenceLevel.PREFER:
-                if (protocol_supports_property and
-                        protocol["name"] in candidate_protocols):
-                    candidate_protocols[protocol["name"]][0] += 1
-            # Count how many AVOID properties each protocol has
-            if property_value is PreferenceLevel.AVOID:
-                if (protocol_supports_property and
-                        protocol["name"] in candidate_protocols):
-                    candidate_protocols[protocol["name"]][1] -= 1
 
-    # Sort candidates by number of PREFERs and then by AVOIDs on ties
-    sorted_candidates = sorted(candidate_protocols.items(),
-                               key=lambda value: (value[1][0],
-                                                  value[1][1]), reverse=True)
+def rank_path_candidates(local_endpoint, transport_properties):
+    if local_endpoint is None or not local_endpoint.interface:
+        return [("default", None)]
 
-    return sorted_candidates
+    interface_preferences = {
+        interface_id: preference
+        for preference, interface_id in transport_properties.selection_properties.get("interface", set())
+    }
+
+    required_interfaces = {
+        interface_id
+        for interface_id, preference in interface_preferences.items()
+        if preference is PreferenceLevel.REQUIRE
+    }
+    prohibited_interfaces = {
+        interface_id
+        for interface_id, preference in interface_preferences.items()
+        if preference is PreferenceLevel.PROHIBIT
+    }
+
+    ranked_paths = []
+    for interface_id in local_endpoint.interface:
+        if interface_id in prohibited_interfaces:
+            continue
+        if required_interfaces and interface_id not in required_interfaces:
+            continue
+
+        preference = interface_preferences.get(interface_id, PreferenceLevel.IGNORE)
+        prefer_score = 1 if preference is PreferenceLevel.PREFER else 0
+        avoid_score = 1 if preference is PreferenceLevel.AVOID else 0
+        ranked_paths.append((interface_id, (prefer_score, avoid_score)))
+
+    ranked_paths.sort(key=lambda value: (-value[1][0], value[1][1], value[0]))
+    return [(interface_id, interface_id) for interface_id, _score in ranked_paths]
+
+
+def order_remote_addresses(remote_addrs):
+    def sort_key(entry):
+        family, address = entry
+        family_rank = 1 if family == socket.AddressFamily.AF_INET6 else 0
+        return (family_rank, address)
+
+    return sorted(remote_addrs, key=lambda entry: (-sort_key(entry)[0], sort_key(entry)[1]))
+
+
+def build_protocol_candidates(transport_properties):
+    return [protocol_info[0]["name"] for protocol_info in rank_protocol_candidates(transport_properties)]
+
+
+def create_candidates(connection, remote_addrs=None):
+    """Build leaf candidates ordered as path -> protocol -> endpoint."""
+    if remote_addrs is None:
+        remote_addrs = []
+
+    ordered_paths = rank_path_candidates(connection.local_endpoint, connection.transport_properties)
+    ordered_protocols = build_protocol_candidates(connection.transport_properties)
+    ordered_remotes = order_remote_addresses(remote_addrs)
+
+    candidates = []
+    for path_label, _path_interface in ordered_paths:
+        for protocol_name in ordered_protocols:
+            for family, remote_address in ordered_remotes:
+                candidates.append(
+                    Candidate(
+                        protocol=protocol_name,
+                        remote_address=remote_address,
+                        address_family=family,
+                        path=path_label,
+                    )
+                )
+    return candidates
 
 
 # Define our own sleep function which keeps track of its running calls

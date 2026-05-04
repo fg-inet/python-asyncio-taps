@@ -10,7 +10,7 @@ from .connection import Connection
 from .endpoint import RemoteEndpoint
 from .multicast import do_join, do_leave
 from .transports import TcpTransport, UdpTransport
-from .utility import ConnectionState, create_candidates, setup_logger
+from .utility import ConnectionState, build_protocol_candidates, setup_logger
 
 logger = setup_logger(__name__, "cyan")
 
@@ -63,7 +63,7 @@ class Listener:
                     ".")
 
         # Create set of candidate protocols
-        protocol_candidates = create_candidates(self)
+        protocol_candidates = build_protocol_candidates(self.transport_properties)
 
         if self.remote_endpoint:
             if not self.remote_endpoint.address:
@@ -114,7 +114,7 @@ class Listener:
 
         # Get all combinations of protocols and remote IP addresses
         # to listen on all of them
-        candidate_set = [protocol + (address,)
+        candidate_set = [(protocol, address)
                          for address in all_addrs
                          for protocol in protocol_candidates]
 
@@ -123,7 +123,7 @@ class Listener:
             try:
                 if candidate[0] == 'udp':
                     self.protocol = 'udp'
-                    self.local_endpoint.address = [candidate[2]]
+                    self.local_endpoint.address = [candidate[1]]
                     # multicast_receiver = False
                     # See if the address of the local endpoint
                     # is a multicast address
@@ -151,7 +151,7 @@ class Listener:
                                 self.local_endpoint.port))
                 elif candidate[0] == 'tcp':
                     self.protocol = 'tcp'
-                    self.local_endpoint.address = [candidate[2]]
+                    self.local_endpoint.address = [candidate[1]]
                     logger.info("TCP local endpoint: address " +
                                 str(self.local_endpoint.address) +
                                 " port: " + str(self.local_endpoint.port))

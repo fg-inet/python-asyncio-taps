@@ -62,11 +62,15 @@ class TestClient:
 
     async def handle_received_partial(self, data, context, end_of_message,
                                       connection):
-        logger.info("Received partial message " + str(data) + ".")
+        logger.info(
+            "Received partial message %s (end_of_message=%s).",
+            data,
+            context.end_of_message,
+        )
         # self.loop.stop()
 
     async def handle_received(self, data, context, connection):
-        logger.info("Received message " + str(data) + ".")
+        logger.info("Received message %s with context %s.", data, context)
         # self.loop.stop()
 
     async def handle_sent(self, message_ref, connection):
@@ -103,17 +107,17 @@ class TestClient:
         self.connection.on_received(self.handle_received)
         logger.info("Connection cbs set.")
 
-        await self.connection.send_message(("STR", "Hello there"))
-        await self.connection.send_message(("STR", "This is a test"))
-        await self.connection.send_message(("INT", 334353))
-        await self.connection.send_message(("STR", "Hope it worked"))
+        await self.connection.send(("STR", "Hello there"))
+        await self.connection.send(("STR", "This is a test"))
+        await self.connection.send(("INT", 334353))
+        await self.connection.send(("STR", "Hope it worked"))
         # Send message
         """
         msgref = await self.connection.send_message("This")
         msgref = await self.connection.send_message("Is")
         msgref = await self.connection.send_message("a")
         msgref = await self.connection.send_message("Test")"""
-        logger.info("send_message called.")
+        logger.info("send called.")
 
     async def main(self, args):
         self.loop = asyncio.get_running_loop()

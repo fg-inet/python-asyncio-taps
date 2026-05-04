@@ -5,11 +5,14 @@ except ImportError:
     netifaces = None
 
 from .connection_group import ConnectionGroup
+from .message import MessageContext
 from .transportProperties import TransportProperties, canonicalize_property_name
 from .transports import TcpTransport, UdpTransport
 from .utility import (
+    Candidate,
     ConnectionState,
     SleepClassForRacing,
+    build_protocol_candidates,
     create_candidates,
     setup_logger,
 )
@@ -56,6 +59,9 @@ class Connection:
         self.framer = preconnection.framer
         self.sleeper_for_racing = SleepClassForRacing()
         self.pending = []
+        self._originating_preconnection = preconnection
+        self._ready_waiter = self.loop.create_future()
+        self._pending_message = None
         # Security Context for SSL
         self.security_context = None
         # Current state of the connection object
@@ -84,6 +90,12 @@ class Connection:
         self.initiate_error = preconnection.initiate_error
         self.ready = preconnection.ready
 
+    def _coerce_message_context(self, message_context=None, *, end_of_message=True):
+        if message_context is None:
+            return MessageContext(end_of_message=end_of_message)
+        message_context.end_of_message = end_of_message
+        return message_context
+
     def set_property(self, prop, value):
         self.transport_properties.set_property(prop, value)
         canonical = canonicalize_property_name(prop)
@@ -95,7 +107,18 @@ class Connection:
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
+            "readOnly": {
+                "state": self.state.name,
+                "protocol": self.protocol,
+                "localEndpoint": self.local_endpoint,
+                "remoteEndpoint": self.remote_endpoint,
+                "groupSize": len(self.connection_group) if self.connection_group else 1,
+            },
         }
+
+    async def wait_ready(self):
+        await self._ready_waiter
+        return self
 
     def add_remote(self, remote_endpoints):
         for endpoint in remote_endpoints:
@@ -139,30 +162,60 @@ class Connection:
                 self.local_endpoint.without_interface(interface)
         return self.local_endpoint
 
-    def clone(self):
-        cloned_connection = self.__class__.__new__(self.__class__)
-        cloned_connection.__dict__ = self.__dict__.copy()
-        cloned_connection.local_endpoint = (
-            self.local_endpoint.clone() if self.local_endpoint else None
-        )
-        cloned_connection.remote_endpoint = (
-            self.remote_endpoint.clone() if self.remote_endpoint else None
-        )
-        cloned_connection.transport_properties = TransportProperties(
+    async def clone(self):
+        template = self._originating_preconnection.clone()
+        template.local_endpoint = self.local_endpoint.clone() if self.local_endpoint else None
+        template.remote_endpoint = self.remote_endpoint.clone() if self.remote_endpoint else None
+        template.transport_properties = TransportProperties(
             selection_properties=self.transport_properties.get_selection_properties(),
             connection_properties=self.transport_properties.get_connection_properties(),
         )
-        cloned_connection.transports = []
-        cloned_connection.pending = []
-        cloned_connection.sleeper_for_racing = SleepClassForRacing()
+        cloned_connection = await template.initiate()
         self.connection_group.add_connection(cloned_connection)
         return cloned_connection
+
+    async def send(self, data, message_context=None, end_of_message=True):
+        if isinstance(data, str):
+            data = data.encode()
+        context = self._coerce_message_context(
+            message_context,
+            end_of_message=end_of_message,
+        )
+        return self.transports[0].send(data, context, end_of_message)
+
+    async def initiate_with_send(self, data, message_context=None, end_of_message=True):
+        context = self._coerce_message_context(
+            message_context,
+            end_of_message=end_of_message,
+        )
+        self._pending_message = (data, context, end_of_message)
+        return self
+
+    async def close_group(self):
+        if self.connection_group:
+            await self.connection_group.close()
+
+    def abort(self, reason="Aborted by local endpoint"):
+        for transport in list(self.transports):
+            if getattr(transport, "transport", None) is not None:
+                transport.transport.close()
+        self.state = ConnectionState.CLOSED
+        if self.connection_error:
+            self.loop.create_task(self.connection_error(reason, self))
+
+    async def abort_group(self):
+        if self.connection_group:
+            await self.connection_group.abort()
+
+    def grouped_connections(self):
+        if self.connection_group is None:
+            return [self]
+        return list(self.connection_group.connections)
 
     async def race(self):
         # This is an active connection attempt
         self.active = True
-        # Create the set of possible protocol candidates
-        protocol_candidates = create_candidates(self)
+        protocol_candidates = build_protocol_candidates(self.transport_properties)
 
         if len(protocol_candidates) == 0:
             logger.critical("Candidate set is empty, aborting")
@@ -190,20 +243,33 @@ class Connection:
                     if info[0] == socket.AddressFamily.AF_INET]
                     )
             )
-            remote_addrs = remote_addrs_v6 + remote_addrs_v4
+            remote_addrs = [
+                (socket.AddressFamily.AF_INET6, address) for address in remote_addrs_v6
+            ] + [
+                (socket.AddressFamily.AF_INET, address) for address in remote_addrs_v4
+            ]
             logger.info("Resolved " + str(self.remote_endpoint.host_name) +
-                        " to " + str(remote_addrs))
+                        " to " + str([address for _, address in remote_addrs]))
 
         else:
-            remote_addrs = self.remote_endpoint.address
+            remote_addrs = []
+            for address in self.remote_endpoint.address:
+                family = (
+                    socket.AddressFamily.AF_INET6
+                    if ":" in address else socket.AddressFamily.AF_INET
+                )
+                remote_addrs.append((family, address))
             logger.info("Not resolving - using address " +
                         str(self.remote_endpoint.address) + " --> " +
-                        str(remote_addrs))
+                        str([address for _, address in remote_addrs]))
+
+        candidate_set = create_candidates(self, remote_addrs)
 
         if self.local_endpoint:
             # Local interface specified -->
             # try local addresses on that interface
             _require_netifaces()
+            local_addresses_by_family = {}
             for local_interface in self.local_endpoint.interface:
                 try:
                     # Unfortunately, link-local IPv6 addresses don't work
@@ -216,6 +282,10 @@ class Connection:
                     local_v4_addrs = [entry['addr']
                                       for entry in netifaces.ifaddresses
                                       (local_interface)[netifaces.AF_INET]]
+                    local_addresses_by_family[local_interface] = {
+                        socket.AddressFamily.AF_INET6: local_v6_addrs,
+                        socket.AddressFamily.AF_INET: local_v4_addrs,
+                    }
                     logger.info("Trying addresses of local interface " +
                                 str(self.local_endpoint.interface) + " --> " +
                                 str(local_v6_addrs) + ", " +
@@ -225,24 +295,24 @@ class Connection:
                                     str(self.local_endpoint.interface) + ": " +
                                     str(err))
                     # TODO throw error
-            # Build candidate set for racing
-            # based on combinations of protocol, local and remote IP address
-            candidate_set = [protocol + (remote_address,) + (local_address,)
-                             for remote_address in remote_addrs_v6
-                             for protocol in protocol_candidates
-                             for local_address in local_v6_addrs]
-            candidate_set += [protocol + (remote_address,) + (local_address,)
-                              for remote_address in remote_addrs_v4
-                              for protocol in protocol_candidates
-                              for local_address in local_v4_addrs]
+            expanded_candidates = []
+            for candidate in candidate_set:
+                if candidate.path == "default":
+                    expanded_candidates.append(candidate)
+                    continue
+                family_addrs = local_addresses_by_family.get(candidate.path, {})
+                for local_address in family_addrs.get(candidate.address_family, []):
+                    expanded_candidates.append(
+                        Candidate(
+                            protocol=candidate.protocol,
+                            remote_address=candidate.remote_address,
+                            address_family=candidate.address_family,
+                            path=candidate.path,
+                            local_address=local_address,
+                        )
+                    )
+            candidate_set = expanded_candidates
             logger.info("Final Candidates: " + str(candidate_set))
-
-        else:
-            # Build candidate set for racing
-            # based on combinations of protocol and remote IP address
-            candidate_set = [protocol + (address,)
-                             for address in remote_addrs
-                             for protocol in protocol_candidates]
 
         # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
@@ -251,23 +321,24 @@ class Connection:
                 logger.info("Connection established -- stop racing")
                 break
 
-            logger.info("Trying candidate protocol: " + str(candidate[0]) +
-                        " and remote address: " + str(candidate[2]) +
-                        (" and local address: " + str(candidate[3])
-                         if len(candidate) > 3 else ""))
-            if len(candidate) > 3:
+            logger.info("Trying candidate protocol: " + str(candidate.protocol) +
+                        " on path " + str(candidate.path) +
+                        " and remote address: " + str(candidate.remote_address) +
+                        (" and local address: " + str(candidate.local_address)
+                         if candidate.local_address else ""))
+            if candidate.local_address:
                 # bind to a specific local address
-                local_address_to_use = (candidate[3], None)
-                self.local_endpoint.address = candidate[3]
+                local_address_to_use = (candidate.local_address, None)
+                self.local_endpoint.address = [candidate.local_address]
             else:
                 local_address_to_use = None
 
-            if candidate[0] == 'udp':
+            if candidate.protocol == 'udp':
                 self.protocol = 'udp'
                 logger.info("Creating UDP connect task with remote addr " +
-                            str(candidate[2]) + ", port " +
+                            str(candidate.remote_address) + ", port " +
                             str(self.remote_endpoint.port))
-                self.remote_endpoint.address = candidate[2]
+                self.remote_endpoint.address = [candidate.remote_address]
 
                 # Create a datagram endpoint
                 self.loop.create_task(
@@ -275,7 +346,7 @@ class Connection:
                         lambda: UdpTransport(
                             connection=self,
                             remote_endpoint=self.remote_endpoint),
-                        remote_addr=(self.remote_endpoint.address,
+                        remote_addr=(self.remote_endpoint.address[0],
                                      self.remote_endpoint.port),
                         local_addr=local_address_to_use))
 
@@ -283,18 +354,18 @@ class Connection:
                             " -- stop racing")
                 break
 
-            elif candidate[0] == 'tcp':
+            elif candidate.protocol == 'tcp':
                 self.protocol = 'tcp'
-                logger.info("Creating TCP connect task to " + candidate[2] +
+                logger.info("Creating TCP connect task to " + candidate.remote_address +
                             ".")
-                self.remote_endpoint.address = candidate[2]
+                self.remote_endpoint.address = [candidate.remote_address]
                 # If the protocol is tcp, create a asyncio connection
                 self.loop.create_task(
                     self.loop.create_connection(
                         lambda: TcpTransport(
                             connection=self,
                             remote_endpoint=self.remote_endpoint),
-                        self.remote_endpoint.address,
+                        self.remote_endpoint.address[0],
                         self.remote_endpoint.port,
                         ssl=self.security_context,
                         server_hostname=(
@@ -304,7 +375,7 @@ class Connection:
                 # Wait before starting next connection attempt
                 await self.sleeper_for_racing.sleep(RACING_DELAY)
 
-    async def send_message(self, data):
+    async def send_message(self, data, message_context=None, end_of_message=True):
         """ Attempts to send data on the connection.
             Attributes:
                 data (string, required):
@@ -312,7 +383,7 @@ class Connection:
         """
         if isinstance(data, str):
             data = data.encode()
-        return self.transports[0].send(data)
+        return await self.send(data, message_context, end_of_message)
 
     async def receive(self, min_incomplete_length=float("inf"), max_length=-1):
         """ Queues the reception of a message.

@@ -10,9 +10,6 @@ import pytaps as taps  # noqa: E402
 
 
 class TestClient():
-    async def handle_ready(self, connection):
-        await self.connection.send_message("Hello\n")
-
     async def main(self):
         ep = taps.RemoteEndpoint()
         ep.with_hostname("localhost")
@@ -25,8 +22,7 @@ class TestClient():
 
         self.preconnection = taps.Preconnection(remote_endpoint=ep,
                                                 transport_properties=tp)
-        self.preconnection.on_ready(self.handle_ready)
-        self.connection = await self.preconnection.initiate()
+        self.connection = await self.preconnection.initiate_with_send("Hello\n")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ class TestServer():
         await connection.receive()
 
     async def handle_received(self, data, context, connection):
-        print(data)
+        print(data, context)
 
     async def main(self):
         lp = taps.LocalEndpoint()

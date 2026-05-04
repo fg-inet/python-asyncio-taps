@@ -145,6 +145,8 @@ class TransportProperties:
             for key, value in SELECTION_PROPERTY_DEFAULTS.items()
         }
         self.connection_properties = CONNECTION_PROPERTY_DEFAULTS.copy()
+        self.explicit_selection_properties = set()
+        self.explicit_connection_properties = set()
 
         if selection_properties:
             for prop, value in selection_properties.items():
@@ -163,26 +165,38 @@ class TransportProperties:
             value = normalize_direction(value)
         if canonical in self.connection_properties:
             self.connection_properties[canonical] = value
+            self.explicit_connection_properties.add(canonical)
         else:
             self.selection_properties[canonical] = value
+            self.explicit_selection_properties.add(canonical)
 
     def add(self, prop, value):
         self.set_property(prop, value)
 
     def require(self, prop):
-        self.selection_properties[canonicalize_property_name(prop)] = PreferenceLevel.REQUIRE
+        canonical = canonicalize_property_name(prop)
+        self.selection_properties[canonical] = PreferenceLevel.REQUIRE
+        self.explicit_selection_properties.add(canonical)
 
     def prefer(self, prop):
-        self.selection_properties[canonicalize_property_name(prop)] = PreferenceLevel.PREFER
+        canonical = canonicalize_property_name(prop)
+        self.selection_properties[canonical] = PreferenceLevel.PREFER
+        self.explicit_selection_properties.add(canonical)
 
     def ignore(self, prop):
-        self.selection_properties[canonicalize_property_name(prop)] = PreferenceLevel.IGNORE
+        canonical = canonicalize_property_name(prop)
+        self.selection_properties[canonical] = PreferenceLevel.IGNORE
+        self.explicit_selection_properties.add(canonical)
 
     def avoid(self, prop):
-        self.selection_properties[canonicalize_property_name(prop)] = PreferenceLevel.AVOID
+        canonical = canonicalize_property_name(prop)
+        self.selection_properties[canonical] = PreferenceLevel.AVOID
+        self.explicit_selection_properties.add(canonical)
 
     def prohibit(self, prop):
-        self.selection_properties[canonicalize_property_name(prop)] = PreferenceLevel.PROHIBIT
+        canonical = canonicalize_property_name(prop)
+        self.selection_properties[canonical] = PreferenceLevel.PROHIBIT
+        self.explicit_selection_properties.add(canonical)
 
     def default(self, prop):
         canonical = canonicalize_property_name(prop)
@@ -191,9 +205,11 @@ class TransportProperties:
             self.selection_properties[canonical] = (
                 default_value.copy() if isinstance(default_value, set) else default_value
             )
+            self.explicit_selection_properties.discard(canonical)
             return
         if canonical in CONNECTION_PROPERTY_DEFAULTS:
             self.connection_properties[canonical] = CONNECTION_PROPERTY_DEFAULTS[canonical]
+            self.explicit_connection_properties.discard(canonical)
             return
         raise KeyError(f"Unknown transport property: {prop}")
 
@@ -208,6 +224,9 @@ class TransportProperties:
 
     def get_connection_properties(self):
         return self.connection_properties.copy()
+
+    def get_explicit_selection_properties(self):
+        return set(self.explicit_selection_properties)
 
     def add_interface_preference(self, interface_id, preference):
         self.selection_properties["interface"].add((preference, interface_id))

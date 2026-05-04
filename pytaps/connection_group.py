@@ -24,6 +24,12 @@ class ConnectionGroup:
         if initial_connection is not None:
             self.add_connection(initial_connection)
 
+    def __iter__(self):
+        return iter(self.connections)
+
+    def __len__(self):
+        return len(self.connections)
+
     def add_connection(self, connection):
         if connection not in self.connections:
             self.connections.append(connection)
@@ -42,6 +48,14 @@ class ConnectionGroup:
         self.shared_connection_properties[prop] = value
         for connection in self.connections:
             connection.transport_properties.connection_properties[prop] = value
+
+    async def close(self):
+        for connection in list(self.connections):
+            connection.close()
+
+    async def abort(self):
+        for connection in list(self.connections):
+            connection.abort(reason="Connection group aborted")
 
     def _apply_shared_properties(self, connection):
         for prop, value in self.shared_connection_properties.items():

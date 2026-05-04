@@ -3,6 +3,7 @@ from .connection_group import ConnectionGroup as ConnectionGroup
 from .endpoint import LocalEndpoint as LocalEndpoint, RemoteEndpoint as RemoteEndpoint
 from .framer import DeframingFailed as DeframingFailed, Framer as Framer
 from .listener import Listener as Listener
+from .message import MessageContext as MessageContext
 from .multicast import do_join as do_join
 from .preconnection import Preconnection as Preconnection
 from .securityParameters import SecurityParameters as SecurityParameters
@@ -24,6 +25,7 @@ __all__ = [
     "Framer",
     "Listener",
     "LocalEndpoint",
+    "MessageContext",
     "PreferenceLevel",
     "Preconnection",
     "RemoteEndpoint",
