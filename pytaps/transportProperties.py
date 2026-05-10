@@ -249,3 +249,34 @@ class TransportProperties:
 
     def add_pvd_preference(self, pvd_id, preference):
         self.selection_properties["pvd"].add((preference, pvd_id))
+
+    def apply_profile(self, profile_name):
+        normalized = profile_name.replace("_", "-").lower()
+        if normalized == "reliable-inorder-stream":
+            self.require("reliability")
+            self.require("preserveOrder")
+            self.prohibit("preserveMsgBoundaries")
+            self.require("congestionControl")
+            return self
+        if normalized == "reliable-message":
+            self.require("reliability")
+            self.require("preserveMsgBoundaries")
+            self.require("preserveOrder")
+            self.require("congestionControl")
+            return self
+        if normalized == "unreliable-datagram":
+            self.prohibit("reliability")
+            self.require("preserveMsgBoundaries")
+            self.ignore("preserveOrder")
+            self.ignore("congestionControl")
+            return self
+        raise KeyError(f"Unknown transport property profile: {profile_name}")
+
+    def reliable_inorder_stream(self):
+        return self.apply_profile("reliable-inorder-stream")
+
+    def reliable_message(self):
+        return self.apply_profile("reliable-message")
+
+    def unreliable_datagram(self):
+        return self.apply_profile("unreliable-datagram")

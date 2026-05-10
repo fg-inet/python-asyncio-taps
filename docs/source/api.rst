@@ -33,6 +33,13 @@ The **default TransportProperties will result in a TCP connection**::
 
 	properties = taps.TransportProperties()
 
+PyTAPS also exposes RFC 9622-style convenience profiles for common transport
+intents::
+
+	properties = taps.TransportProperties().reliable_inorder_stream()
+	message_properties = taps.TransportProperties().reliable_message()
+	datagram_properties = taps.TransportProperties().unreliable_datagram()
+
 To use **TLS, add SecurityParameters** to the Preconnection.
 The default SecurityParameters result in the client using the default certificate trust store of the system to validate the peer's certificate, while not setting its own identity.
 
@@ -132,6 +139,14 @@ Sending data
 An application can send Messages through an established Connection as follows::
 
 	await connection.send(data)
+
+Message properties can be configured on a ``MessageContext`` and inherited from
+the ``Preconnection`` or ``Connection`` when set there as defaults::
+
+	preconnection.set_property("msgPriority", 10)
+	connection.set_property("msgCapacityProfile", "Low Latency/Interactive")
+	context = connection.new_message_context(msgLifetime=1.5)
+	await connection.send(data, context)
 
 Optionally, the application can specify a callback function to be called once the message has been sent, i.e., once PyTAPS has handed the data to the underlying implementation of the used transport protocol::
 

@@ -38,8 +38,9 @@ RFC 9622 checklist
 | ``Listener`` object                         | partial     | ``wait_listening()``, ``accept()``, ``stop()``, error        |
 |                                             |             | propagation, and lifecycle state are present.                |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| ``ConnectionGroup``                         | partial     | Group-wide close/abort and shared connection-property        |
-|                                             |             | propagation exist, but semantics are still lightweight.      |
+| ``ConnectionGroup``                         | partial     | Group-wide close/abort, shared connection-property           |
+|                                             |             | propagation, sorting by connection priority, and limit       |
+|                                             |             | enforcement now exist; broader RFC policy semantics remain.  |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Selection Properties                        | partial     | Clear split from connection properties with RFC-style        |
 |                                             |             | canonical names and a stronger security property set.        |
@@ -47,9 +48,9 @@ RFC 9622 checklist
 | Connection Properties                       | partial     | Query/update support exists, but the RFC catalog is not      |
 |                                             |             | complete yet.                                                |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Message Properties / Context                | partial     | ``msgPriority``, ``msgOrdered``, ``msgLifetime``,            |
-|                                             |             | ``safelyReplayable``, ``final``, batching, and addressing    |
-|                                             |             | metadata are implemented.                                    |
+| Message Properties / Context                | partial     | RFC-style helpers on ``MessageContext`` and                 |
+|                                             |             | ``ReceivedMessage`` now exist, along with inherited         |
+|                                             |             | defaults and richer receive-side metadata.                  |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Initiate``                                | partial     | Real candidate racing, failure propagation, and waiters      |
 |                                             |             | exist, but not all RFC establishment behaviors.              |
@@ -80,10 +81,12 @@ RFC 9622 checklist
 |                                             |             | and removal behavior.                                        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Property inspection and mutation            | partial     | Connection, preconnection, listener, and message property    |
-|                                             |             | accessors exist, but not yet a full RFC API map.             |
+|                                             |             | accessors now cover transport, message, and convenience      |
+|                                             |             | profile configuration, but the RFC map is not complete.      |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Ready / Closed / Error lifecycle events     | partial     | Much more explicit than the original code; still not a       |
-|                                             |             | complete RFC event matrix.                                   |
+| Ready / Closed / Error lifecycle events     | partial     | Much more explicit than the original code, with richer       |
+|                                             |             | read-only path and advisory state; still not a complete      |
+|                                             |             | RFC event matrix.                                            |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Sent / SendError / Expired events           | partial     | Sent and send-error callbacks exist, and expired messages    |
 |                                             |             | now trigger real runtime behavior.                           |
@@ -120,7 +123,7 @@ Largest remaining RFC 9622 gaps
 -------------------------------
 
 - Complete the RFC 9622 property catalog, especially the remaining connection
-  and message properties.
+  properties and receive-side metadata properties.
 - Expand the event model and advisory-error surface beyond the current subset.
 - Complete the remaining event and advisory-error surface around the now
   broader establishment API.

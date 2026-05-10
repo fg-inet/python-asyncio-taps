@@ -31,6 +31,14 @@ class ConnectionGroup:
         return len(self.connections)
 
     def add_connection(self, connection):
+        limit = self.shared_connection_properties.get("groupConnLimit")
+        if (
+            isinstance(limit, int)
+            and limit >= 0
+            and connection not in self.connections
+            and len(self.connections) >= limit
+        ):
+            raise RuntimeError("ConnectionGroup limit reached")
         if connection not in self.connections:
             self.connections.append(connection)
         connection.connection_group = self
@@ -48,6 +56,13 @@ class ConnectionGroup:
         self.shared_connection_properties[prop] = value
         for connection in self.connections:
             connection.transport_properties.connection_properties[prop] = value
+        if (
+            prop == "groupConnLimit"
+            and isinstance(value, int)
+            and value >= 0
+            and len(self.connections) > value
+        ):
+            raise RuntimeError("ConnectionGroup already exceeds the new groupConnLimit")
 
     async def close(self):
         for connection in list(self.connections):
@@ -56,6 +71,13 @@ class ConnectionGroup:
     async def abort(self):
         for connection in list(self.connections):
             connection.abort(reason="Connection group aborted")
+
+    def get_properties(self):
+        return {
+            "size": len(self.connections),
+            "connections": list(self.connections),
+            "sharedConnectionProperties": dict(self.shared_connection_properties),
+        }
 
     def _apply_shared_properties(self, connection):
         for prop, value in self.shared_connection_properties.items():

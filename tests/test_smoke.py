@@ -49,6 +49,27 @@ def test_message_context_properties_round_trip():
     assert properties["safelyReplayable"] is True
     assert properties["noFragmentation"] is True
     assert properties["noSegmentation"] is True
+    assert properties["msgLifetime"] == "Infinite"
+
+
+def test_message_context_supports_rfc_style_helpers():
+    context = taps.MessageContext()
+    context.add("msgPriority", 5)
+    context.add("msgLifetime", 3.5)
+    context.remote_address = "203.0.113.10"
+    context.remote_port = 443
+    context.local_address = "192.0.2.10"
+    context.local_port = 8443
+
+    remote = context.get_remote_endpoint()
+    local = context.get_local_endpoint()
+
+    assert context.get("msgPriority") == 5
+    assert context.get("msgLifetime") == 3.5
+    assert remote.address == ["203.0.113.10"]
+    assert remote.port == 443
+    assert local.address == ["192.0.2.10"]
+    assert local.port == 8443
 
 
 def test_transport_property_aliases_are_canonicalized():
@@ -62,6 +83,23 @@ def test_transport_property_aliases_are_canonicalized():
     assert properties.properties["preserveOrder"] is taps.PreferenceLevel.PROHIBIT
     assert properties.properties["direction"] == "Unidirectional Receive"
     assert properties.connection_properties["connPriority"] == 5
+
+
+def test_transport_property_profiles_match_rfc_style_convenience_profiles():
+    stream = taps.TransportProperties().reliable_inorder_stream()
+    message = taps.TransportProperties().reliable_message()
+    datagram = taps.TransportProperties().unreliable_datagram()
+
+    assert stream.get("reliability") is taps.PreferenceLevel.REQUIRE
+    assert stream.get("preserveOrder") is taps.PreferenceLevel.REQUIRE
+    assert stream.get("preserveMsgBoundaries") is taps.PreferenceLevel.PROHIBIT
+
+    assert message.get("reliability") is taps.PreferenceLevel.REQUIRE
+    assert message.get("preserveMsgBoundaries") is taps.PreferenceLevel.REQUIRE
+
+    assert datagram.get("reliability") is taps.PreferenceLevel.PROHIBIT
+    assert datagram.get("preserveMsgBoundaries") is taps.PreferenceLevel.REQUIRE
+    assert datagram.get("congestionControl") is taps.PreferenceLevel.IGNORE
 
 
 def test_preconnection_is_reusable_after_initiate():
@@ -104,6 +142,47 @@ def test_connection_group_property_propagation():
     assert len(connection.grouped_connections()) == 2
 
 
+def test_grouped_connections_are_sorted_by_connection_priority():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    first = taps.Connection(preconnection)
+    second = taps.Connection(preconnection)
+    third = taps.Connection(preconnection)
+    first.connection_group.add_connection(second)
+    first.connection_group.add_connection(third)
+
+    first.set_property("connPriority", 50)
+    second.set_property("connPriority", 10)
+    third.set_property("connPriority", 30)
+
+    ordered = first.grouped_connections()
+    first.loop.close()
+
+    assert ordered == [second, third, first]
+
+
+def test_connection_group_limit_is_enforced():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    first = taps.Connection(preconnection)
+    second = taps.Connection(preconnection)
+    third = taps.Connection(preconnection)
+
+    first.connection_group.set_property("groupConnLimit", 2)
+    first.connection_group.add_connection(second)
+
+    with pytest.raises(RuntimeError, match="limit"):
+        first.connection_group.add_connection(third)
+
+    first.loop.close()
+
+
 def test_preconnection_clone_copies_configuration():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     local = taps.LocalEndpoint().with_address("127.0.0.1").with_interface("lo0")
@@ -113,12 +192,14 @@ def test_preconnection_clone_copies_configuration():
         event_loop=asyncio.new_event_loop(),
     )
     preconnection.set_property("connPriority", 5)
+    preconnection.set_property("msgPriority", 7)
     clone = preconnection.clone()
 
     assert clone is not preconnection
     assert clone.local_endpoint.address == ["127.0.0.1"]
     assert clone.local_endpoint.interface == ["lo0"]
     assert clone.get_properties()["connection"]["connPriority"] == 5
+    assert clone.get_properties()["message"]["msgPriority"] == 7
 
 
 def test_protocol_candidates_follow_require_prefer_avoid_order():
@@ -242,6 +323,27 @@ def test_connection_message_property_helpers():
     assert connection.get_message_properties(context)["msgReliable"] is False
     assert connection.get_message_properties(context)["final"] is False
     assert connection.get_message_properties(context)["safelyReplayable"] is True
+
+
+def test_message_defaults_can_be_set_on_preconnection_and_connection():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.set_property("msgPriority", 9)
+    preconnection.set_property("msgCapacityProfile", "Low Latency/Interactive")
+
+    connection = taps.Connection(preconnection)
+    context = connection._coerce_message_context()
+    connection.set_property("msgLifetime", 1.5)
+    inherited = connection._coerce_message_context()
+    connection.loop.close()
+
+    assert preconnection.get_properties()["message"]["msgPriority"] == 9
+    assert context.priority == 9
+    assert context.capacity_profile == "Low Latency/Interactive"
+    assert inherited.lifetime == 1.5
 
 
 def test_connection_send_batch_assigns_shared_batch_id():
@@ -528,6 +630,94 @@ def test_received_message_exposes_message_properties():
     assert received.get_properties()["final"] is False
 
 
+def test_received_message_exposes_receive_side_helpers():
+    context = taps.MessageContext(
+        priority=3,
+        final=False,
+        end_of_message=True,
+        remote_address="203.0.113.10",
+        remote_port=4444,
+        local_address="192.0.2.10",
+        local_port=5555,
+        received_at=12.5,
+        receive_sequence=7,
+    )
+    received = taps.ReceivedMessage(b"hello", context, object())
+
+    assert received.get("msgPriority") == 3
+    assert received.is_complete is True
+    assert received.remote_endpoint.address == ["203.0.113.10"]
+    assert received.remote_endpoint.port == 4444
+    assert received.local_endpoint.address == ["192.0.2.10"]
+    assert received.local_endpoint.port == 5555
+    assert received.get_read_only_properties()["receivedAt"] == 12.5
+    assert received.get_read_only_properties()["receiveSequence"] == 7
+
+
+def test_connection_tracks_soft_errors_and_path_changes():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.1").with_port(1111)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    soft_errors = {}
+    path_changes = {}
+
+    async def handle_soft_error(reason, affected_connection):
+        soft_errors["reason"] = reason
+        soft_errors["connection"] = affected_connection
+
+    async def handle_path_change(previous_path, current_path, affected_connection):
+        path_changes["previous"] = previous_path
+        path_changes["current"] = current_path
+        path_changes["connection"] = affected_connection
+
+    connection.on_soft_error(handle_soft_error)
+    connection.on_path_change(handle_path_change)
+    connection.note_soft_error("ECN CE marks observed")
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection.loop.run_until_complete(asyncio.sleep(0))
+    properties = connection.get_properties()
+    connection.loop.close()
+
+    assert soft_errors["reason"] == "ECN CE marks observed"
+    assert soft_errors["connection"] is connection
+    assert path_changes["previous"] == {"local": None, "remote": None}
+    assert path_changes["current"]["local"] == ("192.0.2.10", 12345)
+    assert path_changes["current"]["remote"] == ("203.0.113.10", 443)
+    assert path_changes["connection"] is connection
+    assert properties["readOnly"]["softErrors"] == ["ECN CE marks observed"]
+    assert properties["readOnly"]["currentPath"]["remote"] == ("203.0.113.10", 443)
+    assert properties["readOnly"]["previousPath"] == {"local": None, "remote": None}
+
+
+def test_group_properties_expose_shared_connection_state():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    clone = taps.Connection(preconnection)
+    connection.connection_group.add_connection(clone)
+    connection.set_property("connTimeout", 15)
+
+    properties = connection.get_group_properties()
+    connection.loop.close()
+
+    assert properties["size"] == 2
+    assert clone in properties["connections"]
+    assert properties["sharedConnectionProperties"]["connTimeout"] == 15
+
+
 def test_framer_helper_methods_align_with_documented_api():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
@@ -599,6 +789,8 @@ def test_udp_receive_delivers_message_context():
     assert received["connection"] is connection
     assert received["context"].addr == ("203.0.113.10", 4444)
     assert received["context"].end_of_message is True
+    assert received["context"].receive_sequence == 1
+    assert received["context"].received_at is not None
 
 
 def test_receive_returns_received_message_for_udp():
@@ -620,6 +812,7 @@ def test_receive_returns_received_message_for_udp():
     assert received_message.context.addr == ("203.0.113.10", 4444)
     assert received_message.end_of_message is True
     assert received_message.connection is connection
+    assert received_message.get_read_only_properties()["receiveSequence"] == 1
 
 
 def test_receive_returns_partial_stream_delivery():
@@ -641,6 +834,7 @@ def test_receive_returns_partial_stream_delivery():
     assert received_message.context.end_of_message is False
     assert received_message.connection is connection
     assert received_message.context.final is False
+    assert received_message.get_read_only_properties()["receiveSequence"] == 1
 
 
 def test_partial_stream_receive_reuses_message_context_until_eof():
@@ -670,6 +864,7 @@ def test_partial_stream_receive_reuses_message_context_until_eof():
     assert third_message.data == b"o"
     assert first_message.context is second_message.context
     assert second_message.context is third_message.context
+    assert first_message.context.receive_sequence == 3
     assert third_message.end_of_message is True
     assert third_message.context.final is True
 

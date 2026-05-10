@@ -136,6 +136,7 @@ class Listener:
             "connection": self.transport_properties.get_connection_properties(),
             "readOnly": {
                 "state": self.state.name,
+                "connState": self.state.name.title(),
                 "protocol": self.protocol,
                 "localEndpoint": self.local_endpoint,
                 "remoteEndpoint": self.remote_endpoint,

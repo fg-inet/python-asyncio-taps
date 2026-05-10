@@ -7,6 +7,7 @@ from xml.etree.ElementTree import fromstring
 from .connection import Connection
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .listener import Listener
+from .message import MessageContext, is_message_property
 from .securityParameters import SecurityParameters
 from .transportProperties import TransportProperties, normalize_direction
 from .transports import UdpTransport
@@ -73,6 +74,7 @@ class Preconnection:
         self.remote_endpoint = remote_endpoint
         self.transport_properties = transport_properties or TransportProperties()
         self.security_parameters = security_parameters
+        self.message_properties = MessageContext()
         if event_loop is not None:
             self.loop = event_loop
         else:
@@ -317,6 +319,7 @@ class Preconnection:
             security_parameters=deepcopy(self.security_parameters),
             event_loop=self.loop,
         )
+        cloned.message_properties = deepcopy(self.message_properties)
         cloned.read = self.read
         cloned.initiate_error = self.initiate_error
         cloned.connection_received = self.connection_received
@@ -353,13 +356,17 @@ class Preconnection:
         return self
 
     def set_property(self, prop, value):
-        self.transport_properties.set_property(prop, value)
+        if is_message_property(prop):
+            self.message_properties.set_property(prop, value)
+        else:
+            self.transport_properties.set_property(prop, value)
         return self
 
     def get_properties(self):
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
+            "message": self.message_properties.get_properties(),
             "security": (
                 self.security_parameters.get_configuration()
                 if self.security_parameters else {}

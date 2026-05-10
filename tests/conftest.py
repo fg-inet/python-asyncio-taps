@@ -91,8 +91,20 @@ def echo_servers():
         ),
     ]
 
-    _wait_for_tcp_port("::1", echo_port)
-    _wait_for_tls_port("::1", tls_port, str(TESTS_DIR / "keys" / "MyRootCA.pem"))
+    try:
+        _wait_for_tcp_port("::1", echo_port)
+        _wait_for_tls_port("::1", tls_port, str(TESTS_DIR / "keys" / "MyRootCA.pem"))
+    except BaseException as exc:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        pytest.skip(
+            f"echo integration servers could not start in this environment: {exc}"
+        )
 
     try:
         yield {

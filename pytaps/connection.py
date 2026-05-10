@@ -1,13 +1,19 @@
 import asyncio
 import ipaddress
 import socket
+from copy import deepcopy
 try:
     import netifaces
 except ImportError:
     netifaces = None
 
 from .connection_group import ConnectionGroup
-from .message import MessageContext, ReceivedMessage
+from .message import (
+    MESSAGE_PROPERTY_DEFAULTS,
+    MessageContext,
+    ReceivedMessage,
+    is_message_property,
+)
 from .transportProperties import (
     PreferenceLevel,
     TransportProperties,
@@ -61,6 +67,7 @@ class Connection:
         )
         self.security_parameters = preconnection.security_parameters
         self.security_context = preconnection.security_context
+        self.message_properties = deepcopy(preconnection.message_properties)
         self.loop = preconnection.loop
         self.active = False
         self.framer = preconnection.framer
@@ -82,6 +89,7 @@ class Connection:
         self.race_task = None
         self._batch_counter = 0
         self._send_sequence = 0
+        self._receive_sequence = 0
         self._queued_messages = []
         self._sent_final_message = False
         self._received_final_message = False
@@ -90,6 +98,11 @@ class Connection:
             "local": None,
             "remote": None,
         }
+        self._previous_path = {
+            "local": None,
+            "remote": None,
+        }
+        self._soft_errors = []
 
         # Callbacks
         self.writer = None
@@ -121,6 +134,10 @@ class Connection:
         return self._apply_message_defaults(message_context.ensure_created())
 
     def _apply_message_defaults(self, context):
+        for prop in self.message_properties.explicit_properties:
+            if prop not in context.explicit_properties:
+                if getattr(context, prop) == MESSAGE_PROPERTY_DEFAULTS[prop]:
+                    setattr(context, prop, getattr(self.message_properties, prop))
         if context.ordered is None:
             if self.protocol in {"tcp", "tls-tcp"}:
                 context.ordered = True
@@ -209,6 +226,7 @@ class Connection:
         )
 
     def _report_soft_error(self, reason):
+        self._soft_errors.append(reason)
         schedule_callback(
             self.loop,
             self.soft_error,
@@ -218,6 +236,7 @@ class Connection:
         )
 
     def _report_path_change(self, previous_path, current_path):
+        self._previous_path = previous_path.copy()
         schedule_callback(
             self.loop,
             self.path_change,
@@ -246,6 +265,9 @@ class Connection:
         logger.warning("Connection attempt failed: %s", exc)
 
     def _deliver_received(self, data, context):
+        self._receive_sequence += 1
+        context.received_at = context.received_at or self.loop.time()
+        context.receive_sequence = self._receive_sequence
         received_message = ReceivedMessage(data, context, self)
         if self._receive_waiters:
             waiter = self._receive_waiters.pop(0)
@@ -256,6 +278,9 @@ class Connection:
         return received_message
 
     def _deliver_received_partial(self, data, context):
+        self._receive_sequence += 1
+        context.received_at = context.received_at or self.loop.time()
+        context.receive_sequence = self._receive_sequence
         received_message = ReceivedMessage(data, context, self)
         if self._receive_waiters:
             waiter = self._receive_waiters.pop(0)
@@ -347,10 +372,13 @@ class Connection:
         )
 
     def set_property(self, prop, value):
-        self.transport_properties.set_property(prop, value)
-        canonical = canonicalize_property_name(prop)
-        if self.connection_group is not None:
-            self.connection_group.set_property(canonical, value)
+        if is_message_property(prop):
+            self.message_properties.set_property(prop, value)
+        else:
+            self.transport_properties.set_property(prop, value)
+            canonical = canonicalize_property_name(prop)
+            if self.connection_group is not None:
+                self.connection_group.set_property(canonical, value)
         return None
 
     def get_properties(self):
@@ -358,6 +386,7 @@ class Connection:
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
+            "message": self.message_properties.get_properties(),
             "readOnly": {
                 "connState": self.state.name.title(),
                 "canSend": self._can_send(),
@@ -369,6 +398,9 @@ class Connection:
                 "localEndpoint": self.local_endpoint,
                 "remoteEndpoint": self.remote_endpoint,
                 "groupSize": len(self.connection_group) if self.connection_group else 1,
+                "currentPath": self._current_path.copy(),
+                "previousPath": self._previous_path.copy(),
+                "softErrors": [str(error) for error in self._soft_errors],
                 "lastError": str(self.last_error) if self.last_error else None,
             },
         }
@@ -437,6 +469,7 @@ class Connection:
             selection_properties=self.transport_properties.get_selection_properties(),
             connection_properties=self.transport_properties.get_connection_properties(),
         )
+        template.message_properties = deepcopy(self.message_properties)
         cloned_connection = await template.initiate()
         self.connection_group.add_connection(cloned_connection)
         return cloned_connection
@@ -562,7 +595,10 @@ class Connection:
     def grouped_connections(self):
         if self.connection_group is None:
             return [self]
-        return list(self.connection_group.connections)
+        return sorted(
+            self.connection_group.connections,
+            key=lambda connection: connection.transport_properties.get("connPriority"),
+        )
 
     async def race(self):
         # This is an active connection attempt
@@ -812,10 +848,11 @@ class Connection:
         """ Attempts to close the connection, issues a closed event
         on success.
         """
-        if self.multicast_open:
-            self.loop.create_task(self.multicast_leave())
-        self.loop.create_task(self.transports[0].close())
         self._set_state(ConnectionState.CLOSING)
+        if self.multicast_open:
+            self.multicast_leave()
+            return
+        self.loop.create_task(self.transports[0].close())
 
     def parse(self, min_incomplete_length=0, max_length=0):
         """ Returns the message buffer of the
@@ -866,6 +903,19 @@ class Connection:
         self._current_path = current_path.copy()
         self._report_path_change(previous_path, current_path)
         return current_path
+
+    def note_soft_error(self, reason):
+        self._report_soft_error(reason)
+        return reason
+
+    def get_group_properties(self):
+        if self.connection_group is None:
+            return {
+                "size": 1,
+                "connections": [self],
+                "sharedConnectionProperties": {},
+            }
+        return self.connection_group.get_properties()
 
     # Events for active open
     def on_ready(self, callback):

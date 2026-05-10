@@ -26,12 +26,16 @@ Transport Properties
 	.. autoclass:: TransportProperties
 
 		.. automethod:: add
+		.. automethod:: apply_profile
 		.. automethod:: require
 		.. automethod:: prefer
 		.. automethod:: ignore
 		.. automethod:: avoid
 		.. automethod:: prohibit
 		.. automethod:: default
+		.. automethod:: reliable_inorder_stream
+		.. automethod:: reliable_message
+		.. automethod:: unreliable_datagram
 
 Security Parameters
 -------------------
@@ -119,6 +123,23 @@ Connection Group
 
 		.. automethod:: close
 		.. automethod:: abort
+
+Message Context
+---------------
+	.. autoclass:: MessageContext
+
+		.. automethod:: add
+		.. automethod:: get
+		.. automethod:: get_local_endpoint
+		.. automethod:: get_remote_endpoint
+
+Received Message
+----------------
+	.. autoclass:: ReceivedMessage
+
+		.. automethod:: get
+		.. automethod:: get_properties
+		.. automethod:: get_read_only_properties
 
 Framer
 ------
