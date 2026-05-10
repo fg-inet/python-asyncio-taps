@@ -247,8 +247,13 @@ class Listener:
                         if self.transport_properties.properties. \
                                 get('direction') == 'Unidirectional Receive':
                             logger.info("direction is unicast receive")
-                            # multicast_receiver = True
-                            self.loop.create_task(self.multicast_join())
+                            await self.multicast_join()
+                            started = True
+                        else:
+                            raise RuntimeError(
+                                "Multicast listeners require direction "
+                                "'Unidirectional Receive'."
+                            )
                     else:
                         transport, _ = await self.loop.create_datagram_endpoint(
                             lambda: DatagramHandler(self),

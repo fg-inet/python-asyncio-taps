@@ -21,16 +21,12 @@ People interested in participating in TAPS can [join the mailing list](https://w
 
 ## Build Dependencies:
 
-Yang and multicast support relies on some shared libraries.  Run the script to
-download, build, and install them (if not in the default location, then in a place
-where LD_LIBRARY_PATH points).
+YANG support still relies on a shared library. Multicast support now uses the
+optional Python package `mcrx-core-py`.
 
 Requirements:
 
-- gcc or clang
 - cmake
-- libtool
-- autotools
 - libpcre
 - Python 3.10+
 
@@ -46,18 +42,16 @@ Build & Install requirements on Linux(Debian):
 ~~~
 sudo apt-get update
 sudo apt-get install -y libpcre3-dev cmake
-sudo apt-get install -y autoconf automake libtool
 ~~~
 
 Build & Install requirements on MacOS:
 
 ~~~
-brew install pcre cmake autoconf automake libtool
+brew install pcre cmake
 ~~~
 
-At the time of this writing, libyang and libmcrx are not packaged and can either
-be installed independently, or built with the included convenience script, but
-they must also be present for the build to succeed:
+At the time of this writing, `libyang` is not packaged everywhere and can be
+installed independently or built with the included convenience script:
 
 ~~~
 INSTALL_PATH=${HOME}/local_install \
@@ -70,13 +64,24 @@ Build and install the pytaps package:
 python -m pip install .
 ~~~
 
-If you want to build the optional native YANG and multicast extensions as part of installation:
+If you want to build the optional native YANG extension as part of installation:
 
 ~~~
 PYTAPS_BUILD_EXTENSIONS=1 \
 INSTALL_PATH=${HOME}/local_install \
   python -m pip install .
 ~~~
+
+For multicast support, install the optional Python binding package:
+
+~~~
+python -m pip install -e '.[multicast]'
+~~~
+
+That multicast extra now includes both:
+
+- `mcrx-core-py` for multicast receive support
+- `mctx-core-py` for multicast sender tooling and examples
 
 For local development with tests:
 
@@ -86,7 +91,7 @@ python -m pip install -e '.[test,dev]'
 
 ### Use
 
-You'll need the path to load the dependent dynamic libraries set whenever pytaps is imported:
+You'll need the path to load the dependent YANG dynamic libraries set whenever pytaps is imported:
 
 	export LD_LIBRARY_PATH=${HOME}/local_install/lib
 

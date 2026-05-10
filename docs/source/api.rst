@@ -210,7 +210,8 @@ To achieve a preconnection that is configured the same as the one created in the
 Joining a multicast group
 -------------------------
 
-PyTAPS currently supports Source-Specific Multicast (SSM), which requires libmcrx, see build_dependencies.sh.
+PyTAPS currently supports Source-Specific Multicast (SSM) through the optional
+`mcrx-core-py` Python bindings.
 
 To join a multicast group and receive multicast messages, first :ref:`configure your Preconnection<Creating a Preconnection>` as follows:
 
@@ -230,5 +231,6 @@ To join a multicast group and receive multicast messages, first :ref:`configure 
 
 Then, :ref:`initiate the Preconnection<Initiating a Connection>`.
 
-To test, you can set up an Automatic Multicast Tunneling (AMT) gateway by following the `instructions posted here <https://github.com/GrumpyOldTroll/libmcrx/blob/master/howto.txt>`_ 
-and then joining the multicast group, e.g., using *yangClient.py -f test-mcast-receive.json*.
+To test against a live multicast source, start the multicast receiver example
+with the desired group, source, port, and interface-address values, then send
+traffic with the multicast sender example or another multicast-capable sender.

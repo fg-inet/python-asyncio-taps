@@ -34,14 +34,6 @@ if env_flag("PYTAPS_BUILD_EXTENSIONS"):
             library_dirs=library_dirs,
             sources=["pytaps/yang_glue.cxx"],
         ),
-        Extension(
-            "multicast_glue",
-            define_macros=[("MAJOR_VERSION", "1"), ("MINOR_VERSION", "0")],
-            include_dirs=include_dirs,
-            libraries=["mcrx"],
-            library_dirs=library_dirs,
-            sources=["pytaps/multicast_glue.cxx"],
-        ),
     ]
 
 
@@ -81,7 +73,10 @@ setup(
             "sphinx>=7",
         ],
         "yang": [],
-        "multicast": [],
+        "multicast": [
+            "mcrx-core-py",
+            "mctx-core-py",
+        ],
         "dev": [
             "ruff>=0.11",
         ],

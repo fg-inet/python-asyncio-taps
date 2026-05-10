@@ -1,6 +1,7 @@
 import asyncio
 import socket
 import ssl
+import types
 from textwrap import dedent
 from pathlib import Path
 
@@ -1050,6 +1051,193 @@ def test_connection_and_listener_preserve_security_context():
 
     assert connection.security_context is preconnection.security_context
     assert listener.security_context is preconnection.security_context
+
+
+def test_multicast_adapter_uses_mcrx_core(monkeypatch):
+    import pytaps.multicast as multicast
+
+    calls = {}
+
+    class FakeReaderHandle:
+        def close(self):
+            calls["closed"] = True
+
+    class FakeSubscription:
+        def join(self):
+            calls["joined"] = True
+
+        def leave(self):
+            calls["left"] = True
+
+    class FakeContext:
+        def add_subscription(self, group, port, source=None, interface=None):
+            calls["subscription"] = {
+                "group": group,
+                "port": port,
+                "source": source,
+                "interface": interface,
+            }
+            return FakeSubscription()
+
+    def fake_add_reader(subscription, callback, loop=None):
+        calls["subscription_obj"] = subscription
+        calls["loop"] = loop
+        calls["callback"] = callback
+        return FakeReaderHandle()
+
+    fake_module = types.SimpleNamespace(
+        Context=FakeContext,
+        add_reader=fake_add_reader,
+    )
+    monkeypatch.setattr(multicast, "mcrx_core", fake_module)
+
+    loop = asyncio.new_event_loop()
+    listener = types.SimpleNamespace(
+        loop=loop,
+        local_endpoint=types.SimpleNamespace(
+            address=["232.1.2.3"],
+            port=5000,
+            interface=["192.0.2.10"],
+        ),
+        remote_endpoint=types.SimpleNamespace(address=["198.51.100.10"]),
+        preconnection=types.SimpleNamespace(got_mc=lambda *args: None),
+    )
+
+    assert multicast.do_join(listener) is True
+    assert calls["joined"] is True
+    assert calls["subscription"] == {
+        "group": "232.1.2.3",
+        "port": 5000,
+        "source": "198.51.100.10",
+        "interface": "192.0.2.10",
+    }
+
+    packet = types.SimpleNamespace(payload=b"hello", source_port=6000)
+    forwarded = {}
+    listener.preconnection = types.SimpleNamespace(
+        got_mc=lambda current_listener, data, port: forwarded.update(
+            {
+                "listener": current_listener,
+                "data": data,
+                "port": port,
+            }
+        )
+    )
+    calls["callback"](packet)
+    multicast.do_leave(listener)
+    loop.close()
+
+    assert forwarded == {
+        "listener": listener,
+        "data": b"hello",
+        "port": 6000,
+    }
+    assert calls["left"] is True
+    assert calls["closed"] is True
+
+
+def test_multicast_send_uses_mctx_core(monkeypatch):
+    import pytaps.transports as transports
+
+    calls = {}
+
+    class FakeSendReport:
+        publication_id = 1
+        destination = ("ff3e::8000:1234", 5001)
+        local_addr = ("fd06::1", 5001)
+        source_addr = "fd06::1"
+        bytes_sent = 5
+
+    class FakeAsyncPublication:
+        def __init__(self, publication, loop=None):
+            calls["loop"] = loop
+            self.publication = publication
+
+        async def send(self, payload):
+            calls.setdefault("payloads", []).append(payload)
+            return FakeSendReport()
+
+    class FakePublication:
+        def local_addr(self):
+            return ("fd06::1", 5001)
+
+        def remove(self):
+            calls["removed"] = True
+
+    class FakeContext:
+        def add_publication(
+            self,
+            group,
+            port,
+            source=None,
+            source_port=None,
+            interface=None,
+            ttl=1,
+            loopback=True,
+        ):
+            calls["publication"] = {
+                "group": group,
+                "port": port,
+                "source": source,
+                "source_port": source_port,
+                "interface": interface,
+                "ttl": ttl,
+                "loopback": loopback,
+            }
+            return FakePublication()
+
+    fake_module = types.SimpleNamespace(
+        Context=FakeContext,
+        AsyncPublication=FakeAsyncPublication,
+    )
+    monkeypatch.setattr(transports, "mctx_core", fake_module)
+
+    loop = asyncio.new_event_loop()
+    local = taps.LocalEndpoint().with_address("fd06::1").with_port(5001)
+    remote = taps.RemoteEndpoint().with_address("ff3e::8000:1234").with_port(5001)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    preconnection.multicast_interface_address = "fd06::1"
+    preconnection.multicast_ttl = 5
+    connection = taps.Connection(preconnection)
+    transport = transports.MulticastSendTransport(
+        connection,
+        local_endpoint=local,
+        remote_endpoint=remote,
+    )
+    connection.protocol = "udp"
+    connection.state = taps.ConnectionState.ESTABLISHED
+    sent = {}
+
+    async def handle_sent(message_ref, sent_connection):
+        sent["message_ref"] = message_ref
+        sent["connection"] = sent_connection
+
+    connection.on_sent(handle_sent)
+    loop.run_until_complete(transport.active_open(None))
+    context = connection.new_message_context(safelyReplayable=True, final=False)
+    loop.run_until_complete(transport.write(b"hello", context, True))
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.run_until_complete(transport.close())
+    loop.close()
+
+    assert calls["publication"] == {
+        "group": "ff3e::8000:1234",
+        "port": 5001,
+        "source": "fd06::1",
+        "source_port": 5001,
+        "interface": "fd06::1",
+        "ttl": 5,
+        "loopback": True,
+    }
+    assert calls["payloads"] == [b"hello"]
+    assert context.local_address == "fd06::1"
+    assert context.local_port == 5001
+    assert sent["connection"] is connection
+    assert calls["removed"] is True
 
 
 def test_from_yang_reads_extended_security_credentials():

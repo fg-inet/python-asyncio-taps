@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import socket
 try:
     import netifaces
@@ -12,7 +13,7 @@ from .transportProperties import (
     TransportProperties,
     canonicalize_property_name,
 )
-from .transports import TcpTransport, UdpTransport
+from .transports import MulticastSendTransport, TcpTransport, UdpTransport
 from .utility import (
     Candidate,
     ConnectionState,
@@ -690,6 +691,19 @@ class Connection:
                             str(self.remote_endpoint.port))
                 self.remote_endpoint.address = [candidate.remote_address]
 
+                if ipaddress.ip_address(candidate.remote_address).is_multicast:
+                    task = self.loop.create_task(
+                        MulticastSendTransport(
+                            connection=self,
+                            local_endpoint=self.local_endpoint,
+                            remote_endpoint=self.remote_endpoint,
+                        ).active_open(None)
+                    )
+                    self.pending.append(task)
+                    task.add_done_callback(self._handle_attempt_done)
+                    logger.info("Using multicast publication transport.")
+                    break
+
                 # Create a datagram endpoint
                 task = self.loop.create_task(
                     self.loop.create_datagram_endpoint(
@@ -977,4 +991,5 @@ class Connection:
         self.closed = callback
 
     def multicast_leave(self):
-        pass
+        if self.transports:
+            self.loop.create_task(self.transports[0].close())

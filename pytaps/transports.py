@@ -5,7 +5,19 @@ from .framer import DeframingFailed
 from .message import MessageContext
 from .utility import ConnectionState, setup_logger
 
+try:
+    import mctx_core
+except ImportError:
+    mctx_core = None
+
 logger = setup_logger(__name__, "blue")
+
+
+def _require_mctx_core():
+    if mctx_core is None:
+        raise ImportError(
+            "Multicast send support requires the optional 'mctx-core-py' package."
+        )
 
 class TransportLayer(asyncio.Protocol):
     """ One possible underlying transport for a TAPS connection
@@ -415,6 +427,130 @@ class UdpTransport(TransportLayer):
                 if not w.done():
                     w.set_result(None)
                     return
+
+
+class MulticastSendTransport(TransportLayer):
+    def __init__(self, connection, local_endpoint=None, remote_endpoint=None):
+        super().__init__(connection, local_endpoint, remote_endpoint)
+        self.message_based = True
+        self.mctx_context = None
+        self.publication = None
+        self.async_publication = None
+
+    async def active_open(self, transport):
+        _require_mctx_core()
+        if self.connection.framer:
+            await self.connection.framer.handle_start(self.connection)
+
+        source = None
+        source_port = None
+        if self.local_endpoint and self.local_endpoint.address:
+            source = self.local_endpoint.address[0]
+        if self.local_endpoint and self.local_endpoint.port:
+            source_port = self.local_endpoint.port
+
+        interface = getattr(
+            self.connection._originating_preconnection,
+            "multicast_interface_address",
+            None,
+        )
+        ttl = getattr(
+            self.connection._originating_preconnection,
+            "multicast_ttl",
+            1,
+        )
+        loopback = not getattr(
+            self.connection._originating_preconnection,
+            "multicast_disable_loopback",
+            False,
+        )
+
+        self.mctx_context = mctx_core.Context()
+        self.publication = self.mctx_context.add_publication(
+            self.remote_endpoint.address[0],
+            self.remote_endpoint.port,
+            source=source,
+            source_port=source_port,
+            interface=interface,
+            ttl=ttl,
+            loopback=loopback,
+        )
+        self.async_publication = mctx_core.AsyncPublication(
+            self.publication,
+            loop=self.loop,
+        )
+        self.connection.multicast_open = True
+
+        try:
+            local_addr = self.publication.local_addr()
+        except Exception:
+            local_addr = None
+        if local_addr:
+            self.connection.note_path_change(
+                local_address=local_addr[0],
+                local_port=local_addr[1],
+                remote_address=self.remote_endpoint.address[0],
+                remote_port=self.remote_endpoint.port,
+            )
+
+        logger.info(
+            "Connected multicast sender to %s:%s.",
+            self.remote_endpoint.address[0],
+            self.remote_endpoint.port,
+        )
+        self.connection._mark_ready()
+        if self.connection._pending_message:
+            data, context, eom = self.connection._pending_message
+            self.connection._pending_message = None
+            if context.is_expired():
+                self.connection._report_expired(context)
+            else:
+                await self.write(data, context, eom)
+
+    async def write(self, data, message_context, end_of_message):
+        if isinstance(data, str):
+            data = data.encode()
+        try:
+            if self.connection.framer:
+                data = await self.connection.framer.handle_new_sent_message(
+                    data,
+                    message_context,
+                    end_of_message,
+                )
+            report = await self.async_publication.send(data)
+        except InterruptedError:
+            logger.warning("SendError occurred.")
+            if self.connection.send_error:
+                self.loop.create_task(
+                    self.connection.send_error(
+                        self.message_count,
+                        self.connection,
+                    )
+                )
+            return
+
+        if report.local_addr:
+            message_context.local_address = report.local_addr[0]
+            message_context.local_port = report.local_addr[1]
+        if report.source_addr:
+            message_context.local_address = report.source_addr
+        logger.info("Multicast packet written successfully.")
+        if self.connection.sent:
+            self.loop.create_task(
+                self.connection.sent(self.message_count, self.connection)
+            )
+
+    async def close(self):
+        logger.info("Closing multicast sender.")
+        if self.publication is not None:
+            self.publication.remove()
+        self.publication = None
+        self.async_publication = None
+        self.mctx_context = None
+        self.connection._report_closed()
+
+    async def read(self, min_incomplete_length, max_length):
+        raise RuntimeError("Multicast sender transports do not support receive().")
 
 
 class TcpTransport(TransportLayer):
