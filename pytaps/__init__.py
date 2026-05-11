@@ -1,4 +1,5 @@
 from .connection import Connection as Connection
+from .connection_context import ConnectionContext as ConnectionContext
 from .connection_group import ConnectionGroup as ConnectionGroup
 from .endpoint import LocalEndpoint as LocalEndpoint, RemoteEndpoint as RemoteEndpoint
 from .framer import DeframingFailed as DeframingFailed, Framer as Framer
@@ -19,6 +20,7 @@ from .utility import (
 
 __all__ = [
     "Connection",
+    "ConnectionContext",
     "ConnectionGroup",
     "ConnectionState",
     "DeframingFailed",

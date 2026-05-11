@@ -5,6 +5,12 @@ This is the full API reference for the PyTAPS implementation.
 
 .. automodule:: pytaps
 
+Connection Context
+------------------
+	.. autoclass:: ConnectionContext
+
+		.. automethod:: get_snapshot
+
 Local Endpoint
 --------------
 	.. autoclass:: LocalEndpoint
@@ -27,6 +33,9 @@ Transport Properties
 
 		.. automethod:: add
 		.. automethod:: apply_profile
+		.. automethod:: get_property
+		.. automethod:: get_properties
+		.. automethod:: default_property
 		.. automethod:: require
 		.. automethod:: prefer
 		.. automethod:: ignore
@@ -44,10 +53,17 @@ Security Parameters
 		.. automethod:: add_identity
 		.. automethod:: add_trust_ca
 		.. automethod:: add_allowed_security_protocol
+		.. automethod:: set_allowed_security_protocols
 		.. automethod:: add_pinned_server_certificate
+		.. automethod:: set_pinned_server_certificates
+		.. automethod:: add_security_algorithm
+		.. automethod:: set_security_algorithms
 		.. automethod:: add_alpn_protocol
+		.. automethod:: set_alpn_protocols
 		.. automethod:: with_server_name
+		.. automethod:: set_server_name
 		.. automethod:: disable_peer_authentication
+		.. automethod:: enable_peer_authentication
 		.. automethod:: set_cipher_suites
 
 Preconnection
@@ -60,6 +76,11 @@ Preconnection
 		.. automethod:: rendezvous
 		.. automethod:: resolve
 		.. automethod:: add_framer
+		.. automethod:: get_connection_context
+		.. automethod:: separate_connection_context
+		.. automethod:: get_monitoring_snapshot
+		.. automethod:: get_property
+		.. automethod:: default_property
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
 		.. automethod:: on_establishment_error
@@ -81,7 +102,11 @@ Connection
 	.. autoclass:: Connection
 
 		.. automethod:: new_message_context
+		.. automethod:: get_connection_context
+		.. automethod:: get_monitoring_snapshot
+		.. automethod:: get_property
 		.. automethod:: get_message_properties
+		.. automethod:: default_property
 		.. automethod:: send
 		.. automethod:: send_message
 		.. automethod:: send_batch
@@ -92,7 +117,10 @@ Connection
 		.. automethod:: wait_ready
 		.. automethod:: wait_closed
 		.. automethod:: note_path_change
+		.. automethod:: note_soft_error
 		.. automethod:: close
+		.. automethod:: get_event_history
+		.. automethod:: get_group_properties
 		.. automethod:: on_ready
 		.. automethod:: on_initiate_error
 		.. automethod:: on_establishment_error
@@ -112,10 +140,14 @@ Listener
 --------
 	.. autoclass:: Listener
 
+		.. automethod:: get_connection_context
+		.. automethod:: get_monitoring_snapshot
+		.. automethod:: get_property
 		.. automethod:: wait_listening
 		.. automethod:: accept
 		.. automethod:: wait_stopped
 		.. automethod:: stop
+		.. automethod:: get_event_history
 
 Connection Group
 ----------------

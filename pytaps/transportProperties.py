@@ -189,6 +189,13 @@ class TransportProperties:
     def add(self, prop, value):
         self.set_property(prop, value)
 
+    def get_property(self, prop, default=None):
+        return self.get(prop, default)
+
+    def default_property(self, prop):
+        self.default(prop)
+        return self
+
     def require(self, prop):
         canonical = canonicalize_property_name(prop)
         self.selection_properties[canonical] = PreferenceLevel.REQUIRE
@@ -243,6 +250,17 @@ class TransportProperties:
 
     def get_explicit_selection_properties(self):
         return set(self.explicit_selection_properties)
+
+    def get_explicit_connection_properties(self):
+        return set(self.explicit_connection_properties)
+
+    def get_properties(self):
+        return {
+            "selection": self.get_selection_properties(),
+            "connection": self.get_connection_properties(),
+            "explicitSelection": self.get_explicit_selection_properties(),
+            "explicitConnection": self.get_explicit_connection_properties(),
+        }
 
     def add_interface_preference(self, interface_id, preference):
         self.selection_properties["interface"].add((preference, interface_id))

@@ -12,6 +12,7 @@ from .message import (
     MESSAGE_PROPERTY_DEFAULTS,
     MessageContext,
     ReceivedMessage,
+    canonicalize_message_property_name,
     is_message_property,
 )
 from .transportProperties import (
@@ -68,6 +69,7 @@ class Connection:
         self.security_parameters = preconnection.security_parameters
         self.security_context = preconnection.security_context
         self.message_properties = deepcopy(preconnection.message_properties)
+        self.connection_context = preconnection.connection_context
         self.loop = preconnection.loop
         self.active = False
         self.framer = preconnection.framer
@@ -103,6 +105,7 @@ class Connection:
             "remote": None,
         }
         self._soft_errors = []
+        self._event_history = []
 
         # Callbacks
         self.writer = None
@@ -178,8 +181,24 @@ class Connection:
         if error is not None:
             self.last_error = error
 
+    def _record_event(self, name, **details):
+        event = {
+            "name": name,
+            "state": self.state.name.title(),
+            "details": details,
+        }
+        self._event_history.append(event)
+        self.connection_context.record_event(name)
+        return event
+
     def _mark_ready(self):
         self._set_state(ConnectionState.ESTABLISHED)
+        self._record_event(
+            "ready",
+            protocol=self.protocol,
+            path=self._current_path.copy(),
+        )
+        self.connection_context.record_protocol_outcome(self.protocol, True)
         self.sleeper_for_racing.cancel_all()
         if not self._ready_waiter.done():
             self._ready_waiter.set_result(self)
@@ -189,11 +208,14 @@ class Connection:
 
     def _mark_closed(self):
         self._set_state(ConnectionState.CLOSED)
+        self._record_event("closed", last_error=str(self.last_error) if self.last_error else None)
         if not self._closed_waiter.done():
             self._closed_waiter.set_result(self)
 
     def _fail_initiate(self, error):
         self._set_state(ConnectionState.CLOSED, error)
+        self._record_event("initiate_error", error=str(error))
+        self.connection_context.record_protocol_outcome(self.protocol, False, error)
         if not self._ready_waiter.done():
             self._ready_waiter.set_exception(error)
         schedule_callback(
@@ -213,9 +235,16 @@ class Connection:
 
     def _report_connection_error(self, error):
         self.last_error = error
+        self._record_event("connection_error", error=str(error))
+        self.connection_context.record_protocol_outcome(self.protocol, False, error)
         schedule_callback(self.loop, self.connection_error, (error, self))
 
     def _report_receive_error(self, message_context, reason=None):
+        self._record_event(
+            "receive_error",
+            reason=str(reason) if reason is not None else None,
+            message_id=getattr(message_context, "message_id", None),
+        )
         schedule_callback(
             self.loop,
             self.receive_error,
@@ -227,6 +256,7 @@ class Connection:
 
     def _report_soft_error(self, reason):
         self._soft_errors.append(reason)
+        self._record_event("soft_error", reason=str(reason))
         schedule_callback(
             self.loop,
             self.soft_error,
@@ -237,6 +267,11 @@ class Connection:
 
     def _report_path_change(self, previous_path, current_path):
         self._previous_path = previous_path.copy()
+        self._record_event(
+            "path_change",
+            previous_path=previous_path.copy(),
+            current_path=current_path.copy(),
+        )
         schedule_callback(
             self.loop,
             self.path_change,
@@ -251,6 +286,10 @@ class Connection:
         schedule_callback(self.loop, self.closed, (self,))
 
     def _report_expired(self, message_context):
+        self._record_event(
+            "expired",
+            message_id=getattr(message_context, "message_id", None),
+        )
         schedule_callback(self.loop, self.expired, (message_context, self))
 
     def _handle_attempt_done(self, task):
@@ -381,12 +420,40 @@ class Connection:
                 self.connection_group.set_property(canonical, value)
         return None
 
+    def get_property(self, prop, default=None):
+        if is_message_property(prop):
+            return self.message_properties.get(prop, default)
+
+        canonical = canonicalize_property_name(prop)
+        read_only = self.get_properties()["readOnly"]
+        if canonical in read_only:
+            return read_only.get(canonical, default)
+        return self.transport_properties.get_property(prop, default)
+
+    def default_property(self, prop):
+        if is_message_property(prop):
+            canonical = canonicalize_message_property_name(prop)
+            setattr(self.message_properties, canonical, MESSAGE_PROPERTY_DEFAULTS[canonical])
+            self.message_properties.explicit_properties.discard(canonical)
+            return self
+
+        self.transport_properties.default_property(prop)
+        if self.connection_group is not None:
+            canonical = canonicalize_property_name(prop)
+            if canonical in self.connection_group.shared_connection_properties:
+                self.connection_group.shared_connection_properties.pop(canonical, None)
+        return self
+
     def get_properties(self):
         limits = self._send_limits()
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
             "message": self.message_properties.get_properties(),
+            "security": (
+                self.security_parameters.get_configuration()
+                if self.security_parameters else {}
+            ),
             "readOnly": {
                 "connState": self.state.name.title(),
                 "canSend": self._can_send(),
@@ -398,12 +465,22 @@ class Connection:
                 "localEndpoint": self.local_endpoint,
                 "remoteEndpoint": self.remote_endpoint,
                 "groupSize": len(self.connection_group) if self.connection_group else 1,
+                "securityAvailable": self.security_context is not None,
+                "messageDefaults": self.message_properties.get_properties(),
+                "receiveSequence": self._receive_sequence,
+                "softErrorCount": len(self._soft_errors),
+                "connectionContext": self.connection_context.get_snapshot(),
                 "currentPath": self._current_path.copy(),
                 "previousPath": self._previous_path.copy(),
                 "softErrors": [str(error) for error in self._soft_errors],
+                "eventCount": len(self._event_history),
+                "lastEvent": self._event_history[-1] if self._event_history else None,
                 "lastError": str(self.last_error) if self.last_error else None,
             },
         }
+
+    def get_event_history(self):
+        return list(self._event_history)
 
     async def wait_ready(self, timeout=None):
         if timeout is None:
@@ -901,6 +978,11 @@ class Connection:
             if self.remote_endpoint and self.remote_endpoint.address else None,
         }
         self._current_path = current_path.copy()
+        self.connection_context.record_path_use(
+            current_path["local"],
+            current_path["remote"],
+            protocol=self.protocol,
+        )
         self._report_path_change(previous_path, current_path)
         return current_path
 
@@ -914,8 +996,19 @@ class Connection:
                 "size": 1,
                 "connections": [self],
                 "sharedConnectionProperties": {},
+                "connectionContext": self.connection_context.get_snapshot(),
             }
         return self.connection_group.get_properties()
+
+    def get_connection_context(self):
+        return self.connection_context
+
+    def get_monitoring_snapshot(self):
+        return {
+            "connectionContext": self.connection_context.get_snapshot(),
+            "events": self.get_event_history(),
+            "properties": self.get_properties(),
+        }
 
     # Events for active open
     def on_ready(self, callback):

@@ -49,13 +49,25 @@ class SecurityParameters:
         self.allowed_security_protocols.append(protocol)
         logger.info("Allowing security protocol: " + str(protocol))
 
+    def set_allowed_security_protocols(self, protocols):
+        self.allowed_security_protocols = list(protocols)
+        logger.info("Setting allowed security protocols: " + str(self.allowed_security_protocols))
+
     def add_pinned_server_certificate(self, certificate_chain):
         self.pinned_server_certificates.append(certificate_chain)
         logger.info("Configured pinned server certificate chain.")
 
+    def set_pinned_server_certificates(self, certificate_chains):
+        self.pinned_server_certificates = list(certificate_chains)
+        logger.info("Configured pinned server certificate chains.")
+
     def add_security_algorithm(self, algorithm):
         self.security_algorithms.append(algorithm)
         logger.info("Allowing security algorithm: " + str(algorithm))
+
+    def set_security_algorithms(self, algorithms):
+        self.security_algorithms = list(algorithms)
+        logger.info("Setting security algorithms: " + str(self.security_algorithms))
 
     def add_pre_shared_key(self, pre_shared_key):
         self.pre_shared_key = pre_shared_key
@@ -77,13 +89,24 @@ class SecurityParameters:
         self.alpn_protocols.append(protocol)
         logger.info("Offering ALPN protocol: " + str(protocol))
 
+    def set_alpn_protocols(self, protocols):
+        self.alpn_protocols = list(protocols)
+        logger.info("Setting ALPN protocols: " + str(self.alpn_protocols))
+
     def with_server_name(self, server_name):
         self.server_name = server_name
         logger.info("Setting server name: " + str(server_name))
 
+    def set_server_name(self, server_name):
+        self.with_server_name(server_name)
+
     def disable_peer_authentication(self):
         self.require_peer_authentication = False
         logger.info("Peer authentication disabled.")
+
+    def enable_peer_authentication(self):
+        self.require_peer_authentication = True
+        logger.info("Peer authentication enabled.")
 
     def set_cipher_suites(self, cipher_suites):
         self.cipher_suites = cipher_suites

@@ -44,6 +44,7 @@ class Listener:
         self.transport_properties = preconnection.transport_properties
         self.security_parameters = preconnection.security_parameters
         self.security_context = preconnection.security_context
+        self.connection_context = preconnection.connection_context
         self.loop = preconnection.loop
         self.framer = preconnection.framer
         self.active_ports = {}
@@ -57,6 +58,7 @@ class Listener:
         self._datagram_transports = []
         self._stopped_waiter = self.loop.create_future()
         self.last_error = None
+        self._event_history = []
 
         # Callbacks
         self.stopped = preconnection.stopped
@@ -93,13 +95,29 @@ class Listener:
 
         return self.loop.create_task(_wait_for_connection())
 
+    def _record_event(self, name, **details):
+        event = {
+            "name": name,
+            "state": self.state.name.title(),
+            "details": details,
+        }
+        self._event_history.append(event)
+        self.connection_context.record_event(name)
+        return event
+
     def _mark_listening(self):
         self.state = ConnectionState.ESTABLISHED
+        self._record_event(
+            "listening",
+            protocol=self.protocol,
+            local_endpoint=self.local_endpoint,
+        )
         if not self._listen_waiter.done():
             self._listen_waiter.set_result(self)
 
     def _mark_stopped(self):
         self.state = ConnectionState.CLOSED
+        self._record_event("stopped", last_error=str(self.last_error) if self.last_error else None)
         if not self._stopped_waiter.done():
             self._stopped_waiter.set_result(self)
         for waiter in self._connection_waiters:
@@ -111,6 +129,7 @@ class Listener:
     def _fail_listen(self, error):
         self.last_error = error
         self.state = ConnectionState.CLOSED
+        self._record_event("listen_error", error=str(error))
         if not self._listen_waiter.done():
             self._listen_waiter.set_exception(error)
         schedule_callback(
@@ -122,6 +141,10 @@ class Listener:
         )
 
     def _deliver_connection(self, connection):
+        self._record_event(
+            "connection_received",
+            remote_endpoint=connection.remote_endpoint,
+        )
         if self._connection_waiters:
             waiter = self._connection_waiters.pop(0)
             if not waiter.done():
@@ -134,14 +157,45 @@ class Listener:
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
+            "connectionContext": self.connection_context.get_snapshot(),
+            "security": (
+                self.security_parameters.get_configuration()
+                if self.security_parameters else {}
+            ),
             "readOnly": {
                 "state": self.state.name,
                 "connState": self.state.name.title(),
                 "protocol": self.protocol,
                 "localEndpoint": self.local_endpoint,
                 "remoteEndpoint": self.remote_endpoint,
+                "securityAvailable": self.security_context is not None,
+                "pendingConnections": len(self._accepted_connections),
+                "pendingAccepts": len(self._connection_waiters),
+                "connectionContext": self.connection_context.get_snapshot(),
+                "eventCount": len(self._event_history),
+                "lastEvent": self._event_history[-1] if self._event_history else None,
                 "lastError": str(self.last_error) if self.last_error else None,
             },
+        }
+
+    def get_property(self, prop, default=None):
+        canonical = prop
+        read_only = self.get_properties()["readOnly"]
+        if canonical in read_only:
+            return read_only.get(canonical, default)
+        return self.transport_properties.get_property(prop, default)
+
+    def get_event_history(self):
+        return list(self._event_history)
+
+    def get_connection_context(self):
+        return self.connection_context
+
+    def get_monitoring_snapshot(self):
+        return {
+            "connectionContext": self.connection_context.get_snapshot(),
+            "events": self.get_event_history(),
+            "properties": self.get_properties(),
         }
 
     async def wait_stopped(self, timeout=None):

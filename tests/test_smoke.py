@@ -102,6 +102,27 @@ def test_transport_property_profiles_match_rfc_style_convenience_profiles():
     assert datagram.get("congestionControl") is taps.PreferenceLevel.IGNORE
 
 
+def test_transport_properties_support_single_property_get_and_default():
+    properties = taps.TransportProperties()
+    properties.set_property("connPriority", 5)
+    assert properties.get_property("connPriority") == 5
+
+    properties.default_property("connPriority")
+
+    assert properties.get_property("connPriority") == 100
+
+
+def test_transport_properties_report_explicit_property_sets():
+    properties = taps.TransportProperties()
+    properties.require("reliability")
+    properties.set_property("connPriority", 5)
+
+    reported = properties.get_properties()
+
+    assert "reliability" in reported["explicitSelection"]
+    assert "connPriority" in reported["explicitConnection"]
+
+
 def test_preconnection_is_reusable_after_initiate():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
@@ -200,6 +221,7 @@ def test_preconnection_clone_copies_configuration():
     assert clone.local_endpoint.interface == ["lo0"]
     assert clone.get_properties()["connection"]["connPriority"] == 5
     assert clone.get_properties()["message"]["msgPriority"] == 7
+    assert clone.get_connection_context() is preconnection.get_connection_context()
 
 
 def test_protocol_candidates_follow_require_prefer_avoid_order():
@@ -344,6 +366,26 @@ def test_message_defaults_can_be_set_on_preconnection_and_connection():
     assert context.priority == 9
     assert context.capacity_profile == "Low Latency/Interactive"
     assert inherited.lifetime == 1.5
+
+
+def test_preconnection_supports_single_property_get_and_default():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.set_property("connPriority", 5)
+    preconnection.set_property("msgPriority", 7)
+
+    assert preconnection.get_property("connPriority") == 5
+    assert preconnection.get_property("msgPriority") == 7
+
+    preconnection.default_property("connPriority")
+    preconnection.default_property("msgPriority")
+    preconnection.loop.close()
+
+    assert preconnection.get_property("connPriority") == 100
+    assert preconnection.get_property("msgPriority") == 100
 
 
 def test_connection_send_batch_assigns_shared_batch_id():
@@ -697,6 +739,9 @@ def test_connection_tracks_soft_errors_and_path_changes():
     assert properties["readOnly"]["softErrors"] == ["ECN CE marks observed"]
     assert properties["readOnly"]["currentPath"]["remote"] == ("203.0.113.10", 443)
     assert properties["readOnly"]["previousPath"] == {"local": None, "remote": None}
+    assert properties["readOnly"]["eventCount"] >= 2
+    assert any(event["name"] == "soft_error" for event in connection.get_event_history())
+    assert any(event["name"] == "path_change" for event in connection.get_event_history())
 
 
 def test_group_properties_expose_shared_connection_state():
@@ -716,6 +761,183 @@ def test_group_properties_expose_shared_connection_state():
     assert properties["size"] == 2
     assert clone in properties["connections"]
     assert properties["sharedConnectionProperties"]["connTimeout"] == 15
+    assert properties["connectionContext"]["connectionGroups"] == 1
+
+
+def test_connection_read_only_properties_expose_property_catalog_state():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    security = taps.SecurityParameters()
+    security.set_alpn_protocols(["h2", "hq"])
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        security_parameters=security,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.note_soft_error("queue pressure")
+    read_only = connection.get_properties()["readOnly"]
+    security_properties = connection.get_properties()["security"]
+    connection.loop.run_until_complete(asyncio.sleep(0))
+    connection.loop.close()
+
+    assert read_only["securityAvailable"] is True
+    assert read_only["softErrorCount"] == 1
+    assert read_only["receiveSequence"] == 0
+    assert read_only["messageDefaults"]["msgLifetime"] == "Infinite"
+    assert security_properties["alpnProtocols"] == ["h2", "hq"]
+    assert read_only["connectionContext"]["eventCounters"]["soft_error"] == 1
+
+
+def test_connection_supports_single_property_get_and_default():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.set_property("connPriority", 5)
+    connection.set_property("msgLifetime", 2.5)
+
+    assert connection.get_property("connPriority") == 5
+    assert connection.get_property("msgLifetime") == 2.5
+    assert connection.get_property("connState") == "Establishing"
+
+    connection.default_property("connPriority")
+    connection.default_property("msgLifetime")
+    connection.loop.close()
+
+    assert connection.get_property("connPriority") == 100
+    assert connection.get_property("msgLifetime") == "Infinite"
+
+
+def test_connection_event_history_records_ready_and_closed():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection._mark_ready()
+    connection._report_closed()
+    history = connection.get_event_history()
+    read_only = connection.get_properties()["readOnly"]
+    connection.loop.close()
+
+    assert [event["name"] for event in history[-2:]] == ["ready", "closed"]
+    assert read_only["lastEvent"]["name"] == "closed"
+    assert read_only["connectionContext"]["eventCounters"]["ready"] == 1
+
+
+def test_listener_event_history_records_failures_and_connections():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        event_loop=loop,
+    )
+    listener = Listener(preconnection)
+    listener._mark_listening()
+
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    connection_preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    connection = taps.Connection(connection_preconnection)
+    listener._deliver_connection(connection)
+    listener._fail_listen(RuntimeError("late failure"))
+    history = listener.get_event_history()
+    read_only = listener.get_properties()["readOnly"]
+    loop.close()
+
+    assert [event["name"] for event in history[:3]] == [
+        "listening",
+        "connection_received",
+        "listen_error",
+    ]
+    assert read_only["eventCount"] == 3
+    assert read_only["lastEvent"]["name"] == "listen_error"
+    assert read_only["connectionContext"]["eventCounters"]["listening"] == 1
+
+
+def test_listener_read_only_properties_expose_pending_state():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    security = taps.SecurityParameters()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        security_parameters=security,
+        event_loop=asyncio.new_event_loop(),
+    )
+    listener = Listener(preconnection)
+    waiter_task = listener.accept(timeout=1)
+    read_only = listener.get_properties()["readOnly"]
+    waiter_task.cancel()
+    preconnection.loop.run_until_complete(asyncio.gather(waiter_task, return_exceptions=True))
+    preconnection.loop.close()
+
+    assert read_only["securityAvailable"] is True
+    assert read_only["pendingAccepts"] == 1
+    assert read_only["pendingConnections"] == 0
+
+
+def test_listener_supports_single_property_get():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        event_loop=asyncio.new_event_loop(),
+    )
+    listener = Listener(preconnection)
+    read_only = listener.get_property("connState")
+    selection = listener.get_property("reliability")
+    preconnection.loop.close()
+
+    assert read_only == "Establishing"
+    assert selection is taps.PreferenceLevel.REQUIRE
+
+
+def test_preconnection_can_separate_connection_context():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    original_context = preconnection.get_connection_context()
+    clone = preconnection.clone()
+
+    preconnection.separate_connection_context()
+    separated_context = preconnection.get_connection_context()
+    preconnection.loop.close()
+
+    assert clone.get_connection_context() is original_context
+    assert separated_context is not original_context
+
+
+def test_monitoring_snapshot_exposes_cached_state():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.1").with_port(1234)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "tcp"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection._mark_ready()
+
+    snapshot = connection.get_monitoring_snapshot()
+    preconnection_snapshot = preconnection.get_monitoring_snapshot()
+    connection.loop.close()
+
+    assert snapshot["connectionContext"]["protocolCache"]["tcp"]["successes"] == 1
+    assert snapshot["connectionContext"]["pathCache"][0]["remote"] == ("203.0.113.10", 443)
+    assert preconnection_snapshot["connectionContext"]["protocolCache"]["tcp"]["successes"] == 1
 
 
 def test_framer_helper_methods_align_with_documented_api():
@@ -1149,6 +1371,26 @@ def test_security_parameters_build_context_and_properties():
     assert properties["publicKey"] == cert_path
     assert properties["sessionCacheCapacity"] == 16
     assert properties["sessionCacheLifetime"] == 3600
+
+
+def test_security_parameters_bulk_setters_override_configuration():
+    security = taps.SecurityParameters()
+    security.set_allowed_security_protocols(["TLS1.2"])
+    security.set_pinned_server_certificates(["chain-a", "chain-b"])
+    security.set_security_algorithms(["TLS_AES_128_GCM_SHA256"])
+    security.set_alpn_protocols(["h3"])
+    security.set_server_name("api.example.com")
+    security.disable_peer_authentication()
+    security.enable_peer_authentication()
+
+    properties = security.get_configuration()
+
+    assert properties["allowedSecurityProtocols"] == ["TLS1.2"]
+    assert properties["pinnedServerCertificate"] == ["chain-a", "chain-b"]
+    assert properties["securityAlgorithms"] == ["TLS_AES_128_GCM_SHA256"]
+    assert properties["alpnProtocols"] == ["h3"]
+    assert properties["serverName"] == "api.example.com"
+    assert properties["requirePeerAuthentication"] is True
 
 
 def test_security_parameters_require_secure_transport_by_default():

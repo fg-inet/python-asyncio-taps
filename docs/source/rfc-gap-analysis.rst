@@ -39,14 +39,15 @@ RFC 9622 checklist
 |                                             |             | propagation, and lifecycle state are present.                |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``ConnectionGroup``                         | partial     | Group-wide close/abort, shared connection-property           |
-|                                             |             | propagation, sorting by connection priority, and limit       |
-|                                             |             | enforcement now exist; broader RFC policy semantics remain.  |
+|                                             |             | propagation, sorting by connection priority, limit           |
+|                                             |             | enforcement, and shared connection context now exist.        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Selection Properties                        | partial     | Clear split from connection properties with RFC-style        |
 |                                             |             | canonical names and a stronger security property set.        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Connection Properties                       | partial     | Query/update support exists, but the RFC catalog is not      |
-|                                             |             | complete yet.                                                |
+| Connection Properties                       | partial     | Query/update support is broader now, including explicit      |
+|                                             |             | property tracking and richer read-only inspection, but the   |
+|                                             |             | RFC catalog is not complete yet.                             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Message Properties / Context                | partial     | RFC-style helpers on ``MessageContext`` and                 |
 |                                             |             | ``ReceivedMessage`` now exist, along with inherited         |
@@ -81,20 +82,21 @@ RFC 9622 checklist
 |                                             |             | and removal behavior.                                        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Property inspection and mutation            | partial     | Connection, preconnection, listener, and message property    |
-|                                             |             | accessors now cover transport, message, and convenience      |
-|                                             |             | profile configuration, but the RFC map is not complete.      |
+|                                             |             | accessors now cover both single-property and aggregate       |
+|                                             |             | inspection, but the RFC map is not complete.                 |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Ready / Closed / Error lifecycle events     | partial     | Much more explicit than the original code, with richer       |
-|                                             |             | read-only path and advisory state; still not a complete      |
-|                                             |             | RFC event matrix.                                            |
+|                                             |             | read-only path/advisory state, inspectable event history,    |
+|                                             |             | and shared monitoring snapshots.                             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Sent / SendError / Expired events           | partial     | Sent and send-error callbacks exist, and expired messages    |
 |                                             |             | now trigger real runtime behavior.                           |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Received / Partial Received events          | partial     | Present and now carry structured message context.            |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Security Parameters                         | partial     | Trust CA, identity, ALPN, SNI, cipher suites, and peer-auth  |
-|                                             |             | control exist, but not the full RFC security surface.        |
+| Security Parameters                         | partial     | Trust CA, identity, ALPN, SNI, cipher suites, peer-auth,     |
+|                                             |             | and bulk configuration helpers exist, but not the full RFC   |
+|                                             |             | security surface.                                            |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Framers                                     | partial     | Supported with working helper API and message-context        |
 |                                             |             | propagation; still relatively lightweight overall.           |
@@ -117,6 +119,8 @@ Where the repository is strongest
 - TLS handling is real rather than nominal, and the test PKI is current.
 - Message lifecycle behavior is now materially better, including receive
   waiters, expiration, batching, and priority-aware queue flush.
+- Shared connection context and monitoring snapshots now provide a concrete
+  base for RFC 9621 cached-state and monitoring concepts.
 - The test and lint baseline is healthy enough to support further spec work.
 
 Largest remaining RFC 9622 gaps
@@ -127,6 +131,8 @@ Largest remaining RFC 9622 gaps
 - Expand the event model and advisory-error surface beyond the current subset.
 - Complete the remaining event and advisory-error surface around the now
   broader establishment API.
+- Build deeper RFC 9621/9623 behavior around cached state and dynamic system
+  policy on top of the new shared connection-context abstraction.
 - Decide which advanced transports are genuinely in scope for this repository,
   especially QUIC, SCTP, multistreaming, and multipath.
 - Build a more systematic conformance matrix and targeted interoperability

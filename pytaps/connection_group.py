@@ -21,6 +21,7 @@ class ConnectionGroup:
     def __init__(self, initial_connection=None):
         self.connections = []
         self.shared_connection_properties = {}
+        self.connection_context = None
         if initial_connection is not None:
             self.add_connection(initial_connection)
 
@@ -31,6 +32,12 @@ class ConnectionGroup:
         return len(self.connections)
 
     def add_connection(self, connection):
+        current_group = getattr(connection, "connection_group", None)
+        if current_group is not None and current_group is not self:
+            current_group.remove_connection(connection)
+        if self.connection_context is None:
+            self.connection_context = connection.connection_context
+            self.connection_context.attach_group()
         limit = self.shared_connection_properties.get("groupConnLimit")
         if (
             isinstance(limit, int)
@@ -42,6 +49,7 @@ class ConnectionGroup:
         if connection not in self.connections:
             self.connections.append(connection)
         connection.connection_group = self
+        connection.connection_context = self.connection_context
         self._apply_shared_properties(connection)
 
     def remove_connection(self, connection):
@@ -49,6 +57,9 @@ class ConnectionGroup:
                             if candidate is not connection]
         if getattr(connection, "connection_group", None) is self:
             connection.connection_group = None
+        if not self.connections and self.connection_context is not None:
+            self.connection_context.detach_group()
+            self.connection_context = None
 
     def set_property(self, prop, value):
         if prop not in self.ENTANGLED_PROPERTIES:
@@ -77,6 +88,10 @@ class ConnectionGroup:
             "size": len(self.connections),
             "connections": list(self.connections),
             "sharedConnectionProperties": dict(self.shared_connection_properties),
+            "connectionContext": (
+                self.connection_context.get_snapshot()
+                if self.connection_context is not None else None
+            ),
         }
 
     def _apply_shared_properties(self, connection):

@@ -5,9 +5,15 @@ from dataclasses import dataclass
 from xml.etree.ElementTree import fromstring
 
 from .connection import Connection
+from .connection_context import ConnectionContext
 from .endpoint import LocalEndpoint, RemoteEndpoint
 from .listener import Listener
-from .message import MessageContext, is_message_property
+from .message import (
+    MESSAGE_PROPERTY_DEFAULTS,
+    MessageContext,
+    canonicalize_message_property_name,
+    is_message_property,
+)
 from .securityParameters import SecurityParameters
 from .transportProperties import TransportProperties, normalize_direction
 from .transports import UdpTransport
@@ -67,7 +73,8 @@ class Preconnection:
     def __init__(self, local_endpoint=None, remote_endpoint=None,
                  transport_properties=None,
                  security_parameters=None,
-                 event_loop=None):
+                 event_loop=None,
+                 connection_context=None):
 
         # Initializations from arguments
         self.local_endpoint = local_endpoint
@@ -75,6 +82,7 @@ class Preconnection:
         self.transport_properties = transport_properties or TransportProperties()
         self.security_parameters = security_parameters
         self.message_properties = MessageContext()
+        self.connection_context = connection_context or ConnectionContext()
         if event_loop is not None:
             self.loop = event_loop
         else:
@@ -318,6 +326,7 @@ class Preconnection:
             ),
             security_parameters=deepcopy(self.security_parameters),
             event_loop=self.loop,
+            connection_context=self.connection_context,
         )
         cloned.message_properties = deepcopy(self.message_properties)
         cloned.read = self.read
@@ -362,15 +371,43 @@ class Preconnection:
             self.transport_properties.set_property(prop, value)
         return self
 
+    def get_property(self, prop, default=None):
+        if is_message_property(prop):
+            return self.message_properties.get(prop, default)
+        return self.transport_properties.get_property(prop, default)
+
+    def default_property(self, prop):
+        if is_message_property(prop):
+            canonical = canonicalize_message_property_name(prop)
+            setattr(self.message_properties, canonical, MESSAGE_PROPERTY_DEFAULTS[canonical])
+            self.message_properties.explicit_properties.discard(canonical)
+            return self
+        self.transport_properties.default_property(prop)
+        return self
+
     def get_properties(self):
         return {
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
             "message": self.message_properties.get_properties(),
+            "connectionContext": self.connection_context.get_snapshot(),
             "security": (
                 self.security_parameters.get_configuration()
                 if self.security_parameters else {}
             ),
+        }
+
+    def get_connection_context(self):
+        return self.connection_context
+
+    def separate_connection_context(self):
+        self.connection_context = ConnectionContext()
+        return self
+
+    def get_monitoring_snapshot(self):
+        return {
+            "connectionContext": self.connection_context.get_snapshot(),
+            "properties": self.get_properties(),
         }
 
     def from_yangfile(self, fname):
