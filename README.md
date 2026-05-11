@@ -83,6 +83,15 @@ That multicast extra now includes both:
 - `mcrx-core-py` for multicast receive support
 - `mctx-core-py` for multicast sender tooling and examples
 
+For QUIC support, install the optional QUIC extra:
+
+~~~
+python -m pip install -e '.[quic]'
+~~~
+
+The current QUIC integration follows the RFC direction of mapping a TAPS
+`Connection` to a QUIC stream, with shared association state underneath.
+
 For local development with tests:
 
 ~~~
@@ -135,4 +144,4 @@ The current codebase still reflects pre-RFC TAPS concepts and naming. A practica
 3. Audit the existing API against RFC 9622 and document gaps in object model, properties, events, and operations.
 4. Introduce missing abstractions incrementally, starting with immutable preestablishment state, richer Transport Properties, and Connection Group support.
 5. Rework candidate gathering and racing to follow RFC 9623 guidance on property ordering, path/protocol sorting, and cache usage.
-6. Expand interoperability coverage with automated tests for TCP, UDP, TLS, framers, multicast, and eventually QUIC or additional protocol stacks.
+6. Expand interoperability coverage with automated tests for TCP, UDP, TLS, framers, multicast, QUIC, and any other protocol stacks that become part of the maintained scope.

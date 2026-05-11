@@ -115,7 +115,7 @@ def _supports_selection_property(protocol, property_name, property_value):
     return supported_value is not False
 
 
-def rank_protocol_candidates(transport_properties):
+def rank_protocol_candidates(transport_properties, connection_context=None):
     """Rank protocol branches per RFC 9623 sorting guidance."""
     ranked_protocols = []
     for protocol in get_protocols():
@@ -145,11 +145,16 @@ def rank_protocol_candidates(transport_properties):
                 avoid_score += weight
 
         if not excluded:
-            ranked_protocols.append((protocol, prefer_score, avoid_score))
+            cache_score = (
+                connection_context.get_protocol_score(protocol["name"])
+                if connection_context is not None else 0
+            )
+            ranked_protocols.append((protocol, prefer_score, avoid_score, cache_score))
 
     ranked_protocols.sort(
         key=lambda value: (
             -value[1],
+            -value[3],
             value[2],
             value[0]["name"],
         )
@@ -202,8 +207,14 @@ def order_remote_addresses(remote_addrs):
     return sorted(remote_addrs, key=lambda entry: (-sort_key(entry)[0], sort_key(entry)[1]))
 
 
-def build_protocol_candidates(transport_properties):
-    return [protocol_info[0]["name"] for protocol_info in rank_protocol_candidates(transport_properties)]
+def build_protocol_candidates(transport_properties, connection_context=None):
+    return [
+        protocol_info[0]["name"]
+        for protocol_info in rank_protocol_candidates(
+            transport_properties,
+            connection_context=connection_context,
+        )
+    ]
 
 
 def create_candidates(connection, remote_addrs=None):
@@ -212,7 +223,10 @@ def create_candidates(connection, remote_addrs=None):
         remote_addrs = []
 
     ordered_paths = rank_path_candidates(connection.local_endpoint, connection.transport_properties)
-    ordered_protocols = build_protocol_candidates(connection.transport_properties)
+    ordered_protocols = build_protocol_candidates(
+        connection.transport_properties,
+        connection_context=connection.connection_context,
+    )
     ordered_remotes = order_remote_addresses(remote_addrs)
 
     candidates = []
@@ -228,6 +242,36 @@ def create_candidates(connection, remote_addrs=None):
                     )
                 )
     return candidates
+
+
+def order_candidates_for_racing(connection, candidates):
+    protocol_order = {}
+    path_order = {}
+    for index, candidate in enumerate(candidates):
+        protocol_order.setdefault(candidate.protocol, len(protocol_order))
+        path_order.setdefault(candidate.path, len(path_order))
+
+    def sort_key(item):
+        index, candidate = item
+        local_path = (
+            (candidate.local_address, connection.local_endpoint.port)
+            if candidate.local_address is not None and connection.local_endpoint is not None
+            else None
+        )
+        remote_path = (candidate.remote_address, connection.remote_endpoint.port)
+        cache_score = connection.connection_context.get_path_score(
+            local_path,
+            remote_path,
+            protocol=candidate.protocol,
+        )
+        return (
+            path_order[candidate.path],
+            protocol_order[candidate.protocol],
+            -cache_score,
+            index,
+        )
+
+    return [candidate for _index, candidate in sorted(enumerate(candidates), key=sort_key)]
 
 
 # Define our own sleep function which keeps track of its running calls

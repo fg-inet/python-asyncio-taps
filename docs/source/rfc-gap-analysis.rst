@@ -59,15 +59,16 @@ RFC 9622 checklist
 | ``InitiateWithSend``                        | implemented | Present and backed by runtime behavior, including            |
 |                                             |             | pre-establishment expiration handling.                       |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| ``Listen``                                  | partial     | Works for TCP, UDP, and TLS listeners with explicit          |
+| ``Listen``                                  | partial     | Works for TCP, UDP, TLS, and QUIC listeners with explicit    |
 |                                             |             | lifecycle state.                                             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Rendezvous``                              | partial     | Implemented with simultaneous local listen and active        |
 |                                             |             | initiate, but still without broader rendezvous policy        |
 |                                             |             | semantics.                                                   |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| ``Clone``                                   | partial     | Exists and integrates with connection groups, but semantics  |
-|                                             |             | are not fully RFC-complete.                                  |
+| ``Clone``                                   | partial     | Exists and integrates with connection groups; QUIC clones    |
+|                                             |             | now open additional streams on a shared association, but     |
+|                                             |             | semantics are not fully RFC-complete.                        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Send``                                    | partial     | Message context, expiration, batch send, queueing,           |
 |                                             |             | and priority scheduling are implemented.                     |
@@ -101,10 +102,12 @@ RFC 9622 checklist
 | Framers                                     | partial     | Supported with working helper API and message-context        |
 |                                             |             | propagation; still relatively lightweight overall.           |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| QUIC / SCTP                                 | missing     | Not implemented.                                             |
+| QUIC / SCTP                                 | partial     | QUIC stream-based connections are now implemented with       |
+|                                             |             | shared association state; SCTP is still missing.             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Multistreaming / Multipath runtime support  | missing     | Property names exist in part, but real transport/runtime     |
-|                                             |             | support is not there yet.                                    |
+| Multistreaming / Multipath runtime support  | partial     | QUIC now provides real multistreaming support through        |
+|                                             |             | stream-per-connection mapping; multipath support is still    |
+|                                             |             | not there.                                                   |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | YANG alignment                              | partial     | Existing YANG examples still work, but the final RFC model   |
 |                                             |             | is not fully mapped.                                         |
@@ -115,7 +118,7 @@ Where the repository is strongest
 
 - The core object model is now much cleaner and better structured.
 - The establishment path is substantially closer to RFC 9623 than the original
-  codebase.
+  codebase, including cache-aware protocol/path ordering and pacing.
 - TLS handling is real rather than nominal, and the test PKI is current.
 - Message lifecycle behavior is now materially better, including receive
   waiters, expiration, batching, and priority-aware queue flush.
@@ -131,10 +134,11 @@ Largest remaining RFC 9622 gaps
 - Expand the event model and advisory-error surface beyond the current subset.
 - Complete the remaining event and advisory-error surface around the now
   broader establishment API.
-- Build deeper RFC 9621/9623 behavior around cached state and dynamic system
-  policy on top of the new shared connection-context abstraction.
-- Decide which advanced transports are genuinely in scope for this repository,
-  especially QUIC, SCTP, multistreaming, and multipath.
+- Build deeper RFC 9621/9623 behavior around dynamic system policy on top of
+  the new shared connection-context abstraction, which now already feeds cache-
+  aware establishment ordering.
+- Decide which remaining advanced transports are genuinely in scope for this
+  repository, especially SCTP and multipath beyond the now-present QUIC base.
 - Build a more systematic conformance matrix and targeted interoperability
   tests.
 

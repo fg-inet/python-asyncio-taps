@@ -7,6 +7,7 @@ try:
 except ImportError:
     netifaces = None
 
+from . import transports as transport_impl
 from .connection_group import ConnectionGroup
 from .message import (
     MESSAGE_PROPERTY_DEFAULTS,
@@ -20,13 +21,14 @@ from .transportProperties import (
     TransportProperties,
     canonicalize_property_name,
 )
-from .transports import MulticastSendTransport, TcpTransport, UdpTransport
+from .transports import MulticastSendTransport, QuicAssociationManager, TcpTransport, UdpTransport
 from .utility import (
     Candidate,
     ConnectionState,
     SleepClassForRacing,
     build_protocol_candidates,
     create_candidates,
+    order_candidates_for_racing,
     schedule_callback,
     setup_logger,
 )
@@ -87,6 +89,7 @@ class Connection:
         self.transports = []
         self.protocol = None
         self.multicast_open = False
+        self.quic_association = None
         self.connection_group = ConnectionGroup(self)
         self.race_task = None
         self._batch_counter = 0
@@ -198,7 +201,12 @@ class Connection:
             protocol=self.protocol,
             path=self._current_path.copy(),
         )
-        self.connection_context.record_protocol_outcome(self.protocol, True)
+        self.connection_context.record_candidate_outcome(
+            self._current_path.get("local"),
+            self._current_path.get("remote"),
+            self.protocol,
+            True,
+        )
         self.sleeper_for_racing.cancel_all()
         if not self._ready_waiter.done():
             self._ready_waiter.set_result(self)
@@ -215,7 +223,6 @@ class Connection:
     def _fail_initiate(self, error):
         self._set_state(ConnectionState.CLOSED, error)
         self._record_event("initiate_error", error=str(error))
-        self.connection_context.record_protocol_outcome(self.protocol, False, error)
         if not self._ready_waiter.done():
             self._ready_waiter.set_exception(error)
         schedule_callback(
@@ -236,7 +243,13 @@ class Connection:
     def _report_connection_error(self, error):
         self.last_error = error
         self._record_event("connection_error", error=str(error))
-        self.connection_context.record_protocol_outcome(self.protocol, False, error)
+        self.connection_context.record_candidate_outcome(
+            self._current_path.get("local"),
+            self._current_path.get("remote"),
+            self.protocol,
+            False,
+            error,
+        )
         schedule_callback(self.loop, self.connection_error, (error, self))
 
     def _report_receive_error(self, message_context, reason=None):
@@ -300,8 +313,41 @@ class Connection:
         exc = task.exception()
         if exc is None:
             return
+        candidate = getattr(task, "_pytaps_candidate", None)
+        if candidate is not None:
+            local_path = (
+                (candidate.local_address, self.local_endpoint.port)
+                if candidate.local_address is not None and self.local_endpoint is not None
+                else None
+            )
+            remote_path = (candidate.remote_address, self.remote_endpoint.port)
+            self.connection_context.record_candidate_outcome(
+                local_path,
+                remote_path,
+                candidate.protocol,
+                False,
+                exc,
+            )
         self.last_error = exc
         logger.warning("Connection attempt failed: %s", exc)
+
+    def _candidate_racing_delay(self, candidate):
+        local_path = (
+            (candidate.local_address, self.local_endpoint.port)
+            if candidate.local_address is not None and self.local_endpoint is not None
+            else None
+        )
+        remote_path = (candidate.remote_address, self.remote_endpoint.port)
+        score = self.connection_context.get_path_score(
+            local_path,
+            remote_path,
+            protocol=candidate.protocol,
+        )
+        if score > 0:
+            return max(0.02, RACING_DELAY / (1 + min(score, 3)))
+        if score < 0:
+            return RACING_DELAY * (1 + min(abs(score), 3))
+        return RACING_DELAY
 
     def _deliver_received(self, data, context):
         self._receive_sequence += 1
@@ -547,6 +593,11 @@ class Connection:
             connection_properties=self.transport_properties.get_connection_properties(),
         )
         template.message_properties = deepcopy(self.message_properties)
+        if self.protocol == "quic" and self.quic_association is not None:
+            cloned_connection = Connection(template)
+            self.connection_group.add_connection(cloned_connection)
+            await self.quic_association.open_stream_connection(cloned_connection)
+            return cloned_connection
         cloned_connection = await template.initiate()
         self.connection_group.add_connection(cloned_connection)
         return cloned_connection
@@ -662,6 +713,8 @@ class Connection:
         for transport in list(self.transports):
             if getattr(transport, "transport", None) is not None:
                 transport.transport.close()
+            else:
+                self.loop.create_task(transport.close())
         self._mark_closed()
         self._report_connection_error(reason)
 
@@ -680,7 +733,10 @@ class Connection:
     async def race(self):
         # This is an active connection attempt
         self.active = True
-        protocol_candidates = build_protocol_candidates(self.transport_properties)
+        protocol_candidates = build_protocol_candidates(
+            self.transport_properties,
+            connection_context=self.connection_context,
+        )
 
         if len(protocol_candidates) == 0:
             logger.critical("Candidate set is empty, aborting")
@@ -776,7 +832,8 @@ class Connection:
                         )
                     )
             candidate_set = expanded_candidates
-            logger.info("Final Candidates: " + str(candidate_set))
+        candidate_set = order_candidates_for_racing(self, candidate_set)
+        logger.info("Final Candidates: " + str(candidate_set))
 
         # Attempt to establish a connection with each candidate
         for candidate in candidate_set:
@@ -798,40 +855,80 @@ class Connection:
                 local_address_to_use = None
 
             if candidate.protocol == 'udp':
-                self.protocol = 'udp'
                 logger.info("Creating UDP connect task with remote addr " +
                             str(candidate.remote_address) + ", port " +
                             str(self.remote_endpoint.port))
-                self.remote_endpoint.address = [candidate.remote_address]
+                candidate_remote = self.remote_endpoint.clone()
+                candidate_remote.address = [candidate.remote_address]
+                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
+                if candidate_local and candidate.local_address:
+                    candidate_local.address = [candidate.local_address]
 
                 if ipaddress.ip_address(candidate.remote_address).is_multicast:
                     task = self.loop.create_task(
                         MulticastSendTransport(
                             connection=self,
-                            local_endpoint=self.local_endpoint,
-                            remote_endpoint=self.remote_endpoint,
+                            local_endpoint=candidate_local,
+                            remote_endpoint=candidate_remote,
                         ).active_open(None)
                     )
+                    task._pytaps_candidate = candidate
                     self.pending.append(task)
                     task.add_done_callback(self._handle_attempt_done)
                     logger.info("Using multicast publication transport.")
                     break
 
                 # Create a datagram endpoint
+                udp_transport = UdpTransport(
+                    connection=self,
+                    local_endpoint=candidate_local,
+                    remote_endpoint=candidate_remote,
+                )
                 task = self.loop.create_task(
                     self.loop.create_datagram_endpoint(
-                        lambda: UdpTransport(
-                            connection=self,
-                            remote_endpoint=self.remote_endpoint),
-                        remote_addr=(self.remote_endpoint.address[0],
-                                     self.remote_endpoint.port),
+                        lambda: udp_transport,
+                        remote_addr=(candidate_remote.address[0],
+                                     candidate_remote.port),
                         local_addr=local_address_to_use))
+                task._pytaps_candidate = candidate
                 self.pending.append(task)
                 task.add_done_callback(self._handle_attempt_done)
 
                 logger.info("Not racing multiple addrs for UDP" +
                             " -- stop racing")
                 break
+
+            elif candidate.protocol == "quic":
+                if transport_impl.aioquic_connect is None:
+                    logger.info(
+                        "Skipping quic candidate for %s because aioquic is not installed.",
+                        candidate.remote_address,
+                    )
+                    continue
+                logger.info(
+                    "Creating QUIC stream candidate to %s:%s.",
+                    candidate.remote_address,
+                    self.remote_endpoint.port,
+                )
+                candidate_remote = self.remote_endpoint.clone()
+                candidate_remote.address = [candidate.remote_address]
+                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
+                if candidate_local and candidate.local_address:
+                    candidate_local.address = [candidate.local_address]
+                self.quic_association = QuicAssociationManager(loop=self.loop)
+                task = self.loop.create_task(
+                    self.quic_association.open_stream_connection(
+                        self,
+                        local_endpoint=candidate_local,
+                        remote_endpoint=candidate_remote,
+                    )
+                )
+                task._pytaps_candidate = candidate
+                self.pending.append(task)
+                task.add_done_callback(self._handle_attempt_done)
+                await self.sleeper_for_racing.sleep(
+                    self._candidate_racing_delay(candidate)
+                )
 
             elif candidate.protocol in {'tcp', 'tls-tcp'}:
                 if candidate.protocol == "tls-tcp" and self.security_context is None:
@@ -840,13 +937,16 @@ class Connection:
                         candidate.remote_address,
                     )
                     continue
-                self.protocol = candidate.protocol
                 logger.info(
                     "Creating %s connect task to %s.",
                     candidate.protocol,
                     candidate.remote_address,
                 )
-                self.remote_endpoint.address = [candidate.remote_address]
+                candidate_remote = self.remote_endpoint.clone()
+                candidate_remote.address = [candidate.remote_address]
+                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
+                if candidate_local and candidate.local_address:
+                    candidate_local.address = [candidate.local_address]
                 server_hostname = None
                 if candidate.protocol == "tls-tcp" and self.security_context:
                     if (
@@ -857,20 +957,27 @@ class Connection:
                     else:
                         server_hostname = self.remote_endpoint.host_name
                 # If the protocol is tcp, create a asyncio connection
+                tcp_transport = TcpTransport(
+                    connection=self,
+                    local_endpoint=candidate_local,
+                    remote_endpoint=candidate_remote,
+                    protocol_name=candidate.protocol,
+                )
                 task = self.loop.create_task(
                     self.loop.create_connection(
-                        lambda: TcpTransport(
-                            connection=self,
-                            remote_endpoint=self.remote_endpoint),
-                        self.remote_endpoint.address[0],
-                        self.remote_endpoint.port,
+                        lambda: tcp_transport,
+                        candidate_remote.address[0],
+                        candidate_remote.port,
                         ssl=self.security_context if candidate.protocol == "tls-tcp" else None,
                         server_hostname=server_hostname,
                         local_addr=local_address_to_use))
+                task._pytaps_candidate = candidate
                 self.pending.append(task)
                 task.add_done_callback(self._handle_attempt_done)
                 # Wait before starting next connection attempt
-                await self.sleeper_for_racing.sleep(RACING_DELAY)
+                await self.sleeper_for_racing.sleep(
+                    self._candidate_racing_delay(candidate)
+                )
 
         if self.pending and self.state != ConnectionState.ESTABLISHED:
             await asyncio.gather(*list(self.pending), return_exceptions=True)

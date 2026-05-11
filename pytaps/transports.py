@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 
 from .endpoint import RemoteEndpoint
 from .framer import DeframingFailed
@@ -10,6 +11,17 @@ try:
 except ImportError:
     mctx_core = None
 
+try:
+    from aioquic.asyncio import serve as aioquic_serve
+    from aioquic.asyncio.client import connect as aioquic_connect
+    from aioquic.asyncio.protocol import QuicConnectionProtocol
+    from aioquic.quic.configuration import QuicConfiguration
+except ImportError:
+    aioquic_serve = None
+    aioquic_connect = None
+    QuicConnectionProtocol = None
+    QuicConfiguration = None
+
 logger = setup_logger(__name__, "blue")
 
 
@@ -18,6 +30,197 @@ def _require_mctx_core():
         raise ImportError(
             "Multicast send support requires the optional 'mctx-core-py' package."
         )
+
+
+def _require_aioquic():
+    if aioquic_connect is None or aioquic_serve is None or QuicConfiguration is None:
+        raise ImportError("QUIC support requires the optional 'aioquic' package.")
+
+
+def _build_quic_configuration(owner, *, is_client):
+    _require_aioquic()
+    security_parameters = getattr(owner, "security_parameters", None)
+    configuration = QuicConfiguration(
+        is_client=is_client,
+        alpn_protocols=(
+            list(security_parameters.alpn_protocols)
+            if security_parameters and security_parameters.alpn_protocols
+            else ["taps"]
+        ),
+    )
+
+    if security_parameters:
+        if security_parameters.identity:
+            configuration.load_cert_chain(security_parameters.identity)
+        elif security_parameters.public_key:
+            configuration.load_cert_chain(
+                security_parameters.public_key,
+                keyfile=security_parameters.private_key,
+            )
+        if security_parameters.trustedCA:
+            configuration.load_verify_locations(cafile=security_parameters.trustedCA[0])
+        configuration.server_name = (
+            security_parameters.server_name
+            or getattr(getattr(owner, "remote_endpoint", None), "host_name", None)
+        )
+        configuration.verify_mode = (
+            ssl.CERT_REQUIRED
+            if security_parameters.require_peer_authentication
+            else ssl.CERT_NONE
+        )
+    else:
+        configuration.verify_mode = ssl.CERT_REQUIRED if is_client else ssl.CERT_NONE
+
+    return configuration
+
+
+class PytapsQuicProtocol(
+    QuicConnectionProtocol if QuicConnectionProtocol is not None else object
+):
+    def __init__(self, quic, *, association):
+        super().__init__(quic, stream_handler=self._handle_stream)
+        self.association = association
+
+    def _handle_stream(self, reader, writer):
+        self.association.loop.create_task(
+            self.association.accept_inbound_stream(reader, writer, self)
+        )
+
+
+class QuicAssociationManager:
+    def __init__(self, *, loop, listener=None):
+        self.loop = loop
+        self.listener = listener
+        self.protocol = None
+        self.context_manager = None
+        self.server = None
+        self.stream_transports = set()
+        self.anchor_connection = None
+
+    async def connect_client(self, connection, *, local_endpoint=None, remote_endpoint=None):
+        if self.protocol is not None:
+            return
+        configuration = _build_quic_configuration(connection, is_client=True)
+        remote_endpoint = remote_endpoint or connection.remote_endpoint
+        local_endpoint = local_endpoint or connection.local_endpoint
+        remote_host = (
+            remote_endpoint.host_name
+            or remote_endpoint.address[0]
+        )
+        local_port = local_endpoint.port if local_endpoint else 0
+        self.context_manager = aioquic_connect(
+            remote_host,
+            remote_endpoint.port,
+            configuration=configuration,
+            create_protocol=lambda quic, stream_handler=None: PytapsQuicProtocol(
+                quic,
+                association=self,
+            ),
+            wait_connected=True,
+            local_port=local_port or 0,
+        )
+        self.protocol = await self.context_manager.__aenter__()
+
+    async def start_listener(self, listener):
+        if self.server is not None:
+            return self.server
+        configuration = _build_quic_configuration(listener, is_client=False)
+        if configuration.certificate is None and configuration.private_key is None:
+            raise RuntimeError(
+                "QUIC listeners require a certificate identity or public/private key."
+            )
+        self.server = await aioquic_serve(
+            listener.local_endpoint.address[0],
+            listener.local_endpoint.port,
+            configuration=configuration,
+            create_protocol=lambda quic, stream_handler=None: PytapsQuicProtocol(
+                quic,
+                association=self,
+            ),
+            stream_handler=None,
+        )
+        return self.server
+
+    async def open_stream_connection(self, connection, *, local_endpoint=None, remote_endpoint=None):
+        local_endpoint = local_endpoint or connection.local_endpoint
+        remote_endpoint = remote_endpoint or connection.remote_endpoint
+        await self.connect_client(
+            connection,
+            local_endpoint=local_endpoint,
+            remote_endpoint=remote_endpoint,
+        )
+        if self.anchor_connection is None:
+            self.anchor_connection = connection
+        elif connection is not self.anchor_connection:
+            self.anchor_connection.connection_group.add_connection(connection)
+        reader, writer = await self.protocol.create_stream(is_unidirectional=False)
+        transport = QuicTransport(
+            connection=connection,
+            local_endpoint=local_endpoint.clone() if local_endpoint else None,
+            remote_endpoint=remote_endpoint.clone() if remote_endpoint else None,
+            association=self,
+            reader=reader,
+            writer=writer,
+        )
+        self.stream_transports.add(transport)
+        await transport.active_open_stream()
+        return transport
+
+    async def accept_inbound_stream(self, reader, writer, protocol):
+        from .connection import Connection
+        from .preconnection import Preconnection
+
+        self.protocol = protocol
+        remote_endpoint = (
+            self.listener.remote_endpoint.clone() if self.listener.remote_endpoint else None
+        )
+        preconnection = Preconnection(
+            local_endpoint=self.listener.local_endpoint.clone(),
+            remote_endpoint=remote_endpoint,
+            transport_properties=self.listener.transport_properties,
+            security_parameters=self.listener.security_parameters,
+            event_loop=self.loop,
+            connection_context=self.listener.connection_context,
+        )
+        if self.listener.framer:
+            preconnection.add_framer(self.listener.framer)
+        connection = Connection(preconnection)
+        connection.protocol = "quic"
+        connection.quic_association = self
+        if self.anchor_connection is None:
+            self.anchor_connection = connection
+        else:
+            self.anchor_connection.connection_group.add_connection(connection)
+        transport = QuicTransport(
+            connection=connection,
+            local_endpoint=connection.local_endpoint,
+            remote_endpoint=connection.remote_endpoint,
+            association=self,
+            reader=reader,
+            writer=writer,
+            listener=self.listener,
+        )
+        self.stream_transports.add(transport)
+        await transport.passive_open_stream()
+
+    def remove_stream(self, transport):
+        self.stream_transports.discard(transport)
+
+    async def close_association(self):
+        if self.protocol is not None:
+            self.protocol.close()
+            wait_closed = getattr(self.protocol, "wait_closed", None)
+            if wait_closed is not None:
+                await wait_closed()
+        if self.context_manager is not None:
+            await self.context_manager.__aexit__(None, None, None)
+        self.protocol = None
+        self.context_manager = None
+
+    async def stop_listener(self):
+        if self.server is not None:
+            self.server.close()
+        self.server = None
 
 class TransportLayer(asyncio.Protocol):
     """ One possible underlying transport for a TAPS connection
@@ -267,6 +470,8 @@ class TransportLayer(asyncio.Protocol):
         if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
+        self.connection.protocol = getattr(self, "protocol_name", self.connection.protocol)
+        self.connection.local_endpoint = self.local_endpoint
         new_remote_endpoint = RemoteEndpoint()
         logger.info("Received new connection.")
         # Get information about the newly connected endpoint
@@ -275,6 +480,7 @@ class TransportLayer(asyncio.Protocol):
         new_remote_endpoint.with_port(
             transport.get_extra_info("peername")[1])
         self.remote_endpoint = new_remote_endpoint
+        self.connection.remote_endpoint = new_remote_endpoint
         sockname = transport.get_extra_info("sockname")
         if sockname:
             self.connection.note_path_change(
@@ -290,12 +496,25 @@ class TransportLayer(asyncio.Protocol):
 
 
 class UdpTransport(TransportLayer):
+    def __init__(
+        self,
+        connection,
+        local_endpoint=None,
+        remote_endpoint=None,
+        *,
+        protocol_name="udp",
+    ):
+        super().__init__(connection, local_endpoint, remote_endpoint)
+        self.protocol_name = protocol_name
 
     async def active_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
+        self.connection.protocol = self.protocol_name
+        self.connection.local_endpoint = self.local_endpoint
+        self.connection.remote_endpoint = self.remote_endpoint
         logger.info("Connected successfully UDP to " +
                     str(self.connection.remote_endpoint.address) +
                     ":" + str(self.connection.remote_endpoint.port) +
@@ -432,6 +651,7 @@ class UdpTransport(TransportLayer):
 class MulticastSendTransport(TransportLayer):
     def __init__(self, connection, local_endpoint=None, remote_endpoint=None):
         super().__init__(connection, local_endpoint, remote_endpoint)
+        self.protocol_name = "udp"
         self.message_based = True
         self.mctx_context = None
         self.publication = None
@@ -441,6 +661,9 @@ class MulticastSendTransport(TransportLayer):
         _require_mctx_core()
         if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
+        self.connection.protocol = self.protocol_name
+        self.connection.local_endpoint = self.local_endpoint
+        self.connection.remote_endpoint = self.remote_endpoint
 
         source = None
         source_port = None
@@ -553,21 +776,196 @@ class MulticastSendTransport(TransportLayer):
         raise RuntimeError("Multicast sender transports do not support receive().")
 
 
+class QuicTransport(TransportLayer):
+    def __init__(
+        self,
+        connection,
+        local_endpoint=None,
+        remote_endpoint=None,
+        *,
+        association,
+        reader,
+        writer,
+        listener=None,
+    ):
+        super().__init__(connection, local_endpoint, remote_endpoint)
+        self.protocol_name = "quic"
+        self.message_based = False
+        self.association = association
+        self.reader = reader
+        self.writer = writer
+        self.listener = listener
+        self._reader_task = None
+
+    def _buffer_received(self, data):
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=False
+            )
+        else:
+            self.current_message_context.end_of_message = False
+        if self.recv_buffer is None:
+            self.recv_buffer = data
+        else:
+            self.recv_buffer = self.recv_buffer + data
+        if self.connection.framer:
+            self.loop.create_task(self.invoke_framer())
+            return
+        for waiter in self.waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+
+    async def _pump_reader(self):
+        try:
+            while True:
+                data = await self.reader.read(65536)
+                if data == b"":
+                    self.eof_received()
+                    return
+                self._buffer_received(data)
+        except Exception as exc:
+            self.connection._report_connection_error(exc)
+
+    async def active_open_stream(self):
+        if self.connection.framer:
+            await self.connection.framer.handle_start(self.connection)
+        self.connection.protocol = self.protocol_name
+        self.connection.quic_association = self.association
+        self.connection.local_endpoint = self.local_endpoint
+        self.connection.remote_endpoint = self.remote_endpoint
+        self._reader_task = self.loop.create_task(self._pump_reader())
+        if self.local_endpoint and self.remote_endpoint and self.remote_endpoint.address:
+            self.connection.note_path_change(
+                local_address=self.local_endpoint.address[0] if self.local_endpoint.address else None,
+                local_port=self.local_endpoint.port,
+                remote_address=self.remote_endpoint.address[0],
+                remote_port=self.remote_endpoint.port,
+            )
+        self.connection._mark_ready()
+        if self.connection._pending_message:
+            data, context, eom = self.connection._pending_message
+            self.connection._pending_message = None
+            if context.is_expired():
+                self.connection._report_expired(context)
+            else:
+                await self.write(data, context, eom)
+
+    async def passive_open_stream(self):
+        if self.connection.framer:
+            await self.connection.framer.handle_start(self.connection)
+        self.connection.protocol = self.protocol_name
+        self.connection.quic_association = self.association
+        self.connection.local_endpoint = self.local_endpoint
+        self.connection.remote_endpoint = self.remote_endpoint
+        self._reader_task = self.loop.create_task(self._pump_reader())
+        self.connection._mark_ready()
+        if self.listener is not None:
+            self.listener._deliver_connection(self.connection)
+
+    async def write(self, data, message_context, end_of_message):
+        logger.info("Writing QUIC stream data.")
+        if isinstance(data, str):
+            data = data.encode()
+        try:
+            if self.connection.framer:
+                data = await self.connection.framer.handle_new_sent_message(
+                    data,
+                    message_context,
+                    end_of_message,
+                )
+            self.writer.write(data)
+            await self.writer.drain()
+        except InterruptedError:
+            logger.warning("SendError occurred.")
+            if self.connection.send_error:
+                self.loop.create_task(
+                    self.connection.send_error(self.message_count, self.connection)
+                )
+            return
+        logger.info("QUIC stream data written successfully.")
+        if self.connection.sent:
+            self.loop.create_task(
+                self.connection.sent(self.message_count, self.connection)
+            )
+
+    async def read(self, min_incomplete_length, max_length):
+        if self.connection.framer:
+            if len(self.framer_buffer) == 0:
+                await self.await_data()
+            data, context, _ = self.framer_buffer.pop(0)
+            self.connection._deliver_received(data, context)
+            return
+
+        while self.recv_buffer is None or len(self.recv_buffer) < min_incomplete_length:
+            await self.await_data()
+        if max_length == -1 or len(self.recv_buffer) <= max_length:
+            data = self.recv_buffer
+            self.recv_buffer = None
+        else:
+            data = self.recv_buffer[:max_length]
+            self.recv_buffer = self.recv_buffer[max_length:]
+
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=self.at_eof
+            )
+
+        context = self.current_message_context
+        context.end_of_message = self.at_eof
+
+        if self.at_eof:
+            context.final = True
+            self.connection._deliver_received(data, context)
+            self.connection._received_final_message = True
+            self.current_message_context = None
+            return
+
+        self.connection._deliver_received_partial(data, context)
+
+    async def close(self):
+        logger.info("Closing QUIC stream.")
+        if self.writer is not None:
+            self.writer.close()
+            wait_closed = getattr(self.writer, "wait_closed", None)
+            if wait_closed is not None:
+                await wait_closed()
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+        self.association.remove_stream(self)
+        self.connection._report_closed()
+        if not self.association.stream_transports and self.association.context_manager is not None:
+            await self.association.close_association()
+
+
 class TcpTransport(TransportLayer):
+    def __init__(
+        self,
+        connection,
+        local_endpoint=None,
+        remote_endpoint=None,
+        *,
+        protocol_name="tcp",
+    ):
+        super().__init__(connection, local_endpoint, remote_endpoint)
+        self.protocol_name = protocol_name
 
     async def active_open(self, transport):
         # If there is a framer, call the start event
         if self.connection.framer:
             await self.connection.framer.handle_start(self.connection)
         self.transport = transport
+        self.connection.protocol = self.protocol_name
+        self.connection.local_endpoint = self.local_endpoint
+        self.connection.remote_endpoint = self.remote_endpoint
         logger.info("Connected successfully on TCP.")
         sockname = transport.get_extra_info("sockname")
         if sockname:
             self.connection.note_path_change(
                 local_address=sockname[0],
                 local_port=sockname[1],
-                remote_address=self.connection.remote_endpoint.address[0],
-                remote_port=self.connection.remote_endpoint.port,
+                remote_address=self.remote_endpoint.address[0],
+                remote_port=self.remote_endpoint.port,
             )
         self.connection._mark_ready()
         if self.connection._pending_message:

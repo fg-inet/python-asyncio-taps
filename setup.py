@@ -77,6 +77,9 @@ setup(
             "mcrx-core-py",
             "mctx-core-py",
         ],
+        "quic": [
+            "aioquic>=1.2.0",
+        ],
         "dev": [
             "ruff>=0.11",
         ],

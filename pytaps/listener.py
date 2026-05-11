@@ -6,10 +6,11 @@ try:
 except ImportError:
     netifaces = None
 
+from . import transports as transport_impl
 from .connection import Connection
 from .endpoint import RemoteEndpoint
 from .multicast import do_join, do_leave
-from .transports import TcpTransport, UdpTransport
+from .transports import QuicAssociationManager, TcpTransport, UdpTransport
 from .utility import (
     ConnectionState,
     build_protocol_candidates,
@@ -49,6 +50,7 @@ class Listener:
         self.framer = preconnection.framer
         self.active_ports = {}
         self.protocol = None
+        self.quic_association = None
         self.listen_task = None
         self.state = ConnectionState.ESTABLISHING
         self._listen_waiter = self.loop.create_future()
@@ -206,6 +208,8 @@ class Listener:
         return self
 
     async def stop(self):
+        if self.quic_association is not None:
+            await self.quic_association.stop_listener()
         for server in list(self._servers):
             server.close()
             await server.wait_closed()
@@ -331,11 +335,27 @@ class Listener:
                                 str(self.local_endpoint.address) +
                                 " port: " + str(self.local_endpoint.port))
                     server = await self.loop.create_server(
-                        lambda: StreamHandler(self),
+                        lambda protocol_name=candidate[0]: StreamHandler(self, protocol_name),
                         self.local_endpoint.address[0],
                         self.local_endpoint.port,
                         ssl=self.security_context if candidate[0] == "tls-tcp" else None)
                     self._servers.append(server)
+                    started = True
+                elif candidate[0] == "quic":
+                    if transport_impl.aioquic_serve is None:
+                        logger.info(
+                            "Skipping quic listener candidate on %s:%s because aioquic is not installed.",
+                            candidate[1],
+                            self.local_endpoint.port,
+                        )
+                        continue
+                    self.protocol = "quic"
+                    self.local_endpoint.address = [candidate[1]]
+                    self.quic_association = QuicAssociationManager(
+                        loop=self.loop,
+                        listener=self,
+                    )
+                    await self.quic_association.start_listener(self)
                     started = True
             except Exception as err:
                 logger.warning("Listen Error occurred: " + str(err))
@@ -426,9 +446,10 @@ class DatagramHandler(asyncio.Protocol):
 
 class StreamHandler(asyncio.Protocol):
 
-    def __init__(self, preconnection):
+    def __init__(self, preconnection, protocol_name="tcp"):
         new_connection = Connection(preconnection)
         self.connection = new_connection
+        self.protocol_name = protocol_name
 
     def connection_made(self, transport):
         new_remote_endpoint = RemoteEndpoint()
@@ -441,8 +462,10 @@ class StreamHandler(asyncio.Protocol):
         self.connection.remote_endpoint = new_remote_endpoint
         new_tcp = TcpTransport(self.connection,
                                self.connection.local_endpoint,
-                               new_remote_endpoint)
+                               new_remote_endpoint,
+                               protocol_name=self.protocol_name)
         new_tcp.transport = transport
+        self.connection.protocol = self.protocol_name
         self.connection.state = ConnectionState.ESTABLISHED
         self.connection._originating_preconnection._deliver_connection(self.connection)
         return

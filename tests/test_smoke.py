@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 import pytaps as taps
 from pytaps.listener import Listener
-from pytaps.transports import TcpTransport, UdpTransport
-from pytaps.utility import build_protocol_candidates, create_candidates
+from pytaps.transports import QuicTransport, TcpTransport, UdpTransport
+from pytaps.utility import (
+    Candidate,
+    build_protocol_candidates,
+    create_candidates,
+    order_candidates_for_racing,
+)
 from pytaps.yang_validate import YANG_FMT_XML
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -232,7 +237,7 @@ def test_protocol_candidates_follow_require_prefer_avoid_order():
 
     candidates = build_protocol_candidates(properties)
 
-    assert candidates == ["tcp", "tls-tcp"]
+    assert candidates == ["quic", "tcp", "tls-tcp"]
 
 
 def test_protocol_candidates_require_confidentiality():
@@ -241,7 +246,32 @@ def test_protocol_candidates_require_confidentiality():
 
     candidates = build_protocol_candidates(properties)
 
-    assert candidates == ["tls-tcp"]
+    assert candidates == ["quic", "tls-tcp"]
+
+
+def test_protocol_candidates_can_prefer_quic_multistreaming():
+    properties = taps.TransportProperties()
+    properties.require("multistreaming")
+
+    candidates = build_protocol_candidates(properties)
+
+    assert candidates == ["quic"]
+
+
+def test_protocol_candidates_use_cached_protocol_outcomes():
+    properties = taps.TransportProperties()
+    properties.require("reliability")
+    properties.ignore("preserveMsgBoundaries")
+    properties.ignore("zeroRttMsg")
+    properties.ignore("multistreaming")
+
+    context = taps.ConnectionContext()
+    context.record_protocol_outcome("tcp", True)
+    context.record_protocol_outcome("quic", False, RuntimeError("cached failure"))
+
+    candidates = build_protocol_candidates(properties, connection_context=context)
+
+    assert candidates == ["tcp", "tls-tcp", "quic"]
 
 
 def test_candidate_order_prefers_paths_before_protocols():
@@ -266,9 +296,49 @@ def test_candidate_order_prefers_paths_before_protocols():
     )
 
     assert candidates[0].path == "wifi"
-    assert candidates[0].protocol == "tcp"
+    assert candidates[0].protocol == "quic"
     assert candidates[0].remote_address == "2001:db8::1"
     assert candidates[-1].path == "cell"
+
+
+def test_racing_order_prefers_cached_successful_candidate_path():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.1").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.connection_context.record_candidate_outcome(
+        ("192.0.2.10", 12345),
+        ("203.0.113.10", 443),
+        "tcp",
+        True,
+    )
+
+    ordered = order_candidates_for_racing(
+        connection,
+        [
+            Candidate(
+                protocol="tcp",
+                remote_address="203.0.113.10",
+                address_family=socket.AddressFamily.AF_INET,
+                path="default",
+                local_address="192.0.2.20",
+            ),
+            Candidate(
+                protocol="tcp",
+                remote_address="203.0.113.10",
+                address_family=socket.AddressFamily.AF_INET,
+                path="default",
+                local_address="192.0.2.10",
+            ),
+        ],
+    )
+    preconnection.loop.close()
+
+    assert ordered[0].local_address == "192.0.2.10"
 
 
 def test_connection_add_and_remove_endpoints():
@@ -896,6 +966,188 @@ def test_listener_supports_single_property_get():
     assert selection is taps.PreferenceLevel.REQUIRE
 
 
+def test_quic_clone_uses_shared_association_stream_mapping(monkeypatch):
+    import pytaps.transports as transport_impl
+
+    class FakeQuicConfiguration:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.certificate = None
+            self.private_key = None
+
+        def load_cert_chain(self, certfile, keyfile=None, password=None):
+            self.certificate = certfile
+            self.private_key = keyfile or certfile
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            self.cafile = cafile
+
+    class FakeReader:
+        async def read(self, size):
+            return b""
+
+    class FakeWriter:
+        def __init__(self):
+            self.buffer = []
+            self.closed = False
+
+        def write(self, data):
+            self.buffer.append(data)
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            return None
+
+    class FakeProtocol:
+        def __init__(self):
+            self.streams = []
+            self.closed = False
+
+        async def create_stream(self, is_unidirectional=False):
+            stream = (FakeReader(), FakeWriter())
+            self.streams.append(stream)
+            return stream
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            return None
+
+    class FakeConnectContext:
+        def __init__(self):
+            self.protocol = FakeProtocol()
+
+        async def __aenter__(self):
+            return self.protocol
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(transport_impl, "QuicConfiguration", FakeQuicConfiguration)
+    monkeypatch.setattr(
+        transport_impl,
+        "aioquic_connect",
+        lambda *args, **kwargs: FakeConnectContext(),
+    )
+    monkeypatch.setattr(transport_impl, "aioquic_serve", object())
+
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.transport_properties.require("multistreaming")
+    connection = taps.Connection(preconnection)
+
+    preconnection.loop.run_until_complete(connection.race())
+    clone = preconnection.loop.run_until_complete(connection.clone())
+    protocol = connection.quic_association.protocol
+    preconnection.loop.close()
+
+    assert connection.protocol == "quic"
+    assert clone.protocol == "quic"
+    assert connection.quic_association is clone.quic_association
+    assert protocol is not None
+    assert len(protocol.streams) == 2
+    assert clone in connection.grouped_connections()
+
+
+def test_quic_listener_maps_incoming_streams_to_connections(monkeypatch):
+    import pytaps.transports as transport_impl
+
+    class FakeQuicConfiguration:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.certificate = None
+            self.private_key = None
+
+        def load_cert_chain(self, certfile, keyfile=None, password=None):
+            self.certificate = certfile
+            self.private_key = keyfile or certfile
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            self.cafile = cafile
+
+    class FakeWriter:
+        def __init__(self):
+            self.closed = False
+
+        def write(self, data):
+            return None
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            return None
+
+    class FakeReader:
+        async def read(self, size):
+            return b""
+
+    class FakeServer:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    async def fake_serve(*args, **kwargs):
+        return FakeServer()
+
+    monkeypatch.setattr(transport_impl, "QuicConfiguration", FakeQuicConfiguration)
+    monkeypatch.setattr(transport_impl, "aioquic_serve", fake_serve)
+    monkeypatch.setattr(transport_impl, "aioquic_connect", object())
+
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(4433)
+    security = taps.SecurityParameters()
+    security.add_identity(str(TESTS_DIR / "keys" / "localhost.pem"))
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        security_parameters=security,
+        event_loop=asyncio.new_event_loop(),
+    )
+    listener = Listener(preconnection)
+    listener.protocol = "quic"
+    listener.quic_association = transport_impl.QuicAssociationManager(
+        loop=preconnection.loop,
+        listener=listener,
+    )
+    fake_protocol = object()
+
+    preconnection.loop.run_until_complete(
+        listener.quic_association.accept_inbound_stream(
+            FakeReader(),
+            FakeWriter(),
+            fake_protocol,
+        )
+    )
+    preconnection.loop.run_until_complete(
+        listener.quic_association.accept_inbound_stream(
+            FakeReader(),
+            FakeWriter(),
+            fake_protocol,
+        )
+    )
+    first = preconnection.loop.run_until_complete(listener.accept())
+    second = preconnection.loop.run_until_complete(listener.accept())
+    preconnection.loop.close()
+
+    assert first.protocol == "quic"
+    assert second.protocol == "quic"
+    assert first.connection_group is second.connection_group
+    assert isinstance(first.transports[0], QuicTransport)
+
+
 def test_preconnection_can_separate_connection_context():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     preconnection = taps.Preconnection(
@@ -1407,7 +1659,7 @@ def test_security_parameters_require_secure_transport_by_default():
 
     assert preconnection.transport_properties.get("confidentiality") is taps.PreferenceLevel.REQUIRE
     assert preconnection.transport_properties.get("integrity") is taps.PreferenceLevel.REQUIRE
-    assert candidates == ["tls-tcp"]
+    assert candidates == ["quic", "tls-tcp"]
 
 
 def test_preconnection_rendezvous_returns_listener_and_connection():
