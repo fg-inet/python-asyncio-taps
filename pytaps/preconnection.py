@@ -400,6 +400,43 @@ class Preconnection:
     def get_connection_context(self):
         return self.connection_context
 
+    def set_interface_policy(self, interface_id, **policy):
+        self.connection_context.set_interface_policy(interface_id, **policy)
+        return self
+
+    def set_protocol_policy(self, protocol, **policy):
+        self.connection_context.set_protocol_policy(protocol, **policy)
+        return self
+
+    def set_pvd_policy(self, pvd_id, **policy):
+        self.connection_context.set_pvd_policy(pvd_id, **policy)
+        return self
+
+    def set_address_family_policy(self, family, preference_adjustment=0):
+        self.connection_context.set_address_family_policy(
+            family,
+            preference_adjustment=preference_adjustment,
+        )
+        return self
+
+    def note_alternate_remote(
+        self,
+        base_remote,
+        alternate_remote,
+        *,
+        address_family=None,
+        protocol=None,
+        lifetime=None,
+    ):
+        self.connection_context.note_alternate_remote(
+            base_remote,
+            alternate_remote,
+            address_family=address_family,
+            protocol=protocol,
+            lifetime=lifetime,
+        )
+        return self
+
     def separate_connection_context(self):
         self.connection_context = ConnectionContext()
         return self

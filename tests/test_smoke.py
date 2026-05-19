@@ -14,6 +14,8 @@ from pytaps.utility import (
     build_protocol_candidates,
     create_candidates,
     order_candidates_for_racing,
+    order_remote_addresses,
+    rank_path_candidates,
 )
 from pytaps.yang_validate import YANG_FMT_XML
 
@@ -274,6 +276,22 @@ def test_protocol_candidates_use_cached_protocol_outcomes():
     assert candidates == ["tcp", "tls-tcp", "quic"]
 
 
+def test_protocol_candidates_honor_dynamic_protocol_policy():
+    properties = taps.TransportProperties()
+    properties.require("reliability")
+    properties.ignore("preserveMsgBoundaries")
+    properties.ignore("zeroRttMsg")
+    properties.ignore("multistreaming")
+
+    context = taps.ConnectionContext()
+    context.set_protocol_policy("quic", available=False)
+    context.set_protocol_policy("tls-tcp", preference_adjustment=3)
+
+    candidates = build_protocol_candidates(properties, connection_context=context)
+
+    assert candidates == ["tls-tcp", "tcp"]
+
+
 def test_candidate_order_prefers_paths_before_protocols():
     remote = taps.RemoteEndpoint().with_address("2001:db8::1").with_address("192.0.2.1").with_port(443)
     local = taps.LocalEndpoint().with_interface("wifi").with_interface("cell")
@@ -339,6 +357,108 @@ def test_racing_order_prefers_cached_successful_candidate_path():
     preconnection.loop.close()
 
     assert ordered[0].local_address == "192.0.2.10"
+
+
+def test_dynamic_interface_policy_influences_ranked_paths():
+    properties = taps.TransportProperties()
+    properties.add_interface_preference("wifi", taps.PreferenceLevel.PREFER)
+    properties.add_interface_preference("cell", taps.PreferenceLevel.AVOID)
+    local = taps.LocalEndpoint().with_interface("wifi").with_interface("cell")
+    context = taps.ConnectionContext()
+    context.set_interface_policy(
+        "wifi",
+        available=True,
+        preference_adjustment=-3,
+        relative_cost="high",
+        supports_temporary_address=False,
+        pvd_id="home",
+    )
+    context.set_interface_policy(
+        "cell",
+        available=True,
+        preference_adjustment=3,
+        relative_cost="low",
+        pvd_id="mobile",
+    )
+    properties.add_pvd_preference("mobile", taps.PreferenceLevel.PREFER)
+
+    ranked = rank_path_candidates(local, properties, connection_context=context)
+
+    assert ranked[0][0] == "cell"
+    assert ranked[1][0] == "wifi"
+
+
+def test_dynamic_interface_policy_can_exclude_unavailable_paths():
+    properties = taps.TransportProperties()
+    local = taps.LocalEndpoint().with_interface("wifi").with_interface("cell")
+    context = taps.ConnectionContext()
+    context.set_interface_policy("wifi", available=False)
+    context.set_interface_policy("cell", available=True)
+
+    ranked = rank_path_candidates(local, properties, connection_context=context)
+
+    assert ranked == [("cell", "cell")]
+
+
+def test_dynamic_address_family_policy_reorders_remote_addresses():
+    context = taps.ConnectionContext()
+    context.set_address_family_policy("ipv4", preference_adjustment=3)
+    context.set_address_family_policy("ipv6", preference_adjustment=-1)
+
+    ordered = order_remote_addresses(
+        [
+            (socket.AddressFamily.AF_INET6, "2001:db8::1"),
+            (socket.AddressFamily.AF_INET, "192.0.2.1"),
+        ],
+        connection_context=context,
+    )
+
+    assert ordered[0][0] == socket.AddressFamily.AF_INET
+    assert ordered[1][0] == socket.AddressFamily.AF_INET6
+
+
+def test_alternate_remote_hints_expand_quic_candidates_only():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+
+    connection = taps.Connection(preconnection)
+    candidates = create_candidates(
+        connection,
+        [(socket.AddressFamily.AF_INET, "203.0.113.10")],
+    )
+    preconnection.loop.close()
+
+    quic_remotes = [
+        candidate.remote_address
+        for candidate in candidates
+        if candidate.protocol == "quic"
+    ]
+    tcp_remotes = [
+        candidate.remote_address
+        for candidate in candidates
+        if candidate.protocol == "tcp"
+    ]
+    tls_remotes = [
+        candidate.remote_address
+        for candidate in candidates
+        if candidate.protocol == "tls-tcp"
+    ]
+
+    assert quic_remotes == ["198.51.100.20", "203.0.113.10"]
+    assert tcp_remotes == ["203.0.113.10"]
+    assert tls_remotes == ["203.0.113.10"]
 
 
 def test_connection_add_and_remove_endpoints():
@@ -789,15 +909,16 @@ def test_connection_tracks_soft_errors_and_path_changes():
 
     connection.on_soft_error(handle_soft_error)
     connection.on_path_change(handle_path_change)
-    connection.note_soft_error("ECN CE marks observed")
     connection.note_path_change(
         local_address="192.0.2.10",
         local_port=12345,
         remote_address="203.0.113.10",
         remote_port=443,
     )
+    connection.note_soft_error("ECN CE marks observed", penalty=3, lifetime=120)
     connection.loop.run_until_complete(asyncio.sleep(0))
     properties = connection.get_properties()
+    monitoring = connection.get_monitoring_snapshot()
     connection.loop.close()
 
     assert soft_errors["reason"] == "ECN CE marks observed"
@@ -810,8 +931,236 @@ def test_connection_tracks_soft_errors_and_path_changes():
     assert properties["readOnly"]["currentPath"]["remote"] == ("203.0.113.10", 443)
     assert properties["readOnly"]["previousPath"] == {"local": None, "remote": None}
     assert properties["readOnly"]["eventCount"] >= 2
+    assert monitoring["connectionContext"]["pathAdvisories"][0]["penalty"] == 3
+    assert monitoring["connectionContext"]["pathTransitions"][0]["currentRemote"] == ("203.0.113.10", 443)
     assert any(event["name"] == "soft_error" for event in connection.get_event_history())
     assert any(event["name"] == "path_change" for event in connection.get_event_history())
+
+
+def test_reestablishment_candidates_prefer_alternate_remote_after_path_degradation():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.require("multistreaming")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "quic"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection.note_soft_error("path degraded", penalty=5, lifetime=120)
+
+    candidates = connection.get_reestablishment_candidates()
+    preconnection.loop.close()
+
+    quic_candidates = [candidate for candidate in candidates if candidate.protocol == "quic"]
+    assert quic_candidates[0].remote_address == "198.51.100.20"
+    assert quic_candidates[1].remote_address == "203.0.113.10"
+
+
+def test_soft_error_emits_automatic_reestablishment_guidance():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.require("multistreaming")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "quic"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    advice_seen = {}
+
+    async def handle_reestablishment_suggested(advice, candidates, affected_connection):
+        advice_seen["advice"] = advice
+        advice_seen["candidates"] = candidates
+        advice_seen["connection"] = affected_connection
+
+    connection.on_reestablishment_suggested(handle_reestablishment_suggested)
+    connection.note_soft_error("severe congestion", penalty=4, lifetime=120)
+    connection.loop.run_until_complete(asyncio.sleep(0))
+    properties = connection.get_properties()
+    monitoring = connection.get_monitoring_snapshot()
+    preconnection.loop.close()
+
+    assert advice_seen["connection"] is connection
+    assert advice_seen["advice"]["trigger"] == "soft_error"
+    assert advice_seen["advice"]["recommendedCandidate"]["remoteAddress"] == "198.51.100.20"
+    assert properties["readOnly"]["recommendedCandidate"]["remoteAddress"] == "198.51.100.20"
+    assert properties["readOnly"]["pathDegraded"] is True
+    assert monitoring["reestablishmentAdvice"]["pathDegraded"] is True
+    assert monitoring["reestablishmentCandidates"][0]["remoteAddress"] == "198.51.100.20"
+
+
+def test_connection_error_updates_reestablishment_guidance():
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.require("multistreaming")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "quic"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection._report_connection_error(RuntimeError("path failed"))
+    monitoring = connection.get_monitoring_snapshot()
+    preconnection.loop.close()
+
+    assert monitoring["reestablishmentAdvice"]["trigger"] == "connection_error"
+    assert monitoring["reestablishmentAdvice"]["recommendedCandidate"]["remoteAddress"] == "198.51.100.20"
+
+
+def test_attempt_reestablishment_uses_recommended_candidate(monkeypatch):
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.require("multistreaming")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "quic"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection.note_soft_error("path degraded", penalty=5, lifetime=120)
+
+    captured = {}
+
+    async def fake_initiate(self, timeout=None):
+        captured["timeout"] = timeout
+        captured["remote"] = list(self.remote_endpoint.address)
+        captured["local"] = list(self.local_endpoint.address)
+        captured["protocolPolicy"] = dict(self.connection_context.protocol_policy)
+        replacement = taps.Connection(self)
+        replacement.protocol = "quic"
+        return replacement
+
+    monkeypatch.setattr(taps.Preconnection, "initiate", fake_initiate)
+    replacement = loop.run_until_complete(connection.attempt_reestablishment(timeout=3))
+    loop.close()
+
+    assert replacement.protocol == "quic"
+    assert captured["timeout"] == 3
+    assert captured["remote"] == ["198.51.100.20"]
+    assert captured["local"] == ["192.0.2.10"]
+    assert captured["protocolPolicy"]["quic"]["available"] is True
+
+
+def test_auto_reestablishment_runs_on_soft_error(monkeypatch):
+    remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    preconnection.transport_properties.require("reliability")
+    preconnection.transport_properties.require("multistreaming")
+    preconnection.transport_properties.ignore("preserveMsgBoundaries")
+    preconnection.transport_properties.ignore("zeroRttMsg")
+    preconnection.note_alternate_remote(
+        "203.0.113.10",
+        "198.51.100.20",
+        address_family=socket.AddressFamily.AF_INET,
+        protocol="quic",
+    )
+    connection = taps.Connection(preconnection)
+    connection.protocol = "quic"
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    reestablished = {}
+
+    async def fake_initiate(self, timeout=None):
+        replacement = taps.Connection(self)
+        replacement.protocol = "quic"
+        return replacement
+
+    async def handle_reestablished(new_connection, old_connection):
+        reestablished["new"] = new_connection
+        reestablished["old"] = old_connection
+
+    monkeypatch.setattr(taps.Preconnection, "initiate", fake_initiate)
+    connection.on_reestablished(handle_reestablished)
+    connection.enable_auto_reestablishment(
+        triggers={"soft_error"},
+        min_penalty=3,
+        timeout=2,
+    )
+    connection.note_soft_error("path degraded", penalty=5, lifetime=120)
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.run_until_complete(asyncio.sleep(0))
+    properties = connection.get_properties()
+    loop.close()
+
+    assert reestablished["old"] is connection
+    assert reestablished["new"].protocol == "quic"
+    assert properties["readOnly"]["autoReestablishmentEnabled"] is True
 
 
 def test_group_properties_expose_shared_connection_state():
@@ -1190,6 +1539,29 @@ def test_monitoring_snapshot_exposes_cached_state():
     assert snapshot["connectionContext"]["protocolCache"]["tcp"]["successes"] == 1
     assert snapshot["connectionContext"]["pathCache"][0]["remote"] == ("203.0.113.10", 443)
     assert preconnection_snapshot["connectionContext"]["protocolCache"]["tcp"]["successes"] == 1
+
+
+def test_preconnection_policy_helpers_update_connection_context_snapshot():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    preconnection = taps.Preconnection(
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    preconnection.set_interface_policy(
+        "wifi",
+        available=True,
+        preference_adjustment=2,
+        pvd_id="home",
+    )
+    preconnection.set_pvd_policy("home", available=True, preference_adjustment=1)
+    preconnection.set_address_family_policy("ipv6", preference_adjustment=2)
+
+    snapshot = preconnection.get_monitoring_snapshot()
+    preconnection.loop.close()
+
+    assert snapshot["connectionContext"]["systemPolicy"]["interfaces"]["wifi"]["pvdId"] == "home"
+    assert snapshot["connectionContext"]["systemPolicy"]["pvds"]["home"]["preferenceAdjustment"] == 1
+    assert snapshot["connectionContext"]["systemPolicy"]["addressFamilies"]["ipv6"] == 2
 
 
 def test_framer_helper_methods_align_with_documented_api():

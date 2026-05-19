@@ -9,6 +9,11 @@ Connection Context
 ------------------
 	.. autoclass:: ConnectionContext
 
+		.. automethod:: set_protocol_policy
+		.. automethod:: set_interface_policy
+		.. automethod:: set_pvd_policy
+		.. automethod:: set_address_family_policy
+		.. automethod:: note_alternate_remote
 		.. automethod:: get_snapshot
 
 Local Endpoint
@@ -77,6 +82,11 @@ Preconnection
 		.. automethod:: resolve
 		.. automethod:: add_framer
 		.. automethod:: get_connection_context
+		.. automethod:: set_protocol_policy
+		.. automethod:: set_interface_policy
+		.. automethod:: set_pvd_policy
+		.. automethod:: set_address_family_policy
+		.. automethod:: note_alternate_remote
 		.. automethod:: separate_connection_context
 		.. automethod:: get_monitoring_snapshot
 		.. automethod:: get_property
@@ -103,6 +113,11 @@ Connection
 
 		.. automethod:: new_message_context
 		.. automethod:: get_connection_context
+		.. automethod:: set_protocol_policy
+		.. automethod:: set_interface_policy
+		.. automethod:: set_pvd_policy
+		.. automethod:: set_address_family_policy
+		.. automethod:: note_alternate_remote
 		.. automethod:: get_monitoring_snapshot
 		.. automethod:: get_property
 		.. automethod:: get_message_properties
@@ -116,8 +131,14 @@ Connection
 		.. automethod:: receive_message
 		.. automethod:: wait_ready
 		.. automethod:: wait_closed
+		.. automethod:: attempt_reestablishment
+		.. automethod:: enable_auto_reestablishment
+		.. automethod:: disable_auto_reestablishment
+		.. automethod:: get_reestablishment_candidates
 		.. automethod:: note_path_change
 		.. automethod:: note_soft_error
+		.. automethod:: clear_path_degradation
+		.. automethod:: note_alternate_remote
 		.. automethod:: close
 		.. automethod:: get_event_history
 		.. automethod:: get_group_properties
@@ -133,6 +154,8 @@ Connection
 		.. automethod:: on_receive_error
 		.. automethod:: on_soft_error
 		.. automethod:: on_path_change
+		.. automethod:: on_reestablishment_suggested
+		.. automethod:: on_reestablished
 		.. automethod:: on_connection_error
 		.. automethod:: on_closed
 
@@ -141,6 +164,11 @@ Listener
 	.. autoclass:: Listener
 
 		.. automethod:: get_connection_context
+		.. automethod:: set_protocol_policy
+		.. automethod:: set_interface_policy
+		.. automethod:: set_pvd_policy
+		.. automethod:: set_address_family_policy
+		.. automethod:: note_alternate_remote
 		.. automethod:: get_monitoring_snapshot
 		.. automethod:: get_property
 		.. automethod:: wait_listening

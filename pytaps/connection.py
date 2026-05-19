@@ -109,6 +109,14 @@ class Connection:
         }
         self._soft_errors = []
         self._event_history = []
+        self._recommended_candidates = []
+        self._reestablishment_advice = None
+        self._auto_reestablishment_enabled = False
+        self._auto_reestablishment_triggers = {"connection_error"}
+        self._auto_reestablishment_min_penalty = 3
+        self._auto_reestablishment_timeout = 5
+        self._auto_reestablishment_task = None
+        self._last_reestablished_connection = None
 
         # Callbacks
         self.writer = None
@@ -123,6 +131,8 @@ class Connection:
         self.sent = None
         self.soft_error = None
         self.path_change = None
+        self.reestablishment_suggested = None
+        self.reestablished = None
         self.establishment_error = None
         self.rendezvous_done = None
         self.stopped = getattr(preconnection, "stopped", None)
@@ -243,6 +253,16 @@ class Connection:
     def _report_connection_error(self, error):
         self.last_error = error
         self._record_event("connection_error", error=str(error))
+        current_local = self._current_path.get("local")
+        current_remote = self._current_path.get("remote")
+        if current_local is not None or current_remote is not None:
+            self.connection_context.degrade_path(
+                current_local,
+                current_remote,
+                reason=error,
+                penalty=5,
+                lifetime=180,
+            )
         self.connection_context.record_candidate_outcome(
             self._current_path.get("local"),
             self._current_path.get("remote"),
@@ -250,6 +270,7 @@ class Connection:
             False,
             error,
         )
+        self._refresh_reestablishment_guidance("connection_error")
         schedule_callback(self.loop, self.connection_error, (error, self))
 
     def _report_receive_error(self, message_context, reason=None):
@@ -278,8 +299,87 @@ class Connection:
             (),
         )
 
+    def _candidate_summary(self, candidate):
+        return {
+            "protocol": candidate.protocol,
+            "remoteAddress": candidate.remote_address,
+            "addressFamily": candidate.address_family,
+            "path": candidate.path,
+            "localAddress": candidate.local_address,
+        }
+
+    def _refresh_reestablishment_guidance(self, trigger):
+        candidates = self.get_reestablishment_candidates()
+        self._recommended_candidates = candidates
+        current_local = self._current_path.get("local")
+        current_remote = self._current_path.get("remote")
+        advisory = self.connection_context.get_path_advisory(
+            current_local,
+            current_remote,
+        )
+        if not candidates:
+            self._reestablishment_advice = None
+            return []
+
+        best = candidates[0]
+        current_remote_address = current_remote[0] if current_remote else None
+        current_local_address = current_local[0] if current_local else None
+        recommendation_needed = bool(advisory)
+        if best.protocol != self.protocol:
+            recommendation_needed = True
+        if best.remote_address != current_remote_address:
+            recommendation_needed = True
+        if best.local_address is not None and best.local_address != current_local_address:
+            recommendation_needed = True
+
+        advice = {
+            "trigger": trigger,
+            "recommendedCandidate": self._candidate_summary(best),
+            "candidateCount": len(candidates),
+            "pathDegraded": advisory is not None,
+            "pathAdvisory": advisory,
+        }
+        self._reestablishment_advice = advice
+        if recommendation_needed:
+            self._record_event(
+                "reestablishment_suggested",
+                trigger=trigger,
+                recommendation=advice,
+            )
+            schedule_callback(
+                self.loop,
+                self.reestablishment_suggested,
+                (advice, candidates, self),
+                (advice, self),
+                (self,),
+                (),
+            )
+            self._maybe_schedule_auto_reestablishment(trigger, advice)
+        return candidates
+
+    def _maybe_schedule_auto_reestablishment(self, trigger, advice):
+        if not self._auto_reestablishment_enabled:
+            return False
+        if trigger not in self._auto_reestablishment_triggers:
+            return False
+        if self._auto_reestablishment_task is not None and not self._auto_reestablishment_task.done():
+            return False
+        if advice.get("pathDegraded"):
+            advisory = advice.get("pathAdvisory") or {}
+            if advisory.get("penalty", 0) < self._auto_reestablishment_min_penalty:
+                return False
+        self._auto_reestablishment_task = self.loop.create_task(
+            self.attempt_reestablishment(timeout=self._auto_reestablishment_timeout)
+        )
+        return True
+
     def _report_path_change(self, previous_path, current_path):
         self._previous_path = previous_path.copy()
+        self.connection_context.record_path_transition(
+            previous_path,
+            current_path,
+            protocol=self.protocol,
+        )
         self._record_event(
             "path_change",
             previous_path=previous_path.copy(),
@@ -519,6 +619,20 @@ class Connection:
                 "currentPath": self._current_path.copy(),
                 "previousPath": self._previous_path.copy(),
                 "softErrors": [str(error) for error in self._soft_errors],
+                "recommendedCandidate": (
+                    self._reestablishment_advice["recommendedCandidate"]
+                    if self._reestablishment_advice else None
+                ),
+                "reestablishmentCandidateCount": len(self._recommended_candidates),
+                "autoReestablishmentEnabled": self._auto_reestablishment_enabled,
+                "reestablishmentInProgress": (
+                    self._auto_reestablishment_task is not None
+                    and not self._auto_reestablishment_task.done()
+                ),
+                "pathDegraded": (
+                    self._reestablishment_advice["pathDegraded"]
+                    if self._reestablishment_advice else False
+                ),
                 "eventCount": len(self._event_history),
                 "lastEvent": self._event_history[-1] if self._event_history else None,
                 "lastError": str(self.last_error) if self.last_error else None,
@@ -1091,11 +1205,109 @@ class Connection:
             protocol=self.protocol,
         )
         self._report_path_change(previous_path, current_path)
+        self._refresh_reestablishment_guidance("path_change")
         return current_path
 
-    def note_soft_error(self, reason):
+    def note_soft_error(self, reason, *, penalty=2, lifetime=60):
+        current_local = self._current_path.get("local")
+        current_remote = self._current_path.get("remote")
+        if current_local is not None or current_remote is not None:
+            self.connection_context.degrade_path(
+                current_local,
+                current_remote,
+                reason=reason,
+                penalty=penalty,
+                lifetime=lifetime,
+            )
         self._report_soft_error(reason)
+        self._refresh_reestablishment_guidance("soft_error")
         return reason
+
+    def clear_path_degradation(self, *, local_path=None, remote_path=None):
+        self.connection_context.clear_path_degradation(
+            local_path if local_path is not None else self._current_path.get("local"),
+            remote_path if remote_path is not None else self._current_path.get("remote"),
+        )
+        return self
+
+    async def attempt_reestablishment(self, timeout=None):
+        candidates = self._recommended_candidates or self.get_reestablishment_candidates()
+        if not candidates:
+            return None
+        best = candidates[0]
+        template = self._originating_preconnection.clone()
+        template.connection_context = self.connection_context.clone()
+        for protocol_name in template.connection_context.protocol_policy.keys():
+            template.connection_context.set_protocol_policy(
+                protocol_name,
+                **{
+                    **template.connection_context.protocol_policy[protocol_name],
+                    "available": protocol_name == best.protocol,
+                },
+            )
+        if best.protocol not in template.connection_context.protocol_policy:
+            template.connection_context.set_protocol_policy(
+                best.protocol,
+                available=True,
+                preference_adjustment=10,
+            )
+        if self.local_endpoint is not None:
+            template.local_endpoint = self.local_endpoint.clone()
+            if best.local_address is not None:
+                template.local_endpoint.address = [best.local_address]
+        if self.remote_endpoint is not None:
+            template.remote_endpoint = self.remote_endpoint.clone()
+            template.remote_endpoint.address = [best.remote_address]
+        new_connection = await template.initiate(timeout=timeout)
+        self._last_reestablished_connection = new_connection
+        self._record_event(
+            "reestablished",
+            protocol=new_connection.protocol,
+            remote_address=best.remote_address,
+            local_address=best.local_address,
+        )
+        schedule_callback(
+            self.loop,
+            self.reestablished,
+            (new_connection, self),
+            (new_connection,),
+            (self,),
+            (),
+        )
+        return new_connection
+
+    def get_reestablishment_candidates(self):
+        if self.remote_endpoint is None:
+            return []
+        remote_addrs = []
+        for address in self.remote_endpoint.address:
+            family = (
+                socket.AddressFamily.AF_INET6
+                if ":" in address else socket.AddressFamily.AF_INET
+            )
+            remote_addrs.append((family, address))
+        return order_candidates_for_racing(
+            self,
+            create_candidates(self, remote_addrs),
+        )
+
+    def enable_auto_reestablishment(
+        self,
+        *,
+        triggers=None,
+        min_penalty=3,
+        timeout=5,
+    ):
+        self._auto_reestablishment_enabled = True
+        if triggers is not None:
+            self._auto_reestablishment_triggers = set(triggers)
+        self._auto_reestablishment_min_penalty = min_penalty
+        self._auto_reestablishment_timeout = timeout
+        return self
+
+    def disable_auto_reestablishment(self):
+        self._auto_reestablishment_enabled = False
+        return self
 
     def get_group_properties(self):
         if self.connection_group is None:
@@ -1110,11 +1322,53 @@ class Connection:
     def get_connection_context(self):
         return self.connection_context
 
+    def set_interface_policy(self, interface_id, **policy):
+        self.connection_context.set_interface_policy(interface_id, **policy)
+        return self
+
+    def set_protocol_policy(self, protocol, **policy):
+        self.connection_context.set_protocol_policy(protocol, **policy)
+        return self
+
+    def set_pvd_policy(self, pvd_id, **policy):
+        self.connection_context.set_pvd_policy(pvd_id, **policy)
+        return self
+
+    def set_address_family_policy(self, family, preference_adjustment=0):
+        self.connection_context.set_address_family_policy(
+            family,
+            preference_adjustment=preference_adjustment,
+        )
+        return self
+
+    def note_alternate_remote(
+        self,
+        base_remote,
+        alternate_remote,
+        *,
+        address_family=None,
+        protocol=None,
+        lifetime=None,
+    ):
+        self.connection_context.note_alternate_remote(
+            base_remote,
+            alternate_remote,
+            address_family=address_family,
+            protocol=protocol,
+            lifetime=lifetime,
+        )
+        return self
+
     def get_monitoring_snapshot(self):
         return {
             "connectionContext": self.connection_context.get_snapshot(),
             "events": self.get_event_history(),
             "properties": self.get_properties(),
+            "reestablishmentAdvice": self._reestablishment_advice,
+            "reestablishmentCandidates": [
+                self._candidate_summary(candidate)
+                for candidate in self._recommended_candidates
+            ],
         }
 
     # Events for active open
@@ -1221,6 +1475,12 @@ class Connection:
 
     def on_path_change(self, callback):
         self.path_change = callback
+
+    def on_reestablishment_suggested(self, callback):
+        self.reestablishment_suggested = callback
+
+    def on_reestablished(self, callback):
+        self.reestablished = callback
 
     def on_establishment_error(self, callback):
         self.establishment_error = callback

@@ -115,10 +115,22 @@ def _supports_selection_property(protocol, property_name, property_value):
     return supported_value is not False
 
 
+def _protocol_details(protocol_name):
+    for protocol in get_protocols():
+        if protocol["name"] == protocol_name:
+            return protocol
+    raise KeyError(f"Unknown protocol: {protocol_name}")
+
+
 def rank_protocol_candidates(transport_properties, connection_context=None):
     """Rank protocol branches per RFC 9623 sorting guidance."""
     ranked_protocols = []
     for protocol in get_protocols():
+        if (
+            connection_context is not None
+            and connection_context.protocol_policy.get(protocol["name"], {}).get("available") is False
+        ):
+            continue
         prefer_score = 0
         avoid_score = 0
         excluded = False
@@ -162,7 +174,7 @@ def rank_protocol_candidates(transport_properties, connection_context=None):
     return ranked_protocols
 
 
-def rank_path_candidates(local_endpoint, transport_properties):
+def rank_path_candidates(local_endpoint, transport_properties, connection_context=None):
     if local_endpoint is None or not local_endpoint.interface:
         return [("default", None)]
 
@@ -189,22 +201,91 @@ def rank_path_candidates(local_endpoint, transport_properties):
         if required_interfaces and interface_id not in required_interfaces:
             continue
 
+        policy = (
+            connection_context.interface_policy.get(interface_id, {})
+            if connection_context is not None else {}
+        )
+        if policy.get("available") is False:
+            continue
+
+        pvd_preferences = {
+            pvd_id: preference
+            for preference, pvd_id in transport_properties.selection_properties.get("pvd", set())
+        }
+        required_pvds = {
+            pvd_id
+            for pvd_id, preference in pvd_preferences.items()
+            if preference is PreferenceLevel.REQUIRE
+        }
+        prohibited_pvds = {
+            pvd_id
+            for pvd_id, preference in pvd_preferences.items()
+            if preference is PreferenceLevel.PROHIBIT
+        }
+        interface_pvd = policy.get("pvdId")
+        if interface_pvd in prohibited_pvds:
+            continue
+        if required_pvds and interface_pvd not in required_pvds:
+            continue
+
         preference = interface_preferences.get(interface_id, PreferenceLevel.IGNORE)
         prefer_score = 1 if preference is PreferenceLevel.PREFER else 0
         avoid_score = 1 if preference is PreferenceLevel.AVOID else 0
-        ranked_paths.append((interface_id, (prefer_score, avoid_score)))
+        system_score = policy.get("preferenceAdjustment", 0)
 
-    ranked_paths.sort(key=lambda value: (-value[1][0], value[1][1], value[0]))
+        if policy.get("relativeCost") == "low":
+            system_score += 1
+        elif policy.get("relativeCost") == "high":
+            system_score -= 1
+
+        if (
+            transport_properties.selection_properties.get("useTemporaryLocalAddress")
+            is PreferenceLevel.PREFER
+            and policy
+            and not policy.get("supportsTemporaryAddress", True)
+        ):
+            system_score -= 1
+
+        if interface_pvd in pvd_preferences:
+            pvd_preference = pvd_preferences[interface_pvd]
+            if pvd_preference is PreferenceLevel.PREFER:
+                system_score += 2
+            elif pvd_preference is PreferenceLevel.AVOID:
+                system_score -= 2
+
+        if connection_context is not None and interface_pvd in connection_context.pvd_policy:
+            pvd_policy = connection_context.pvd_policy[interface_pvd]
+            if not pvd_policy.get("available", True):
+                continue
+            system_score += pvd_policy.get("preferenceAdjustment", 0)
+
+        total_score = (prefer_score * 2) - avoid_score + system_score
+        ranked_paths.append((interface_id, (prefer_score, avoid_score, system_score, total_score)))
+
+    ranked_paths.sort(
+        key=lambda value: (
+            -value[1][3],
+            -value[1][0],
+            -value[1][2],
+            value[1][1],
+            value[0],
+        )
+    )
     return [(interface_id, interface_id) for interface_id, _score in ranked_paths]
 
 
-def order_remote_addresses(remote_addrs):
+def order_remote_addresses(remote_addrs, connection_context=None):
     def sort_key(entry):
         family, address = entry
-        family_rank = 1 if family == socket.AddressFamily.AF_INET6 else 0
-        return (family_rank, address)
+        family_name = "ipv6" if family == socket.AddressFamily.AF_INET6 else "ipv4"
+        family_rank = 1 if family_name == "ipv6" else 0
+        policy_adjustment = (
+            connection_context.address_family_policy.get(family_name, 0)
+            if connection_context is not None else 0
+        )
+        return (-policy_adjustment, -family_rank, address)
 
-    return sorted(remote_addrs, key=lambda entry: (-sort_key(entry)[0], sort_key(entry)[1]))
+    return sorted(remote_addrs, key=sort_key)
 
 
 def build_protocol_candidates(transport_properties, connection_context=None):
@@ -222,17 +303,47 @@ def create_candidates(connection, remote_addrs=None):
     if remote_addrs is None:
         remote_addrs = []
 
-    ordered_paths = rank_path_candidates(connection.local_endpoint, connection.transport_properties)
+    ordered_paths = rank_path_candidates(
+        connection.local_endpoint,
+        connection.transport_properties,
+        connection_context=connection.connection_context,
+    )
     ordered_protocols = build_protocol_candidates(
         connection.transport_properties,
         connection_context=connection.connection_context,
     )
-    ordered_remotes = order_remote_addresses(remote_addrs)
 
     candidates = []
     for path_label, _path_interface in ordered_paths:
         for protocol_name in ordered_protocols:
+            protocol_details = _protocol_details(protocol_name)
+            protocol_remotes = list(remote_addrs)
+            if protocol_details.get("advertisesAltaddr"):
+                for family, remote_address in remote_addrs:
+                    for alt_family, alt_remote in connection.connection_context.get_alternate_remotes(
+                        remote_address,
+                        protocol=protocol_name,
+                    ):
+                        resolved_family = alt_family
+                        if resolved_family is None:
+                            resolved_family = (
+                                socket.AddressFamily.AF_INET6
+                                if ":" in alt_remote else socket.AddressFamily.AF_INET
+                            )
+                        protocol_remotes.append((resolved_family, alt_remote))
+            ordered_remotes = order_remote_addresses(
+                protocol_remotes,
+                connection_context=connection.connection_context,
+            )
+            seen = set()
+            deduped_remotes = []
             for family, remote_address in ordered_remotes:
+                key = (family, remote_address)
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped_remotes.append((family, remote_address))
+            for family, remote_address in deduped_remotes:
                 candidates.append(
                     Candidate(
                         protocol=protocol_name,

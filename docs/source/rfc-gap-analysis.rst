@@ -13,14 +13,86 @@ Current status
 --------------
 
 The repository is no longer at its original draft-era baseline. It now has a
-usable RFC-facing core, but it is still a partial implementation of RFC 9622.
-The status labels below are practical engineering labels rather than formal
-conformance claims:
+usable RFC-facing core across all three TAPS RFCs, but it is still a partial
+implementation overall. The status labels below are practical engineering
+labels rather than formal conformance claims:
 
 - ``implemented`` means the repo has a real, tested implementation of the
   feature area
 - ``partial`` means a meaningful subset exists, but the RFC surface is broader
 - ``missing`` means the feature is not meaningfully present yet
+
+Cross-RFC snapshot
+------------------
+
++----------+-------------+-------------------------------------------------------------+
+| RFC      | Status      | Summary                                                     |
++==========+=============+=============================================================+
+| RFC 9621 | partial     | Core architecture is now recognizably aligned: event-driven |
+|          |             | API, message-oriented transfer, connection groups, shared   |
+|          |             | connection contexts, cached state, and monitoring snapshots |
+|          |             | all exist. The main remaining gaps are depth: richer        |
+|          |             | monitoring semantics and broader use of cached state and    |
+|          |             | policy during ongoing connection management.                |
++----------+-------------+-------------------------------------------------------------+
+| RFC 9622 | partial     | The repo now has a large subset of the abstract API:        |
+|          |             | preconnections, listeners, connections, groups,            |
+|          |             | rendezvous, message properties, receive/send paths, basic   |
+|          |             | framing, and QUIC streams. The largest gaps are remaining   |
+|          |             | property-catalog coverage, some lifecycle/event details,    |
+|          |             | and a few API semantics that are present only as lighter    |
+|          |             | approximations.                                             |
++----------+-------------+-------------------------------------------------------------+
+| RFC 9623 | partial     | Candidate gathering, cache-aware racing, shared caches,     |
+|          |             | dynamic policy inputs, QUIC stream mapping, and basic       |
+|          |             | re-establishment guidance are all present. The biggest      |
+|          |             | remaining gaps are richer endpoint gathering (e.g. NAT      |
+|          |             | traversal candidates), deeper protocol-state caches, SCTP,  |
+|          |             | and actual transport migration/multipath behavior.          |
++----------+-------------+-------------------------------------------------------------+
+
+RFC 9621 checklist
+------------------
+
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Architecture area                           | Status      | Notes                                                        |
++=============================================+=============+==============================================================+
+| Event-driven API                            | implemented | Core API is callback/awaitable driven throughout             |
+|                                             |             | ``Preconnection``, ``Connection``, and ``Listener``.         |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Data transfer using Messages                | implemented | Messages, message contexts, framing, batching, expiration,   |
+|                                             |             | and receive metadata are now first-class concepts.           |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Flexible implementation / protocol choice   | partial     | TCP, UDP, TLS/TCP, multicast send/receive, and QUIC         |
+|                                             |             | streams participate in candidate selection; SCTP and         |
+|                                             |             | broader advanced transports remain missing.                  |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Selection between equivalent protocol       | partial     | Property-driven selection, cached protocol/path history,     |
+| stacks                                      |             | and dynamic policy inputs exist; the eligible transport set  |
+|                                             |             | is still relatively small and some policy is heuristic.      |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Monitoring support                          | partial     | Event history, read-only properties, connection-context      |
+|                                             |             | snapshots, and re-establishment advice are exposed, but the  |
+|                                             |             | RFC's broader monitoring intent is not fully covered.        |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Preestablishment and establishment actions  | partial     | ``Initiate``, ``InitiateWithSend``, ``Listen``, and          |
+|                                             |             | ``Rendezvous`` all exist, though rendezvous is still a       |
+|                                             |             | lighter subset of the full architecture.                     |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Connection groups                           | partial     | Connection groups exist with entangled properties, shared    |
+|                                             |             | connection contexts, grouped close/abort, QUIC stream-based  |
+|                                             |             | cloning, and connPriority separation.                        |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Candidate gathering                         | partial     | Path, protocol, and remote-address gathering are present,    |
+|                                             |             | but local NAT traversal / relay candidate gathering is not.  |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Candidate racing                            | partial     | Cache-aware, policy-aware racing exists with staggered       |
+|                                             |             | attempts and re-establishment guidance; deeper racing modes  |
+|                                             |             | and broader transport diversity are still limited.           |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Separating connection contexts              | implemented | Shared ``ConnectionContext`` objects now exist and can be    |
+|                                             |             | cloned/forked to isolate cached state between groups.        |
++---------------------------------------------+-------------+--------------------------------------------------------------+
 
 RFC 9622 checklist
 ------------------
@@ -63,18 +135,19 @@ RFC 9622 checklist
 |                                             |             | lifecycle state.                                             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Rendezvous``                              | partial     | Implemented with simultaneous local listen and active        |
-|                                             |             | initiate, but still without broader rendezvous policy        |
-|                                             |             | semantics.                                                   |
+|                                             |             | initiate, but it still does not expose the RFC's             |
+|                                             |             | ``RendezvousDone`` event model directly.                     |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Clone``                                   | partial     | Exists and integrates with connection groups; QUIC clones    |
 |                                             |             | now open additional streams on a shared association, but     |
-|                                             |             | semantics are not fully RFC-complete.                        |
+|                                             |             | ``CloneError`` and some failure semantics are still absent.  |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Send``                                    | partial     | Message context, expiration, batch send, queueing,           |
-|                                             |             | and priority scheduling are implemented.                     |
+|                                             |             | and priority scheduling are implemented, but exact event     |
+|                                             |             | guarantees and partial-send semantics are still lighter.     |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Receive``                                 | partial     | Awaitable and callback-driven receive paths both exist,      |
-|                                             |             | including partial stream delivery.                           |
+|                                             |             | including partial stream delivery and receive-side metadata. |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Close / Abort                               | partial     | Connection and group close/abort exist with improved         |
 |                                             |             | lifecycle handling, but not the full RFC event surface.      |
@@ -88,10 +161,12 @@ RFC 9622 checklist
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Ready / Closed / Error lifecycle events     | partial     | Much more explicit than the original code, with richer       |
 |                                             |             | read-only path/advisory state, inspectable event history,    |
-|                                             |             | and shared monitoring snapshots.                             |
+|                                             |             | and shared monitoring snapshots; some RFC event names and    |
+|                                             |             | ordering guarantees are still approximated.                  |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Sent / SendError / Expired events           | partial     | Sent and send-error callbacks exist, and expired messages    |
-|                                             |             | now trigger real runtime behavior.                           |
+|                                             |             | now trigger real runtime behavior, but exact one-event-per-  |
+|                                             |             | send guarantees are not exhaustively enforced/tested.        |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Received / Partial Received events          | partial     | Present and now carry structured message context.            |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
@@ -113,41 +188,108 @@ RFC 9622 checklist
 |                                             |             | is not fully mapped.                                         |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 
+RFC 9623 checklist
+------------------
+
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Implementation area                         | Status      | Notes                                                        |
++=============================================+=============+==============================================================+
+| Candidate tree structure                    | implemented | Establishment candidates are explicitly modeled as           |
+|                                             |             | path/protocol/endpoint combinations.                         |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Endpoint candidate gathering                | partial     | Hostname resolution, interface-local addresses, multicast,   |
+|                                             |             | and alternate remote hints are present; server-reflexive     |
+|                                             |             | and relayed candidates are not.                              |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Protocol candidate gathering                | partial     | Property-driven protocol filtering and ordering exist for    |
+|                                             |             | TCP, UDP, TLS/TCP, QUIC, and multicast roles.               |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Path candidate gathering                    | partial     | Interface- and PvD-aware path selection exists; per-path     |
+|                                             |             | endpoint resolution and richer system-derived paths remain   |
+|                                             |             | limited.                                                     |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Candidate racing strategy                   | partial     | Staggered racing, cache-aware ordering, protocol/path bias,  |
+|                                             |             | and retry pacing exist; fuller simultaneous/failover         |
+|                                             |             | strategies are still limited.                                |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Dynamic system policy                       | partial     | Explicit protocol/interface/PvD/address-family policy        |
+|                                             |             | inputs exist, but more external signals such as battery,     |
+|                                             |             | radio state, and richer system heuristics are absent.        |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Cached protocol state                       | partial     | Shared protocol/path caches and policy history exist, but    |
+|                                             |             | protocol-specific caches such as DNS, TLS tickets, and TFO   |
+|                                             |             | are not deeply integrated into behavior.                     |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Separate caches for connection groups       | implemented | ``ConnectionContext`` separation now provides explicit       |
+|                                             |             | cache boundaries for grouped or cloned connections.          |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| TCP mapping                                 | partial     | Initiate/listen/send/receive/close are implemented, but the  |
+|                                             |             | mapping is still simpler than the full RFC narrative.        |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| UDP mapping                                 | partial     | Datagram send/receive and multicast variants are present;    |
+|                                             |             | ancillary controls like DSCP/DF/ECN setting are still thin.  |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| TLS over TCP mapping                        | partial     | Real TLS establishment and security parameter integration    |
+|                                             |             | exist, but not every protocol-specific nuance is surfaced.   |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| QUIC / multistreaming mapping               | partial     | TAPS connections map to QUIC streams, listener-side inbound  |
+|                                             |             | streams become new connections, and clones share an          |
+|                                             |             | association. Migration and broader QUIC features remain      |
+|                                             |             | limited.                                                     |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| SCTP mapping                                | missing     | No SCTP transport exists in the repository today.            |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+| Re-establishment / path adaptation          | partial     | Re-establishment advice, cached path degradation, alternate  |
+|                                             |             | remotes, and opt-in automatic re-establishment exist; actual |
+|                                             |             | in-place transport migration is not implemented.             |
++---------------------------------------------+-------------+--------------------------------------------------------------+
+
 Where the repository is strongest
 ---------------------------------
 
 - The core object model is now much cleaner and better structured.
 - The establishment path is substantially closer to RFC 9623 than the original
-  codebase, including cache-aware protocol/path ordering and pacing.
+  codebase, including cache-aware protocol/path ordering and pacing, explicit
+  protocol policy, and alternate-remote candidate expansion for transports
+  that can advertise alternate addresses, plus basic re-establishment guidance
+  after path degradation and connection failure, with optional automatic
+  re-establishment on top of that guidance.
 - TLS handling is real rather than nominal, and the test PKI is current.
 - Message lifecycle behavior is now materially better, including receive
   waiters, expiration, batching, and priority-aware queue flush.
 - Shared connection context and monitoring snapshots now provide a concrete
-  base for RFC 9621 cached-state and monitoring concepts.
+  base for RFC 9621 cached-state and monitoring concepts, including explicit
+  protocol/interface/PvD/address-family policy inputs and alternate-remote
+  hints for establishment ordering, candidate gathering, and ongoing path
+  management with automatic re-establishment advice and opt-in action.
 - The test and lint baseline is healthy enough to support further spec work.
 
-Largest remaining RFC 9622 gaps
--------------------------------
+Largest remaining gaps across the RFC set
+-----------------------------------------
 
-- Complete the RFC 9622 property catalog, especially the remaining connection
-  properties and receive-side metadata properties.
-- Expand the event model and advisory-error surface beyond the current subset.
-- Complete the remaining event and advisory-error surface around the now
-  broader establishment API.
-- Build deeper RFC 9621/9623 behavior around dynamic system policy on top of
-  the new shared connection-context abstraction, which now already feeds cache-
-  aware establishment ordering.
-- Decide which remaining advanced transports are genuinely in scope for this
-  repository, especially SCTP and multipath beyond the now-present QUIC base.
+- Complete the RFC 9622 property catalog, especially the remaining connection,
+  read-only, and receive-side metadata properties.
+- Expand the RFC 9622 event surface where the current implementation still
+  approximates the abstract API, especially ``RendezvousDone``,
+  ``CloneError``, and some event-ordering guarantees.
+- Deepen RFC 9623 endpoint gathering to cover server-reflexive and relayed
+  candidates, not just local addresses, resolved remotes, and alternate
+  remote hints.
+- Use cached state more concretely for protocol-specific behavior, not only
+  generic ranking; TLS session resumption and similar caches are still mostly
+  configuration state rather than active transport heuristics.
+- Decide whether SCTP and true multipath transport behavior are in scope for
+  this repository. They remain the largest transport-level omissions.
 - Build a more systematic conformance matrix and targeted interoperability
-  tests.
+  tests that directly map implementation behavior back to the RFC text.
 
 Recommended next steps
 ----------------------
 
-1. Complete the property catalog section by section from RFC 9622.
-2. Fill out the remaining event and advisory-error semantics.
-3. Extend the now-present API surface with fuller RFC event and policy
-   semantics, especially around groups and advisory errors.
-4. Decide whether this repository will grow into a fuller transport
-   implementation or remain a cleaned-up reference subset.
+1. Close the remaining RFC 9622 event/property gaps section by section.
+2. Decide whether NAT traversal candidates are in scope, then either add
+   them or explicitly mark that part of RFC 9623 as out of scope.
+3. Decide whether SCTP and true multipath behavior are in scope, or keep the
+   implementation intentionally focused on the current transport set.
+4. Build a stricter conformance matrix that tracks each remaining gap as
+   ``implemented``, ``partial``, or ``intentionally out of scope``.
