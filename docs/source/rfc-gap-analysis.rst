@@ -31,9 +31,11 @@ Cross-RFC snapshot
 | RFC 9621 | partial     | Core architecture is now recognizably aligned: event-driven |
 |          |             | API, message-oriented transfer, connection groups, shared   |
 |          |             | connection contexts, cached state, and monitoring snapshots |
-|          |             | all exist. The main remaining gaps are depth: richer        |
-|          |             | monitoring semantics and broader use of cached state and    |
-|          |             | policy during ongoing connection management.                |
+|          |             | all exist. Shared contexts now also track object lifecycle, |
+|          |             | recent operational events, health summaries, adaptive       |
+|          |             | policy signals, and monitoring subscriptions. The main      |
+|          |             | remaining gaps are breadth and external policy sources      |
+|          |             | rather than missing architectural structure.                |
 +----------+-------------+-------------------------------------------------------------+
 | RFC 9622 | partial     | The repo now has a large subset of the abstract API:        |
 |          |             | preconnections, listeners, connections, groups,            |
@@ -69,11 +71,15 @@ RFC 9621 checklist
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Selection between equivalent protocol       | partial     | Property-driven selection, cached protocol/path history,     |
 | stacks                                      |             | and dynamic policy inputs exist; the eligible transport set  |
-|                                             |             | is still relatively small and some policy is heuristic.      |
+|                                             |             | is still relatively small and some policy is still           |
+|                                             |             | heuristic/backend-limited.                                   |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
-| Monitoring support                          | partial     | Event history, read-only properties, connection-context      |
-|                                             |             | snapshots, and re-establishment advice are exposed, but the  |
-|                                             |             | RFC's broader monitoring intent is not fully covered.        |
+| Monitoring support                          | partial     | Event history, read-only properties, shared monitoring       |
+|                                             |             | snapshots, recent context-level events, lifecycle counts,    |
+|                                             |             | health summaries, adaptive policy views, monitoring          |
+|                                             |             | subscriptions, and re-establishment advice are exposed.      |
+|                                             |             | The RFC's broader monitoring intent is still only partially  |
+|                                             |             | covered.                                                     |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Preestablishment and establishment actions  | partial     | ``Initiate``, ``InitiateWithSend``, ``Listen``, and          |
 |                                             |             | ``Rendezvous`` all exist, though rendezvous is still a       |
@@ -91,7 +97,8 @@ RFC 9621 checklist
 |                                             |             | and broader transport diversity are still limited.           |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Separating connection contexts              | implemented | Shared ``ConnectionContext`` objects now exist and can be    |
-|                                             |             | cloned/forked to isolate cached state between groups.        |
+|                                             |             | cloned/forked to isolate cached state between groups, while  |
+|                                             |             | preserving shared monitoring/accounting where appropriate.   |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 
 RFC 9622 checklist

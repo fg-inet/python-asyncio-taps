@@ -1971,6 +1971,126 @@ def test_monitoring_snapshot_exposes_cached_state():
     assert preconnection_snapshot["connectionContext"]["protocolCache"]["tcp"]["successes"] == 1
 
 
+def test_connection_context_monitoring_tracks_object_lifecycle_and_recent_events():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(8443)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=loop,
+    )
+    listener = Listener(preconnection)
+    connection = taps.Connection(preconnection)
+    connection.protocol = "tcp"
+    connection.note_path_change(
+        local_address="127.0.0.1",
+        local_port=8443,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    listener.protocol = "tcp"
+    listener._mark_listening()
+    connection._mark_ready()
+    connection._mark_closed()
+    loop.run_until_complete(listener.stop())
+    snapshot = preconnection.get_monitoring_snapshot()["connectionContext"]
+    loop.close()
+
+    assert snapshot["templateCreations"] >= 1
+    assert snapshot["connectionCounts"]["closed"] >= 1
+    assert snapshot["listenerCounts"]["closed"] >= 1
+    assert snapshot["healthSummary"]["activeConnectionCount"] == 0
+    assert any(event["source"] == "connection" for event in snapshot["recentEvents"])
+    assert any(event["source"] == "listener" for event in snapshot["recentEvents"])
+    assert any(event["name"] == "ready" for event in snapshot["recentEvents"])
+    assert any(event["name"] == "stopped" for event in snapshot["recentEvents"])
+
+
+def test_connection_context_operational_guidance_reflects_degraded_state():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    connection.set_interface_policy("wifi", available=False)
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection.note_soft_error("congestion experienced", penalty=2, lifetime=120)
+    snapshot = connection.get_monitoring_snapshot()["connectionContext"]
+    connection.loop.close()
+
+    assert snapshot["healthSummary"]["severity"] in {"warning", "degraded"}
+    assert snapshot["healthSummary"]["degradedPathCount"] >= 1
+    assert snapshot["healthSummary"]["unavailableInterfaceCount"] == 1
+    assert any("degraded" in item.lower() for item in snapshot["operationalGuidance"])
+    assert any("interfaces" in item.lower() for item in snapshot["operationalGuidance"])
+
+
+def test_monitoring_subscribers_receive_shared_context_updates():
+    remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
+    local = taps.LocalEndpoint().with_address("192.0.2.10").with_port(12345)
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        event_loop=asyncio.new_event_loop(),
+    )
+    connection = taps.Connection(preconnection)
+    updates = []
+
+    def handle_update(update):
+        updates.append(update["trigger"])
+
+    connection.connection_context.subscribe(handle_update)
+    connection.set_protocol_policy("tcp", available=False)
+    connection.note_path_change(
+        local_address="192.0.2.10",
+        local_port=12345,
+        remote_address="203.0.113.10",
+        remote_port=443,
+    )
+    connection.note_soft_error("temporary congestion", penalty=2, lifetime=120)
+    connection.loop.close()
+
+    assert "protocol_policy_updated" in updates
+    assert "path_use_recorded" in updates
+    assert "path_degraded" in updates
+
+
+def test_connection_context_snapshot_exposes_adaptive_policy():
+    context = taps.ConnectionContext()
+    context.record_protocol_outcome("tcp", False, RuntimeError("timeout"))
+    context.record_protocol_outcome("tcp", False, RuntimeError("timeout"))
+    context.record_protocol_outcome("udp", True)
+    context.record_candidate_outcome(
+        ("192.0.2.10", 12345),
+        ("203.0.113.10", 443),
+        "tcp",
+        False,
+        RuntimeError("reset"),
+    )
+    context.degrade_path(
+        ("192.0.2.10", 12345),
+        ("203.0.113.10", 443),
+        reason="loss",
+        penalty=3,
+        lifetime=120,
+    )
+
+    adaptive = context.get_snapshot()["adaptivePolicy"]
+
+    assert adaptive["protocols"]["tcp"]["recommendation"] == "cooldown"
+    assert adaptive["protocols"]["udp"]["recommendation"] == "preferred"
+    assert adaptive["paths"][0]["recommendation"] == "avoid"
+
+
 def test_preconnection_policy_helpers_update_connection_context_snapshot():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     preconnection = taps.Preconnection(

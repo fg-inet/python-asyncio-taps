@@ -125,6 +125,7 @@ class Preconnection:
         self.security_parameters = security_parameters
         self.message_properties = MessageContext()
         self.connection_context = connection_context or ConnectionContext()
+        self.connection_context.register_preconnection()
         if event_loop is not None:
             self.loop = event_loop
         else:
@@ -521,6 +522,14 @@ class Preconnection:
 
     def get_connection_context(self):
         return self.connection_context
+
+    def subscribe_monitoring(self, callback):
+        self.connection_context.subscribe(callback, self.loop)
+        return callback
+
+    def unsubscribe_monitoring(self, callback):
+        self.connection_context.unsubscribe(callback)
+        return self
 
     def set_interface_policy(self, interface_id, **policy):
         self.connection_context.set_interface_policy(interface_id, **policy)

@@ -112,6 +112,8 @@ class Connection:
         self._sent_final_message = False
         self._received_final_message = False
         self._rendezvous_mode = getattr(preconnection, "_rendezvous_mode", False)
+        self._context_ready_recorded = False
+        self._context_detached = False
         self._current_path = {
             "local": None,
             "remote": None,
@@ -127,6 +129,7 @@ class Connection:
         self._auto_reestablishment_enabled = False
         self._auto_reestablishment_triggers = {"connection_error"}
         self._auto_reestablishment_min_penalty = 3
+        self.connection_context.attach_connection()
         self._auto_reestablishment_timeout = 5
         self._auto_reestablishment_task = None
         self._last_reestablished_connection = None
@@ -221,11 +224,27 @@ class Connection:
             "details": details,
         }
         self._event_history.append(event)
-        self.connection_context.record_event(name)
+        self.connection_context.record_event(
+            name,
+            source="connection",
+            state=event["state"],
+            details=details,
+        )
         return event
+
+    def _detach_from_connection_context(self):
+        if self._context_detached:
+            return
+        self.connection_context.detach_connection(
+            was_ready=self._context_ready_recorded,
+        )
+        self._context_detached = True
 
     def _mark_ready(self):
         self._set_state(ConnectionState.ESTABLISHED)
+        if not self._context_ready_recorded:
+            self.connection_context.mark_connection_ready()
+            self._context_ready_recorded = True
         self._record_event(
             "ready",
             protocol=self.protocol,
@@ -250,12 +269,14 @@ class Connection:
             return
         self._set_state(ConnectionState.CLOSED)
         self._record_event("closed", last_error=str(self.last_error) if self.last_error else None)
+        self._detach_from_connection_context()
         if not self._closed_waiter.done():
             self._closed_waiter.set_result(self)
 
     def _fail_initiate(self, error):
         self._set_state(ConnectionState.CLOSED, error)
         self._record_event("initiate_error", error=str(error))
+        self._detach_from_connection_context()
         if not self._ready_waiter.done():
             self._ready_waiter.set_exception(error)
         schedule_callback(
@@ -297,6 +318,7 @@ class Connection:
             error,
         )
         self._refresh_reestablishment_guidance("connection_error")
+        self._detach_from_connection_context()
         if not self._closed_waiter.done():
             self._closed_waiter.set_result(self)
         schedule_callback(self.loop, self.connection_error, (error, self))
@@ -1511,6 +1533,14 @@ class Connection:
 
     def get_connection_context(self):
         return self.connection_context
+
+    def subscribe_monitoring(self, callback):
+        self.connection_context.subscribe(callback, self.loop)
+        return callback
+
+    def unsubscribe_monitoring(self, callback):
+        self.connection_context.unsubscribe(callback)
+        return self
 
     def set_interface_policy(self, interface_id, **policy):
         self.connection_context.set_interface_policy(interface_id, **policy)

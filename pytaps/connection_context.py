@@ -1,4 +1,7 @@
+import inspect
 import time
+
+from .utility import schedule_callback
 
 
 class ConnectionContext:
@@ -9,6 +12,18 @@ class ConnectionContext:
         self.protocol_cache = {}
         self.path_cache = {}
         self.event_counters = {}
+        self.recent_events = []
+        self.template_creations = 0
+        self.connection_counts = {
+            "active": 0,
+            "ready": 0,
+            "closed": 0,
+        }
+        self.listener_counts = {
+            "active": 0,
+            "listening": 0,
+            "closed": 0,
+        }
         self.connection_groups = 0
         self.protocol_policy = {}
         self.interface_policy = {}
@@ -20,6 +35,85 @@ class ConnectionContext:
         self.alternate_remotes = {}
         self.path_advisories = {}
         self.path_transitions = {}
+        self.subscribers = []
+
+    def subscribe(self, callback, loop=None):
+        self.subscribers.append((callback, loop))
+        return callback
+
+    def unsubscribe(self, callback):
+        self.subscribers = [
+            (registered, loop)
+            for registered, loop in self.subscribers
+            if registered is not callback
+        ]
+
+    def _notify_subscribers(self, trigger, **details):
+        if not self.subscribers:
+            return
+        update = {
+            "trigger": trigger,
+            "details": dict(details),
+            "snapshot": self.get_snapshot(),
+        }
+        for callback, loop in list(self.subscribers):
+            if loop is not None:
+                schedule_callback(loop, callback, (update,), ())
+                continue
+            result = callback(update)
+            if inspect.iscoroutine(result):
+                raise RuntimeError(
+                    "ConnectionContext monitoring subscribers that return coroutines require a loop."
+                )
+
+    def register_preconnection(self):
+        self.template_creations += 1
+        self._notify_subscribers("preconnection_registered")
+
+    def attach_connection(self):
+        self.connection_counts["active"] += 1
+        self._notify_subscribers("connection_attached")
+
+    def mark_connection_ready(self):
+        self.connection_counts["ready"] += 1
+        self._notify_subscribers("connection_ready")
+
+    def detach_connection(self, *, was_ready=False):
+        if self.connection_counts["active"] > 0:
+            self.connection_counts["active"] -= 1
+        if was_ready and self.connection_counts["ready"] > 0:
+            self.connection_counts["ready"] -= 1
+        self.connection_counts["closed"] += 1
+        self._notify_subscribers("connection_detached", was_ready=was_ready)
+
+    def attach_listener(self):
+        self.listener_counts["active"] += 1
+        self._notify_subscribers("listener_attached")
+
+    def mark_listener_listening(self):
+        self.listener_counts["listening"] += 1
+        self._notify_subscribers("listener_listening")
+
+    def detach_listener(self, *, was_listening=False):
+        if self.listener_counts["active"] > 0:
+            self.listener_counts["active"] -= 1
+        if was_listening and self.listener_counts["listening"] > 0:
+            self.listener_counts["listening"] -= 1
+        self.listener_counts["closed"] += 1
+        self._notify_subscribers("listener_detached", was_listening=was_listening)
+
+    def _record_recent_event(self, name, *, source=None, state=None, details=None):
+        event = {
+            "timestamp": time.time(),
+            "name": name,
+            "source": source,
+            "state": state,
+            "details": dict(details or {}),
+        }
+        self.recent_events.append(event)
+        if len(self.recent_events) > 50:
+            self.recent_events = self.recent_events[-50:]
+        return event
 
     def set_protocol_policy(
         self,
@@ -35,6 +129,7 @@ class ConnectionContext:
             "racingCooldown": racing_cooldown,
             "lastUpdated": time.time(),
         }
+        self._notify_subscribers("protocol_policy_updated", protocol=protocol)
 
     def set_interface_policy(
         self,
@@ -54,6 +149,7 @@ class ConnectionContext:
             "relativeCost": relative_cost,
             "lastUpdated": time.time(),
         }
+        self._notify_subscribers("interface_policy_updated", interface=interface_id)
 
     def set_pvd_policy(self, pvd_id, *, available=True, preference_adjustment=0):
         self.pvd_policy[pvd_id] = {
@@ -61,12 +157,14 @@ class ConnectionContext:
             "preferenceAdjustment": preference_adjustment,
             "lastUpdated": time.time(),
         }
+        self._notify_subscribers("pvd_policy_updated", pvd=pvd_id)
 
     def set_address_family_policy(self, family, preference_adjustment=0):
         normalized = family.lower()
         if normalized not in {"ipv4", "ipv6"}:
             raise KeyError(f"Unsupported address family policy: {family}")
         self.address_family_policy[normalized] = preference_adjustment
+        self._notify_subscribers("address_family_policy_updated", family=normalized)
 
     def note_alternate_remote(
         self,
@@ -86,6 +184,12 @@ class ConnectionContext:
                 "expiresAt": expires_at,
                 "lastUpdated": time.time(),
             }
+        )
+        self._notify_subscribers(
+            "alternate_remote_noted",
+            base_remote=base_remote,
+            alternate_remote=alternate_remote,
+            protocol=protocol,
         )
 
     def degrade_path(
@@ -114,9 +218,20 @@ class ConnectionContext:
             entry["reasons"].append(str(reason))
         entry["expiresAt"] = expires_at
         entry["lastUpdated"] = now
+        self._notify_subscribers(
+            "path_degraded",
+            local_path=local_path,
+            remote_path=remote_path,
+            penalty=entry["penalty"],
+        )
 
     def clear_path_degradation(self, local_path, remote_path):
         self.path_advisories.pop((local_path, remote_path), None)
+        self._notify_subscribers(
+            "path_degradation_cleared",
+            local_path=local_path,
+            remote_path=remote_path,
+        )
 
     def get_path_advisory(self, local_path, remote_path):
         candidates = []
@@ -160,16 +275,36 @@ class ConnectionContext:
         )
         entry["count"] += 1
         entry["lastUpdated"] = time.time()
+        self._notify_subscribers(
+            "path_transition_recorded",
+            previous_path=previous_path,
+            current_path=current_path,
+            protocol=protocol,
+        )
 
     def attach_group(self):
         self.connection_groups += 1
+        self._notify_subscribers("group_attached")
 
     def detach_group(self):
         if self.connection_groups > 0:
             self.connection_groups -= 1
+        self._notify_subscribers("group_detached")
 
-    def record_event(self, name):
+    def record_event(self, name, *, source=None, state=None, details=None):
         self.event_counters[name] = self.event_counters.get(name, 0) + 1
+        self._record_recent_event(
+            name,
+            source=source,
+            state=state,
+            details=details,
+        )
+        self._notify_subscribers(
+            "event_recorded",
+            name=name,
+            source=source,
+            state=state,
+        )
 
     def record_protocol_outcome(self, protocol, success, error=None):
         if protocol is None:
@@ -196,6 +331,11 @@ class ConnectionContext:
             entry["lastOutcome"] = "failure"
             entry["lastError"] = str(error) if error is not None else None
         entry["lastUpdated"] = time.time()
+        self._notify_subscribers(
+            "protocol_outcome_recorded",
+            protocol=protocol,
+            success=success,
+        )
 
     def record_candidate_outcome(
         self,
@@ -251,6 +391,12 @@ class ConnectionContext:
         entry["uses"] += 1
         entry["lastProtocol"] = protocol
         entry["lastUpdated"] = time.time()
+        self._notify_subscribers(
+            "path_use_recorded",
+            local_path=local_path,
+            remote_path=remote_path,
+            protocol=protocol,
+        )
 
     def get_protocol_score(self, protocol):
         entry = self.protocol_cache.get(protocol)
@@ -333,11 +479,96 @@ class ConnectionContext:
         self.alternate_remotes[base_remote] = retained
         return filtered
 
+    def get_health_summary(self):
+        degraded_paths = 0
+        now = time.time()
+        for key, advisory in list(self.path_advisories.items()):
+            expires_at = advisory.get("expiresAt")
+            if expires_at is not None and expires_at < now:
+                self.path_advisories.pop(key, None)
+                continue
+            degraded_paths += 1
+        protocol_failures = sum(
+            values.get("consecutiveFailures", 0)
+            for values in self.protocol_cache.values()
+        )
+        unavailable_interfaces = sum(
+            1 for values in self.interface_policy.values()
+            if values.get("available") is False
+        )
+        severity = "healthy"
+        if degraded_paths or protocol_failures or unavailable_interfaces:
+            severity = "warning"
+        if degraded_paths >= 2 or protocol_failures >= 2:
+            severity = "degraded"
+        return {
+            "severity": severity,
+            "degradedPathCount": degraded_paths,
+            "protocolFailureCount": protocol_failures,
+            "unavailableInterfaceCount": unavailable_interfaces,
+            "activeConnectionCount": self.connection_counts["active"],
+            "activeListenerCount": self.listener_counts["active"],
+        }
+
+    def get_operational_guidance(self):
+        guidance = []
+        health = self.get_health_summary()
+        if health["degradedPathCount"]:
+            guidance.append("One or more cached paths are degraded.")
+        if health["protocolFailureCount"]:
+            guidance.append("Recent protocol failures should influence new connection attempts.")
+        if health["unavailableInterfaceCount"]:
+            guidance.append("Some interfaces are currently unavailable per system policy.")
+        if self.connection_counts["active"] > self.connection_counts["ready"]:
+            guidance.append("There are connections still establishing or recovering.")
+        return guidance
+
+    def get_adaptive_policy(self):
+        protocol_recommendations = {}
+        for protocol, values in self.protocol_cache.items():
+            consecutive_failures = values.get("consecutiveFailures", 0)
+            recommendation = "normal"
+            if consecutive_failures >= 2:
+                recommendation = "cooldown"
+            elif values.get("lastOutcome") == "success":
+                recommendation = "preferred"
+            protocol_recommendations[protocol] = {
+                "recommendation": recommendation,
+                "consecutiveFailures": consecutive_failures,
+                "lastOutcome": values.get("lastOutcome"),
+            }
+
+        path_recommendations = []
+        for (local_path, remote_path), values in self.path_cache.items():
+            score = self.get_path_score(local_path, remote_path, values.get("lastProtocol"))
+            advisory = self.get_path_advisory(local_path, remote_path)
+            path_recommendations.append(
+                {
+                    "local": local_path,
+                    "remote": remote_path,
+                    "recommendation": "avoid" if advisory is not None else "normal",
+                    "score": score,
+                    "lastProtocol": values.get("lastProtocol"),
+                }
+            )
+
+        return {
+            "protocols": protocol_recommendations,
+            "paths": path_recommendations,
+        }
+
     def get_snapshot(self):
         return {
             "createdAt": self.created_at,
+            "templateCreations": self.template_creations,
             "connectionGroups": self.connection_groups,
+            "connectionCounts": dict(self.connection_counts),
+            "listenerCounts": dict(self.listener_counts),
             "eventCounters": dict(self.event_counters),
+            "recentEvents": list(self.recent_events),
+            "healthSummary": self.get_health_summary(),
+            "operationalGuidance": self.get_operational_guidance(),
+            "adaptivePolicy": self.get_adaptive_policy(),
             "systemPolicy": {
                 "protocols": {
                     protocol: dict(values)
@@ -411,6 +642,10 @@ class ConnectionContext:
             for key, values in self.path_cache.items()
         }
         cloned.event_counters = dict(self.event_counters)
+        cloned.recent_events = [dict(values) for values in self.recent_events]
+        cloned.template_creations = self.template_creations
+        cloned.connection_counts = dict(self.connection_counts)
+        cloned.listener_counts = dict(self.listener_counts)
         cloned.connection_groups = self.connection_groups
         cloned.protocol_policy = {
             protocol: dict(values)
@@ -437,4 +672,5 @@ class ConnectionContext:
             key: dict(values)
             for key, values in self.path_transitions.items()
         }
+        cloned.subscribers = list(self.subscribers)
         return cloned

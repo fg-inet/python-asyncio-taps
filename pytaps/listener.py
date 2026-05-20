@@ -61,6 +61,9 @@ class Listener:
         self._stopped_waiter = self.loop.create_future()
         self.last_error = None
         self._event_history = []
+        self._context_listening_recorded = False
+        self._context_detached = False
+        self.connection_context.attach_listener()
 
         # Callbacks
         self.stopped = preconnection.stopped
@@ -104,11 +107,27 @@ class Listener:
             "details": details,
         }
         self._event_history.append(event)
-        self.connection_context.record_event(name)
+        self.connection_context.record_event(
+            name,
+            source="listener",
+            state=event["state"],
+            details=details,
+        )
         return event
+
+    def _detach_from_connection_context(self):
+        if self._context_detached:
+            return
+        self.connection_context.detach_listener(
+            was_listening=self._context_listening_recorded,
+        )
+        self._context_detached = True
 
     def _mark_listening(self):
         self.state = ConnectionState.ESTABLISHED
+        if not self._context_listening_recorded:
+            self.connection_context.mark_listener_listening()
+            self._context_listening_recorded = True
         self._record_event(
             "listening",
             protocol=self.protocol,
@@ -120,6 +139,7 @@ class Listener:
     def _mark_stopped(self):
         self.state = ConnectionState.CLOSED
         self._record_event("stopped", last_error=str(self.last_error) if self.last_error else None)
+        self._detach_from_connection_context()
         if not self._stopped_waiter.done():
             self._stopped_waiter.set_result(self)
         for waiter in self._connection_waiters:
@@ -132,6 +152,7 @@ class Listener:
         self.last_error = error
         self.state = ConnectionState.CLOSED
         self._record_event("listen_error", error=str(error))
+        self._detach_from_connection_context()
         if not self._listen_waiter.done():
             self._listen_waiter.set_exception(error)
         schedule_callback(
@@ -192,6 +213,14 @@ class Listener:
 
     def get_connection_context(self):
         return self.connection_context
+
+    def subscribe_monitoring(self, callback):
+        self.connection_context.subscribe(callback, self.loop)
+        return callback
+
+    def unsubscribe_monitoring(self, callback):
+        self.connection_context.unsubscribe(callback)
+        return self
 
     def set_interface_policy(self, interface_id, **policy):
         self.connection_context.set_interface_policy(interface_id, **policy)
