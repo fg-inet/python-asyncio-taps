@@ -12,7 +12,10 @@ source .venv/bin/activate
 
 ## 1. Feature Echo Between Local And Linode
 
-On the Linode, open the demo port in the firewall/security group, then run:
+`auto` intentionally prefers reliable transports for cross-machine testing.
+That keeps the first demo on TCP/QUIC-style paths instead of getting fooled by
+UDP sends that succeed locally while replies are blocked by a firewall. On the
+Linode, open TCP port `7777` in the firewall/security group, then run:
 
 ```bash
 ./.venv/bin/python examples/demo_suite/featureServer.py \
@@ -42,7 +45,7 @@ What to look for:
 
 ## 2. Force UDP Message Semantics
 
-On the Linode:
+For this one, open UDP port `7778` on the Linode. On the Linode:
 
 ```bash
 ./.venv/bin/python examples/demo_suite/featureServer.py \

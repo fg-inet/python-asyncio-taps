@@ -39,7 +39,8 @@ def build_transport_properties(args):
         properties.require("reliability")
         properties.ignore("preserveMsgBoundaries")
     else:
-        properties.ignore("reliability")
+        properties.require("reliability")
+        properties.ignore("preserveMsgBoundaries")
         properties.prefer("multistreaming")
     return properties
 
@@ -47,6 +48,7 @@ def build_transport_properties(args):
 class FeatureServer:
     def __init__(self):
         self.listener = None
+        self.connections = set()
 
     async def handle_monitoring_update(self, update):
         summary = update["snapshot"]["healthSummary"]
@@ -59,6 +61,7 @@ class FeatureServer:
         )
 
     async def handle_connection_received(self, connection):
+        self.connections.add(connection)
         logger.info(
             "accepted protocol=%s local=%s remote=%s",
             connection.protocol,
@@ -69,8 +72,12 @@ class FeatureServer:
         connection.on_received(self.handle_received)
         connection.on_received_partial(self.handle_received_partial)
         connection.on_receive_error(self.handle_receive_error)
+        connection.on_connection_error(self.handle_connection_error)
         connection.on_closed(self.handle_closed)
-        await connection.receive(min_incomplete_length=1, max_length=4096)
+        try:
+            await connection.receive(min_incomplete_length=1, max_length=4096)
+        except Exception:
+            logger.exception("failed to arm receive loop for protocol=%s", connection.protocol)
 
     async def handle_received(self, data, context, connection):
         logger.info(
@@ -83,9 +90,12 @@ class FeatureServer:
             safelyReplayable=connection.protocol == "udp",
             final=context.final,
         )
-        await connection.send(data, reply)
-        if not context.final:
-            await connection.receive(min_incomplete_length=1, max_length=4096)
+        try:
+            await connection.send(data, reply)
+            if not context.final and connection.state is taps.ConnectionState.ESTABLISHED:
+                await connection.receive(min_incomplete_length=1, max_length=4096)
+        except Exception:
+            logger.exception("failed while echoing full message on %s", connection.protocol)
 
     async def handle_received_partial(self, data, context, end_of_message, connection):
         logger.info(
@@ -98,14 +108,24 @@ class FeatureServer:
             safelyReplayable=connection.protocol == "udp",
             final=False,
         )
-        await connection.send(data, reply, end_of_message=end_of_message)
-        await connection.receive(min_incomplete_length=1, max_length=4096)
+        try:
+            await connection.send(data, reply, end_of_message=end_of_message)
+            if connection.state is taps.ConnectionState.ESTABLISHED:
+                await connection.receive(min_incomplete_length=1, max_length=4096)
+        except Exception:
+            logger.exception("failed while echoing partial message on %s", connection.protocol)
 
     async def handle_receive_error(self, context, reason, connection):
         logger.warning("receive error on %s: %s", connection.protocol, reason)
 
+    async def handle_connection_error(self, reason, connection):
+        logger.warning("connection error on %s: %s", connection.protocol, reason)
+        logger.info("connection snapshot=%s", connection.get_monitoring_snapshot())
+        self.connections.discard(connection)
+
     async def handle_closed(self, connection):
         logger.info("connection closed protocol=%s", connection.protocol)
+        self.connections.discard(connection)
 
     async def main(self, args):
         local = build_local_endpoint(args)

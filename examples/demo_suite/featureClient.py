@@ -50,7 +50,8 @@ def build_transport_properties(args):
         properties.require("reliability")
         properties.ignore("preserveMsgBoundaries")
     else:
-        properties.ignore("reliability")
+        properties.require("reliability")
+        properties.ignore("preserveMsgBoundaries")
     return properties
 
 
@@ -58,6 +59,9 @@ class FeatureClient:
     def __init__(self):
         self.connection = None
         self.received = []
+
+    def is_connection_open(self):
+        return self.connection and self.connection.state is taps.ConnectionState.ESTABLISHED
 
     async def handle_monitoring_update(self, update):
         health = update["snapshot"]["healthSummary"]
@@ -85,6 +89,19 @@ class FeatureClient:
             context.get_properties(),
         )
         self.received.append(data)
+
+    async def handle_received_partial(self, data, context, end_of_message, connection):
+        logger.info(
+            "received partial echo bytes=%s seq=%s eom=%s props=%s",
+            len(data),
+            context.receive_sequence,
+            end_of_message,
+            context.get_properties(),
+        )
+        self.received.append(data)
+
+    async def handle_connection_error(self, reason, connection):
+        logger.warning("connection error protocol=%s reason=%s", connection.protocol, reason)
 
     async def handle_reestablishment_suggested(self, advice, candidates, connection):
         logger.info("reestablishment advice=%s candidate_count=%s", advice, len(candidates))
@@ -124,13 +141,27 @@ class FeatureClient:
             args.payload,
             first_context,
         )
-        await self.connection.wait_ready(timeout=args.timeout)
         self.connection.on_sent(self.handle_sent)
         self.connection.on_send_error(self.handle_send_error)
         self.connection.on_expired(self.handle_expired)
         self.connection.on_received(self.handle_received)
+        self.connection.on_received_partial(self.handle_received_partial)
+        self.connection.on_connection_error(self.handle_connection_error)
         self.connection.on_reestablishment_suggested(self.handle_reestablishment_suggested)
         self.connection.subscribe_monitoring(self.handle_monitoring_update)
+        try:
+            await self.connection.wait_ready(timeout=args.timeout)
+        except TimeoutError:
+            logger.warning(
+                "timed out establishing a connection to %s:%s; "
+                "check that featureServer.py is running on the Linode, "
+                "that TCP port %s is open, and that the Linode has the updated demo files",
+                args.remote_address or args.remote_host,
+                args.port,
+                args.port,
+            )
+            logger.info("monitoring snapshot=%s", self.connection.get_monitoring_snapshot())
+            return
 
         logger.info(
             "ready protocol=%s read_only=%s",
@@ -138,7 +169,23 @@ class FeatureClient:
             self.connection.get_properties()["readOnly"],
         )
 
-        await self.connection.receive(min_incomplete_length=1, max_length=4096, timeout=args.timeout)
+        try:
+            await self.connection.receive(
+                min_incomplete_length=1,
+                max_length=4096,
+                timeout=args.timeout,
+            )
+        except TimeoutError:
+            logger.warning(
+                "timed out waiting for echo on protocol=%s; check server logs and firewall rules",
+                self.connection.protocol,
+            )
+        if not self.is_connection_open():
+            logger.warning(
+                "connection closed before follow-up demo sends; snapshot=%s",
+                self.connection.get_monitoring_snapshot(),
+            )
+            return
 
         batch = []
         for idx in range(args.batch_size):
@@ -167,8 +214,9 @@ class FeatureClient:
         await asyncio.sleep(args.settle_time)
         snapshot = self.connection.get_monitoring_snapshot()
         logger.info("monitoring snapshot=%s", snapshot)
-        self.connection.close()
-        await self.connection.wait_closed(timeout=args.timeout)
+        if self.connection.state is not taps.ConnectionState.CLOSED:
+            self.connection.close()
+            await self.connection.wait_closed(timeout=args.timeout)
 
 
 def parse_args():
