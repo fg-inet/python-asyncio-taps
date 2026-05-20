@@ -105,6 +105,8 @@ Rendezvous Result
 
 		.. automethod:: wait_ready
 		.. automethod:: wait_listening
+		.. automethod:: get_properties
+		.. automethod:: get_event_history
 		.. automethod:: close
 
 Connection
@@ -129,6 +131,7 @@ Connection
 		.. automethod:: flush_messages
 		.. automethod:: receive
 		.. automethod:: receive_message
+		.. automethod:: clone
 		.. automethod:: wait_ready
 		.. automethod:: wait_closed
 		.. automethod:: attempt_reestablishment
@@ -154,6 +157,7 @@ Connection
 		.. automethod:: on_receive_error
 		.. automethod:: on_soft_error
 		.. automethod:: on_path_change
+		.. automethod:: on_clone_error
 		.. automethod:: on_reestablishment_suggested
 		.. automethod:: on_reestablished
 		.. automethod:: on_connection_error

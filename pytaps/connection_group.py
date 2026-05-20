@@ -35,6 +35,12 @@ class ConnectionGroup:
         current_group = getattr(connection, "connection_group", None)
         if current_group is not None and current_group is not self:
             current_group.remove_connection(connection)
+        isolate_session = bool(connection.transport_properties.get("isolateSession"))
+        shared_isolation = bool(self.shared_connection_properties.get("isolateSession"))
+        if (isolate_session or shared_isolation) and self.connections:
+            raise RuntimeError(
+                "ConnectionGroup cannot entangle connections when isolateSession is enabled"
+            )
         if self.connection_context is None:
             self.connection_context = connection.connection_context
             self.connection_context.attach_group()
@@ -64,16 +70,24 @@ class ConnectionGroup:
     def set_property(self, prop, value):
         if prop not in self.ENTANGLED_PROPERTIES:
             return
-        self.shared_connection_properties[prop] = value
-        for connection in self.connections:
-            connection.transport_properties.connection_properties[prop] = value
         if (
             prop == "groupConnLimit"
             and isinstance(value, int)
             and value >= 0
             and len(self.connections) > value
         ):
-            raise RuntimeError("ConnectionGroup already exceeds the new groupConnLimit")
+            reason = RuntimeError("ConnectionGroup already exceeds the new groupConnLimit")
+            self._dissolve_with_clone_error(reason)
+            raise reason
+        if prop == "isolateSession" and value and len(self.connections) > 1:
+            reason = RuntimeError(
+                "ConnectionGroup cannot satisfy isolateSession for multiple entangled connections"
+            )
+            self._dissolve_with_clone_error(reason)
+            raise reason
+        self.shared_connection_properties[prop] = value
+        for connection in self.connections:
+            connection.transport_properties.connection_properties[prop] = value
 
     async def close(self):
         for connection in list(self.connections):
@@ -97,3 +111,16 @@ class ConnectionGroup:
     def _apply_shared_properties(self, connection):
         for prop, value in self.shared_connection_properties.items():
             connection.transport_properties.connection_properties[prop] = value
+
+    def _dissolve_with_clone_error(self, reason):
+        connections = list(self.connections)
+        if self.connection_context is not None:
+            self.connection_context.detach_group()
+        self.connections = []
+        self.shared_connection_properties = {}
+        self.connection_context = None
+        for connection in connections:
+            if getattr(connection, "connection_group", None) is self:
+                connection.connection_group = None
+            if hasattr(connection, "_report_clone_error"):
+                connection._report_clone_error(reason, detached=True)

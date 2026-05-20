@@ -15,9 +15,9 @@ from .message import (
     is_message_property,
 )
 from .securityParameters import SecurityParameters
-from .transportProperties import TransportProperties, normalize_direction
+from .transportProperties import PreferenceLevel, TransportProperties, normalize_direction
 from .transports import UdpTransport
-from .utility import setup_logger
+from .utility import schedule_callback, setup_logger
 from .yang_validate import (
     YANG_FMT_JSON,
     YANG_FMT_XML,
@@ -33,6 +33,33 @@ logger = setup_logger(__name__, "green")
 class RendezvousResult:
     connection: "Connection"
     listener: "Listener"
+    completed: bool = False
+    failed_reason: object = None
+    event_history: list = None
+
+    def __post_init__(self):
+        if self.event_history is None:
+            self.event_history = []
+
+    def _record_event(self, name, **details):
+        event = {
+            "name": name,
+            "details": details,
+        }
+        self.event_history.append(event)
+        return event
+
+    def mark_done(self):
+        self.completed = True
+        self.failed_reason = None
+        self._record_event("rendezvous_done")
+        return self
+
+    def mark_failed(self, reason):
+        self.completed = False
+        self.failed_reason = reason
+        self._record_event("rendezvous_error", reason=str(reason))
+        return self
 
     async def wait_ready(self, timeout=None):
         return await self.connection.wait_ready(timeout=timeout)
@@ -45,6 +72,21 @@ class RendezvousResult:
         await self.listener.stop()
         await self.connection.wait_closed()
         return self
+
+    def get_event_history(self):
+        return list(self.event_history)
+
+    def get_properties(self):
+        return {
+            "completed": self.completed,
+            "failedReason": (
+                str(self.failed_reason)
+                if self.failed_reason is not None else None
+            ),
+            "connection": self.connection,
+            "listener": self.listener,
+            "events": self.get_event_history(),
+        }
 
 
 class Preconnection:
@@ -117,6 +159,32 @@ class Preconnection:
         ):
             if prop not in self.transport_properties.get_explicit_selection_properties():
                 self.transport_properties.require(prop)
+        self._apply_security_protocol_policy()
+
+    def _normalized_allowed_security_protocols(self):
+        if not self.security_parameters:
+            return set()
+        return {
+            protocol.lower().replace(".", "").replace("_", "")
+            for protocol in self.security_parameters.allowed_security_protocols
+        }
+
+    def _apply_security_protocol_policy(self):
+        if not self.security_parameters:
+            return
+        allowed_protocols = self._normalized_allowed_security_protocols()
+        if not allowed_protocols:
+            return
+        secure_tls_allowed = any(protocol.startswith("tls") for protocol in allowed_protocols)
+        quic_allowed = "tls13" in allowed_protocols
+        self.connection_context.set_protocol_policy(
+            "tls-tcp",
+            available=secure_tls_allowed,
+        )
+        self.connection_context.set_protocol_policy(
+            "quic",
+            available=quic_allowed,
+        )
 
     def _build_security_context(self):
         if not self.security_parameters:
@@ -136,9 +204,12 @@ class Preconnection:
                 self.security_parameters.public_key,
                 keyfile=self.security_parameters.private_key,
             )
-        for cert in self.security_parameters.trustedCA:
+        trust_anchors = list(self.security_parameters.trustedCA)
+        if not trust_anchors and self.security_parameters.pinned_server_certificates:
+            trust_anchors = list(self.security_parameters.pinned_server_certificates)
+        for cert in trust_anchors:
             security_context.load_verify_locations(cert)
-        if self.security_parameters.trustedCA and hasattr(ssl, "VERIFY_X509_STRICT"):
+        if trust_anchors and hasattr(ssl, "VERIFY_X509_STRICT"):
             # The bundled test certificates predate stricter AKI/SKI validation in
             # newer OpenSSL releases, so keep chain verification enabled but relax
             # strict profile checks for explicit custom trust anchors.
@@ -174,6 +245,27 @@ class Preconnection:
             security_context.verify_mode = ssl.CERT_REQUIRED
         else:
             security_context.verify_mode = ssl.CERT_NONE
+        security_context._pytaps_pinned_server_certificates = list(
+            self.security_parameters.pinned_server_certificates
+        )
+        security_context._pytaps_security_algorithms = list(
+            self.security_parameters.security_algorithms
+        )
+        security_context._pytaps_allowed_security_protocols = list(
+            self.security_parameters.allowed_security_protocols
+        )
+        security_context._pytaps_pre_shared_key = self.security_parameters.pre_shared_key
+        security_context._pytaps_private_key_callback_handle = (
+            self.security_parameters.private_key_callback_handle
+        )
+        security_context._pytaps_server_name = self.security_parameters.server_name
+        security_context._pytaps_cipher_suites = self.security_parameters.cipher_suites
+        security_context._pytaps_session_cache_capacity = (
+            self.security_parameters.session_cache_capacity
+        )
+        security_context._pytaps_session_cache_lifetime = (
+            self.security_parameters.session_cache_lifetime
+        )
         return security_context
 
     def from_yang(self, frmat, text):
@@ -298,6 +390,36 @@ class Preconnection:
                 prop_name = str(node.tag)
                 if prop_name.startswith(xml_prefix):
                     prop_name = prop_name[len(xml_prefix):]
+                if prop_name == 'interface':
+                    preference = node.findtext('taps:preference', namespaces=ns)
+                    value = node.findtext('taps:value', namespaces=ns)
+                    if preference and value:
+                        tp.add_interface_preference(
+                            value,
+                            {
+                                'ignore': PreferenceLevel.IGNORE,
+                                'prohibit': PreferenceLevel.PROHIBIT,
+                                'require': PreferenceLevel.REQUIRE,
+                                'prefer': PreferenceLevel.PREFER,
+                                'avoid': PreferenceLevel.AVOID,
+                            }[preference],
+                        )
+                    continue
+                if prop_name == 'pvd':
+                    preference = node.findtext('taps:preference', namespaces=ns)
+                    value = node.findtext('taps:value', namespaces=ns)
+                    if preference and value:
+                        tp.add_pvd_preference(
+                            value,
+                            {
+                                'ignore': PreferenceLevel.IGNORE,
+                                'prohibit': PreferenceLevel.PROHIBIT,
+                                'require': PreferenceLevel.REQUIRE,
+                                'prefer': PreferenceLevel.PREFER,
+                                'avoid': PreferenceLevel.AVOID,
+                            }[preference],
+                        )
+                    continue
                 if node.text in fn_mapping:
                     fn = fn_mapping.get(node.text)
                     fn(tp, prop_name)
@@ -541,8 +663,8 @@ class Preconnection:
         await listener.wait_listening(timeout=timeout)
         connection = await connection_preconnection.initiate()
         result = RendezvousResult(connection=connection, listener=listener)
-        if timeout is not None:
-            try:
+        try:
+            if timeout is not None:
                 await asyncio.wait_for(
                     asyncio.gather(
                         result.wait_listening(),
@@ -550,10 +672,24 @@ class Preconnection:
                     ),
                     timeout,
                 )
-            except BaseException:
-                connection.abort(reason="Rendezvous failed")
-                await listener.stop()
-                raise
+            result.mark_done()
+            connection._record_event(
+                "rendezvous_done",
+                listener_state=listener.state.name.title(),
+            )
+            schedule_callback(
+                self.loop,
+                self.rendezvous_done,
+                (result, connection),
+                (connection,),
+                (self,),
+                (),
+            )
+        except BaseException as exc:
+            result.mark_failed(exc)
+            connection.abort(reason="Rendezvous failed")
+            await listener.stop()
+            raise
         return result
 
     # TODO: Is this actually what the spec talks about?

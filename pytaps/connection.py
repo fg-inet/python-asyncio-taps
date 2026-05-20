@@ -32,6 +32,7 @@ from .utility import (
     schedule_callback,
     setup_logger,
 )
+from .transportProperties import get_protocols
 
 logger = setup_logger(__name__)
 # Wait for 100 ms between connection attempts when racing
@@ -42,6 +43,15 @@ def _require_netifaces():
     if netifaces is None:
         raise ImportError(
             "Interface-constrained endpoint selection requires the 'netifaces' package."
+        )
+
+
+class PartialSendError(RuntimeError):
+    def __init__(self, bytes_sent, total_bytes):
+        self.bytes_sent = bytes_sent
+        self.total_bytes = total_bytes
+        super().__init__(
+            f"Partial send completed ({bytes_sent}/{total_bytes} bytes sent)"
         )
 
 
@@ -94,6 +104,9 @@ class Connection:
         self.race_task = None
         self._batch_counter = 0
         self._send_sequence = 0
+        self._send_call_sequence = 0
+        self._next_send_event_id = 1
+        self._pending_send_events = {}
         self._receive_sequence = 0
         self._queued_messages = []
         self._sent_final_message = False
@@ -131,6 +144,7 @@ class Connection:
         self.sent = None
         self.soft_error = None
         self.path_change = None
+        self.clone_error = None
         self.reestablishment_suggested = None
         self.reestablished = None
         self.establishment_error = None
@@ -186,13 +200,19 @@ class Connection:
 
     def get_message_properties(self, message_or_context):
         if isinstance(message_or_context, ReceivedMessage):
-            return message_or_context.get_properties()
-        return message_or_context.get_properties()
+            properties = message_or_context.get_properties()
+        else:
+            properties = message_or_context.get_properties()
+        properties["selection"] = self._selection_properties_view()
+        return properties
 
     def _set_state(self, state, error=None):
         self.state = state
         if error is not None:
             self.last_error = error
+
+    def _is_terminal(self):
+        return self.state is ConnectionState.CLOSED and self._closed_waiter.done()
 
     def _record_event(self, name, **details):
         event = {
@@ -221,10 +241,13 @@ class Connection:
         if not self._ready_waiter.done():
             self._ready_waiter.set_result(self)
         schedule_callback(self.loop, self.ready, (self,))
-        if self._rendezvous_mode:
-            schedule_callback(self.loop, self.rendezvous_done, (self,))
+
+    def _report_sent(self, message_context):
+        self._queue_send_event("sent", message_context)
 
     def _mark_closed(self):
+        if self._is_terminal():
+            return
         self._set_state(ConnectionState.CLOSED)
         self._record_event("closed", last_error=str(self.last_error) if self.last_error else None)
         if not self._closed_waiter.done():
@@ -251,6 +274,9 @@ class Connection:
         )
 
     def _report_connection_error(self, error):
+        if self._is_terminal() and self._event_history and self._event_history[-1]["name"] == "connection_error":
+            return
+        self._set_state(ConnectionState.CLOSED, error)
         self.last_error = error
         self._record_event("connection_error", error=str(error))
         current_local = self._current_path.get("local")
@@ -271,9 +297,13 @@ class Connection:
             error,
         )
         self._refresh_reestablishment_guidance("connection_error")
+        if not self._closed_waiter.done():
+            self._closed_waiter.set_result(self)
         schedule_callback(self.loop, self.connection_error, (error, self))
 
     def _report_receive_error(self, message_context, reason=None):
+        if self._is_terminal():
+            return
         self._record_event(
             "receive_error",
             reason=str(reason) if reason is not None else None,
@@ -288,7 +318,24 @@ class Connection:
             (),
         )
 
+    def _report_clone_error(self, reason, *, detached=False):
+        self.last_error = reason
+        self._record_event(
+            "clone_error",
+            reason=str(reason),
+            detached=detached,
+        )
+        schedule_callback(
+            self.loop,
+            self.clone_error,
+            (reason, self),
+            (self,),
+            (),
+        )
+
     def _report_soft_error(self, reason):
+        if self._is_terminal():
+            return
         self._soft_errors.append(reason)
         self._record_event("soft_error", reason=str(reason))
         schedule_callback(
@@ -374,6 +421,8 @@ class Connection:
         return True
 
     def _report_path_change(self, previous_path, current_path):
+        if self._is_terminal():
+            return
         self._previous_path = previous_path.copy()
         self.connection_context.record_path_transition(
             previous_path,
@@ -399,11 +448,74 @@ class Connection:
         schedule_callback(self.loop, self.closed, (self,))
 
     def _report_expired(self, message_context):
-        self._record_event(
-            "expired",
-            message_id=getattr(message_context, "message_id", None),
-        )
-        schedule_callback(self.loop, self.expired, (message_context, self))
+        if self._is_terminal():
+            return
+        self._queue_send_event("expired", message_context)
+
+    def _allocate_send_call_id(self):
+        self._send_call_sequence += 1
+        return self._send_call_sequence
+
+    def _queue_send_event(self, kind, message_context, reason=None, *, send_call_id=None):
+        if self._is_terminal():
+            return
+        call_id = send_call_id
+        if call_id is None:
+            call_id = getattr(message_context, "_pytaps_send_call_id", None)
+        if call_id is None:
+            call_id = self._allocate_send_call_id()
+        self._pending_send_events[call_id] = (kind, message_context, reason)
+        self._flush_send_events()
+
+    def _flush_send_events(self):
+        while self._next_send_event_id in self._pending_send_events:
+            if self._is_terminal():
+                self._pending_send_events.clear()
+                return
+            kind, message_context, reason = self._pending_send_events.pop(
+                self._next_send_event_id
+            )
+            self._next_send_event_id += 1
+            if kind == "sent":
+                self._record_event(
+                    "sent",
+                    message_id=getattr(message_context, "message_id", None),
+                )
+                schedule_callback(
+                    self.loop,
+                    self.sent,
+                    (message_context, self),
+                    (message_context,),
+                    (self,),
+                    (),
+                )
+            elif kind == "expired":
+                self._record_event(
+                    "expired",
+                    message_id=getattr(message_context, "message_id", None),
+                )
+                schedule_callback(self.loop, self.expired, (message_context, self))
+            elif kind == "send_error":
+                self.last_error = reason
+                reason_details = {
+                    "message_id": getattr(message_context, "message_id", None),
+                    "reason": str(reason),
+                }
+                if isinstance(reason, PartialSendError):
+                    reason_details["bytesSent"] = reason.bytes_sent
+                    reason_details["totalBytes"] = reason.total_bytes
+                self._record_event(
+                    "send_error",
+                    **reason_details,
+                )
+                schedule_callback(
+                    self.loop,
+                    self.send_error,
+                    (message_context, reason, self),
+                    (message_context, self),
+                    (self,),
+                    (),
+                )
 
     def _handle_attempt_done(self, task):
         if task in self.pending:
@@ -450,6 +562,8 @@ class Connection:
         return RACING_DELAY
 
     def _deliver_received(self, data, context):
+        if self._is_terminal():
+            return None
         self._receive_sequence += 1
         context.received_at = context.received_at or self.loop.time()
         context.receive_sequence = self._receive_sequence
@@ -463,6 +577,8 @@ class Connection:
         return received_message
 
     def _deliver_received_partial(self, data, context):
+        if self._is_terminal():
+            return None
         self._receive_sequence += 1
         context.received_at = context.received_at or self.loop.time()
         context.receive_sequence = self._receive_sequence
@@ -511,10 +627,55 @@ class Connection:
         }
 
     def _can_send(self):
+        direction = str(self.transport_properties.get("direction") or "").lower()
+        if direction == "unidirectional receive":
+            return False
         return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING}
 
     def _can_receive(self):
+        direction = str(self.transport_properties.get("direction") or "").lower()
+        if direction == "unidirectional send":
+            return False
         return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING} and not self._received_final_message
+
+    def _selected_protocol_details(self):
+        if self.protocol is None:
+            return None
+        for protocol in get_protocols():
+            if protocol["name"] == self.protocol:
+                return protocol
+        return None
+
+    def _selection_properties_view(self):
+        if self.state not in {
+            ConnectionState.ESTABLISHED,
+            ConnectionState.CLOSING,
+            ConnectionState.CLOSED,
+        }:
+            return self.transport_properties.get_selection_properties()
+
+        selected_protocol = self._selected_protocol_details() or {}
+        properties = {}
+        for prop, value in self.transport_properties.get_selection_properties().items():
+            if prop == "direction":
+                properties[prop] = value
+            elif prop == "interface":
+                if self.local_endpoint is None:
+                    properties[prop] = False
+                else:
+                    configured = {interface_id for _pref, interface_id in value}
+                    if not configured:
+                        properties[prop] = bool(self.local_endpoint.interface)
+                    else:
+                        properties[prop] = any(
+                            interface in configured
+                            for interface in self.local_endpoint.interface
+                        )
+            elif prop == "pvd":
+                properties[prop] = bool(value)
+            else:
+                properties[prop] = bool(selected_protocol.get(prop))
+        return properties
 
     def _validate_message_context(self, data, context):
         connection_reliable = self._apply_message_defaults(MessageContext()).reliable
@@ -546,15 +707,9 @@ class Connection:
         return None
 
     def _report_send_error(self, message_context, reason):
-        self.last_error = reason
-        schedule_callback(
-            self.loop,
-            self.send_error,
-            (message_context, reason, self),
-            (message_context, self),
-            (self,),
-            (),
-        )
+        if self._is_terminal():
+            return
+        self._queue_send_event("send_error", message_context, reason)
 
     def set_property(self, prop, value):
         if is_message_property(prop):
@@ -574,6 +729,9 @@ class Connection:
         read_only = self.get_properties()["readOnly"]
         if canonical in read_only:
             return read_only.get(canonical, default)
+        selection = self.get_properties()["selection"]
+        if canonical in selection:
+            return selection.get(canonical, default)
         return self.transport_properties.get_property(prop, default)
 
     def default_property(self, prop):
@@ -593,7 +751,7 @@ class Connection:
     def get_properties(self):
         limits = self._send_limits()
         return {
-            "selection": self.transport_properties.get_selection_properties(),
+            "selection": self._selection_properties_view(),
             "connection": self.transport_properties.get_connection_properties(),
             "message": self.message_properties.get_properties(),
             "security": (
@@ -698,7 +856,7 @@ class Connection:
                 self.local_endpoint.without_interface(interface)
         return self.local_endpoint
 
-    async def clone(self):
+    async def clone(self, framer=None, connection_properties=None):
         template = self._originating_preconnection.clone()
         template.local_endpoint = self.local_endpoint.clone() if self.local_endpoint else None
         template.remote_endpoint = self.remote_endpoint.clone() if self.remote_endpoint else None
@@ -707,14 +865,31 @@ class Connection:
             connection_properties=self.transport_properties.get_connection_properties(),
         )
         template.message_properties = deepcopy(self.message_properties)
-        if self.protocol == "quic" and self.quic_association is not None:
-            cloned_connection = Connection(template)
-            self.connection_group.add_connection(cloned_connection)
-            await self.quic_association.open_stream_connection(cloned_connection)
+        if framer is not None:
+            template.framer = framer
+        if connection_properties:
+            for prop, value in connection_properties.items():
+                template.transport_properties.set_property(prop, value)
+        isolate_session = bool(template.transport_properties.get("isolateSession"))
+        if isolate_session:
+            template.separate_connection_context()
+        try:
+            if (
+                self.protocol == "quic"
+                and self.quic_association is not None
+                and not isolate_session
+            ):
+                cloned_connection = Connection(template)
+                self.connection_group.add_connection(cloned_connection)
+                await self.quic_association.open_stream_connection(cloned_connection)
+                return cloned_connection
+            cloned_connection = await template.initiate()
+            if not isolate_session:
+                self.connection_group.add_connection(cloned_connection)
             return cloned_connection
-        cloned_connection = await template.initiate()
-        self.connection_group.add_connection(cloned_connection)
-        return cloned_connection
+        except Exception as exc:
+            self._report_clone_error(exc)
+            raise
 
     async def send(self, data, message_context=None, end_of_message=True):
         if isinstance(data, str):
@@ -723,16 +898,30 @@ class Connection:
             message_context,
             end_of_message=end_of_message,
         )
+        send_call_id = self._allocate_send_call_id()
+        setattr(context, "_pytaps_send_call_id", send_call_id)
         if not self._check_send_allowed(context):
             return None
         validation_error = self._validate_message_context(data, context)
         if validation_error is not None:
-            self._report_send_error(context, validation_error)
+            self._queue_send_event("send_error", context, validation_error, send_call_id=send_call_id)
             return None
         if context.is_expired():
-            self._report_expired(context)
+            self._queue_send_event("expired", context, send_call_id=send_call_id)
             return None
-        result = self.transports[0].send(data, context, end_of_message)
+        result = self.transports[0].send(
+            data,
+            context,
+            end_of_message,
+            send_call_id=send_call_id,
+        )
+        if isinstance(result, PartialSendError):
+            self._queue_send_event(
+                "send_error",
+                context,
+                result,
+                send_call_id=send_call_id,
+            )
         if result is not None and context.final:
             self._sent_final_message = True
         return result
@@ -824,12 +1013,13 @@ class Connection:
             await self.connection_group.close()
 
     def abort(self, reason="Aborted by local endpoint"):
+        if self._is_terminal():
+            return
         for transport in list(self.transports):
             if getattr(transport, "transport", None) is not None:
                 transport.transport.close()
             else:
                 self.loop.create_task(transport.close())
-        self._mark_closed()
         self._report_connection_error(reason)
 
     async def abort_group(self):
@@ -1475,6 +1665,9 @@ class Connection:
 
     def on_path_change(self, callback):
         self.path_change = callback
+
+    def on_clone_error(self, callback):
+        self.clone_error = callback
 
     def on_reestablishment_suggested(self, callback):
         self.reestablishment_suggested = callback

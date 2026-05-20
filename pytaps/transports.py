@@ -57,8 +57,11 @@ def _build_quic_configuration(owner, *, is_client):
                 security_parameters.public_key,
                 keyfile=security_parameters.private_key,
             )
-        if security_parameters.trustedCA:
-            configuration.load_verify_locations(cafile=security_parameters.trustedCA[0])
+        trust_anchors = list(security_parameters.trustedCA)
+        if not trust_anchors and security_parameters.pinned_server_certificates:
+            trust_anchors = list(security_parameters.pinned_server_certificates)
+        if trust_anchors:
+            configuration.load_verify_locations(cafile=trust_anchors[0])
         configuration.server_name = (
             security_parameters.server_name
             or getattr(getattr(owner, "remote_endpoint", None), "host_name", None)
@@ -67,6 +70,26 @@ def _build_quic_configuration(owner, *, is_client):
             ssl.CERT_REQUIRED
             if security_parameters.require_peer_authentication
             else ssl.CERT_NONE
+        )
+        configuration._pytaps_pinned_server_certificates = list(
+            security_parameters.pinned_server_certificates
+        )
+        configuration._pytaps_security_algorithms = list(
+            security_parameters.security_algorithms
+        )
+        configuration._pytaps_allowed_security_protocols = list(
+            security_parameters.allowed_security_protocols
+        )
+        configuration._pytaps_pre_shared_key = security_parameters.pre_shared_key
+        configuration._pytaps_private_key_callback_handle = (
+            security_parameters.private_key_callback_handle
+        )
+        configuration._pytaps_cipher_suites = security_parameters.cipher_suites
+        configuration._pytaps_session_cache_capacity = (
+            security_parameters.session_cache_capacity
+        )
+        configuration._pytaps_session_cache_lifetime = (
+            security_parameters.session_cache_lifetime
         )
     else:
         configuration.verify_mode = ssl.CERT_REQUIRED if is_client else ssl.CERT_NONE
@@ -371,36 +394,61 @@ class TransportLayer(asyncio.Protocol):
         #  invoke the framer again
         self.loop.create_task(self.invoke_framer())
 
-    def send(self, data, message_context=None, end_of_message=True):
+    def send(self, data, message_context=None, end_of_message=True, send_call_id=None):
         """ Function responsible for sending data.
         """
         self.message_count += 1
-        if self.connection.state != ConnectionState.ESTABLISHED:
-            logger.warning("SendError occurred, connection is not established.")
-            if self.connection.send_error:
-                self.loop.create_task(
-                    self.connection.send_error(self.message_count, self.connection)
-                )
-            return
         context = self._coerce_message_context(
             message_context,
             end_of_message=end_of_message,
         )
+        if send_call_id is None:
+            send_call_id = self.connection._allocate_send_call_id()
+        setattr(context, "_pytaps_send_call_id", send_call_id)
         if context.message_id is None:
             context.message_id = self.message_count
+        if self.connection.state != ConnectionState.ESTABLISHED:
+            logger.warning("SendError occurred, connection is not established.")
+            self.connection._queue_send_event(
+                "send_error",
+                context,
+                RuntimeError("Connection is not established"),
+                send_call_id=send_call_id,
+            )
+            return
         if context.is_expired():
-            self.connection._report_expired(context)
+            self.connection._queue_send_event(
+                "expired",
+                context,
+                send_call_id=send_call_id,
+            )
             return self.message_count
-        self.loop.create_task(self._write_with_expiration(data, context, end_of_message))
+        self.loop.create_task(
+            self._write_with_expiration(
+                data,
+                context,
+                end_of_message,
+                send_call_id=send_call_id,
+            )
+        )
         return self.message_count
 
-    async def _write_with_expiration(self, data, message_context, end_of_message):
+    async def _write_with_expiration(self, data, message_context, end_of_message, send_call_id=None):
         if message_context.is_expired():
-            self.connection._report_expired(message_context)
+            self.connection._queue_send_event(
+                "expired",
+                message_context,
+                send_call_id=send_call_id,
+            )
             return
-        await self.write(data, message_context, end_of_message)
+        await self.write(
+            data,
+            message_context,
+            end_of_message,
+            send_call_id=send_call_id,
+        )
 
-    async def write(self, data, message_context, end_of_message):
+    async def write(self, data, message_context, end_of_message, send_call_id=None):
         pass
 
     def receive(self, min_incomplete_length, max_length):
@@ -537,7 +585,7 @@ class UdpTransport(TransportLayer):
                 await self.write(data, context, eom)
         return
 
-    async def write(self, data, message_context, end_of_message):
+    async def write(self, data, message_context, end_of_message, send_call_id=None):
         """ Sends udp data
         """
         logger.info("Writing UDP data to " +
@@ -563,18 +611,19 @@ class UdpTransport(TransportLayer):
                 self.transport.sendto(data, (remote_address, remote_port))
         except InterruptedError:
             logger.warning("SendError occurred.")
-            if self.connection.send_error:
-                self.loop.create_task(
-                    self.connection.send_error(
-                        self.message_count, self.connection
-                    )
-                )
+            self.connection._queue_send_event(
+                "send_error",
+                message_context,
+                InterruptedError("UDP send interrupted"),
+                send_call_id=send_call_id,
+            )
             return
         logger.info("Data written successfully.")
-        if self.connection.sent:
-            self.loop.create_task(
-                self.connection.sent(self.message_count, self.connection)
-            )
+        self.connection._queue_send_event(
+            "sent",
+            message_context,
+            send_call_id=send_call_id,
+        )
         return
 
     async def close(self):
@@ -730,7 +779,7 @@ class MulticastSendTransport(TransportLayer):
             else:
                 await self.write(data, context, eom)
 
-    async def write(self, data, message_context, end_of_message):
+    async def write(self, data, message_context, end_of_message, send_call_id=None):
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -743,13 +792,12 @@ class MulticastSendTransport(TransportLayer):
             report = await self.async_publication.send(data)
         except InterruptedError:
             logger.warning("SendError occurred.")
-            if self.connection.send_error:
-                self.loop.create_task(
-                    self.connection.send_error(
-                        self.message_count,
-                        self.connection,
-                    )
-                )
+            self.connection._queue_send_event(
+                "send_error",
+                message_context,
+                InterruptedError("Multicast send interrupted"),
+                send_call_id=send_call_id,
+            )
             return
 
         if report.local_addr:
@@ -758,10 +806,11 @@ class MulticastSendTransport(TransportLayer):
         if report.source_addr:
             message_context.local_address = report.source_addr
         logger.info("Multicast packet written successfully.")
-        if self.connection.sent:
-            self.loop.create_task(
-                self.connection.sent(self.message_count, self.connection)
-            )
+        self.connection._queue_send_event(
+            "sent",
+            message_context,
+            send_call_id=send_call_id,
+        )
 
     async def close(self):
         logger.info("Closing multicast sender.")
@@ -863,7 +912,7 @@ class QuicTransport(TransportLayer):
         if self.listener is not None:
             self.listener._deliver_connection(self.connection)
 
-    async def write(self, data, message_context, end_of_message):
+    async def write(self, data, message_context, end_of_message, send_call_id=None):
         logger.info("Writing QUIC stream data.")
         if isinstance(data, str):
             data = data.encode()
@@ -878,16 +927,19 @@ class QuicTransport(TransportLayer):
             await self.writer.drain()
         except InterruptedError:
             logger.warning("SendError occurred.")
-            if self.connection.send_error:
-                self.loop.create_task(
-                    self.connection.send_error(self.message_count, self.connection)
-                )
+            self.connection._queue_send_event(
+                "send_error",
+                message_context,
+                InterruptedError("QUIC send interrupted"),
+                send_call_id=send_call_id,
+            )
             return
         logger.info("QUIC stream data written successfully.")
-        if self.connection.sent:
-            self.loop.create_task(
-                self.connection.sent(self.message_count, self.connection)
-            )
+        self.connection._queue_send_event(
+            "sent",
+            message_context,
+            send_call_id=send_call_id,
+        )
 
     async def read(self, min_incomplete_length, max_length):
         if self.connection.framer:
@@ -977,7 +1029,7 @@ class TcpTransport(TransportLayer):
                 await self.write(data, context, eom)
         return
 
-    async def write(self, data, message_context, end_of_message):
+    async def write(self, data, message_context, end_of_message, send_call_id=None):
         """ Send tcp data
         """
         logger.info("Writing TCP data.")
@@ -995,16 +1047,19 @@ class TcpTransport(TransportLayer):
             self.transport.write(data)
         except InterruptedError:
             logger.warning("SendError occurred.")
-            if self.connection.send_error:
-                self.loop.create_task(
-                    self.connection.send_error(self.message_count, self.connection)
-                )
+            self.connection._queue_send_event(
+                "send_error",
+                message_context,
+                InterruptedError("TCP send interrupted"),
+                send_call_id=send_call_id,
+            )
             return
         logger.info("Data written successfully.")
-        if self.connection.sent:
-            self.loop.create_task(
-                self.connection.sent(self.message_count, self.connection)
-            )
+        self.connection._queue_send_event(
+            "sent",
+            message_context,
+            send_call_id=send_call_id,
+        )
         return
 
     async def read(self, min_incomplete_length, max_length):

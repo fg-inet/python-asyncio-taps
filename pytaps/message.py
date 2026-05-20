@@ -202,7 +202,12 @@ class ReceivedMessage:
         return self.context.get(name, default)
 
     def get_properties(self):
-        return self.context.get_properties()
+        properties = self.context.get_properties()
+        connection = getattr(self, "connection", None)
+        selection_view = getattr(connection, "_selection_properties_view", None)
+        if callable(selection_view):
+            properties["selection"] = selection_view()
+        return properties
 
     def get_read_only_properties(self):
         return {
@@ -211,4 +216,5 @@ class ReceivedMessage:
             "endOfMessage": self.context.end_of_message,
             "remoteEndpoint": self.remote_endpoint,
             "localEndpoint": self.local_endpoint,
+            "ecn": self.context.ecn,
         }

@@ -38,10 +38,10 @@ Cross-RFC snapshot
 | RFC 9622 | partial     | The repo now has a large subset of the abstract API:        |
 |          |             | preconnections, listeners, connections, groups,            |
 |          |             | rendezvous, message properties, receive/send paths, basic   |
-|          |             | framing, and QUIC streams. The largest gaps are remaining   |
-|          |             | property-catalog coverage, some lifecycle/event details,    |
-|          |             | and a few API semantics that are present only as lighter    |
-|          |             | approximations.                                             |
+|          |             | framing, QUIC streams, partial-send error reporting, and    |
+|          |             | session-isolation semantics. The remaining gaps are mostly  |
+|          |             | completeness details, unsupported security features, and    |
+|          |             | final-RFC YANG breadth rather than missing core API shape.  |
 +----------+-------------+-------------------------------------------------------------+
 | RFC 9623 | partial     | Candidate gathering, cache-aware racing, shared caches,     |
 |          |             | dynamic policy inputs, QUIC stream mapping, and basic       |
@@ -135,12 +135,12 @@ RFC 9622 checklist
 |                                             |             | lifecycle state.                                             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Rendezvous``                              | partial     | Implemented with simultaneous local listen and active        |
-|                                             |             | initiate, but it still does not expose the RFC's             |
-|                                             |             | ``RendezvousDone`` event model directly.                     |
+|                                             |             | initiate, with callback support for rendezvous completion,   |
+|                                             |             | but broader rendezvous policy semantics are still limited.   |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Clone``                                   | partial     | Exists and integrates with connection groups; QUIC clones    |
 |                                             |             | now open additional streams on a shared association, but     |
-|                                             |             | ``CloneError`` and some failure semantics are still absent.  |
+|                                             |             | only a subset of ``CloneError`` semantics is implemented.    |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | ``Send``                                    | partial     | Message context, expiration, batch send, queueing,           |
 |                                             |             | and priority scheduling are implemented, but exact event     |
@@ -157,16 +157,20 @@ RFC 9622 checklist
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Property inspection and mutation            | partial     | Connection, preconnection, listener, and message property    |
 |                                             |             | accessors now cover both single-property and aggregate       |
-|                                             |             | inspection, but the RFC map is not complete.                 |
+|                                             |             | inspection, and established connections now expose selection |
+|                                             |             | properties as read-only booleans, but the RFC map is not    |
+|                                             |             | complete.                                                    |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Ready / Closed / Error lifecycle events     | partial     | Much more explicit than the original code, with richer       |
 |                                             |             | read-only path/advisory state, inspectable event history,    |
-|                                             |             | and shared monitoring snapshots; some RFC event names and    |
-|                                             |             | ordering guarantees are still approximated.                  |
+|                                             |             | and shared monitoring snapshots; abort/error behavior is     |
+|                                             |             | closer to the RFC now, but some event names and ordering     |
+|                                             |             | guarantees are still approximated.                           |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Sent / SendError / Expired events           | partial     | Sent and send-error callbacks exist, and expired messages    |
-|                                             |             | now trigger real runtime behavior, but exact one-event-per-  |
-|                                             |             | send guarantees are not exhaustively enforced/tested.        |
+|                                             |             | now trigger real runtime behavior with ``MessageContext``    |
+|                                             |             | correlation, but exact one-event-per-send guarantees are not |
+|                                             |             | exhaustively enforced/tested.                                |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 | Received / Partial Received events          | partial     | Present and now carry structured message context.            |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
@@ -244,6 +248,44 @@ RFC 9623 checklist
 |                                             |             | in-place transport migration is not implemented.             |
 +---------------------------------------------+-------------+--------------------------------------------------------------+
 
+Strict RFC 9622 remaining gaps
+------------------------------
+
+After the recent property, lifecycle, clone, QUIC, send-event, and
+session-isolation work, the
+remaining RFC 9622 gaps are now relatively narrow and concrete:
+
+- ``CloneError`` is much closer now: clone failure, group-limit breakage, and
+  session-isolation divergence are all surfaced. The remaining gap is mainly
+  breadth of later entanglement/detachment cases rather than the basic event.
+- ``Rendezvous`` is now a first-class ``RendezvousResult`` with completion
+  state, event history, and callback support. The remaining gap is mostly
+  richer policy/error semantics rather than missing API shape.
+- The property catalog is broad, but not exhaustive. The remaining weakness is
+  mostly completeness rather than structure: some RFC-defined values and
+  protocol-specific refinements are still absent or only lightly modeled.
+- Security parameter behavior is broader than before, and more of it now has
+  real effect: pinned certificates can act as trust anchors, allowed protocol
+  lists constrain QUIC/TLS candidate selection, and security metadata is
+  carried into TLS and QUIC configuration. The remaining gap is mostly around
+  unsupported features such as PSK-specific handshakes and deeper session-cache
+  behavior that the current transport backends do not expose directly.
+- Message send semantics are substantially closer to the RFC now, including
+  correlation via ``MessageContext``, ordered completion delivery, and explicit
+  partial-send errors with byte counts, but the full partial-send model from
+  Section 9.2.3 is still only a practical subset.
+- Group semantics are usable, and ``isolateSession`` now changes clone
+  behavior instead of being a dead stored property. The remaining gap is still
+  fuller generic group scheduling / entanglement behavior across all
+  transports.
+- YANG support is better than the original subset and now includes interface
+  and PvD preference lists, but it still does not span the full final-RFC
+  surface.
+
+In other words, RFC 9622 is no longer missing major API building blocks. The
+remaining work is now mostly about completeness, backend-specific security
+features, and exactness of semantics.
+
 Where the repository is strongest
 ---------------------------------
 
@@ -270,8 +312,8 @@ Largest remaining gaps across the RFC set
 - Complete the RFC 9622 property catalog, especially the remaining connection,
   read-only, and receive-side metadata properties.
 - Expand the RFC 9622 event surface where the current implementation still
-  approximates the abstract API, especially ``RendezvousDone``,
-  ``CloneError``, and some event-ordering guarantees.
+  approximates the abstract API, especially fuller ``CloneError`` handling
+  and some event-ordering guarantees.
 - Deepen RFC 9623 endpoint gathering to cover server-reflexive and relayed
   candidates, not just local addresses, resolved remotes, and alternate
   remote hints.

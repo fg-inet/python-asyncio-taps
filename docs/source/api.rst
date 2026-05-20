@@ -133,6 +133,12 @@ To simultaneously listen and initiate from the same preconnection template, call
 	connection = result.connection
 	listener = result.listener
 
+``RendezvousResult`` also records completion state and a small event history so
+applications can inspect whether the rendezvous completed cleanly::
+
+	assert result.completed is True
+	assert result.get_event_history()[-1]["name"] == "rendezvous_done"
+
 Sending data
 ------------
 
