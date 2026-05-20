@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import pytaps as taps
 from pytaps.connection import PartialSendError
-from pytaps.listener import Listener
+from pytaps.listener import DatagramHandler, Listener, StreamHandler
 from pytaps.transports import QuicTransport, TcpTransport, UdpTransport
 from pytaps.utility import (
     Candidate,
@@ -36,6 +36,58 @@ def test_import_and_basic_objects():
     assert preconnection.remote_endpoint.host_name == "localhost"
     assert preconnection.remote_endpoint.port == 443
     assert "reliability" in preconnection.transport_properties.properties
+
+
+def test_stream_listener_attaches_transport_before_data_arrives():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(4433)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        event_loop=loop,
+    )
+    listener = Listener(preconnection)
+    handler = StreamHandler(listener, "tcp")
+
+    class FakeTransport:
+        def get_extra_info(self, name):
+            if name == "peername":
+                return ("127.0.0.1", 55555)
+            return None
+
+    try:
+        handler.connection_made(FakeTransport())
+        handler.data_received(b"hello")
+
+        assert len(handler.connection.transports) == 1
+        assert isinstance(handler.connection.transports[0], TcpTransport)
+        assert handler.connection.transports[0].recv_buffer == b"hello"
+    finally:
+        loop.close()
+
+
+def test_datagram_listener_builds_connection_from_original_preconnection():
+    local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(4433)
+    loop = asyncio.new_event_loop()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        event_loop=loop,
+    )
+    listener = Listener(preconnection)
+    handler = DatagramHandler(listener)
+
+    class FakeDatagramTransport:
+        pass
+
+    try:
+        handler.connection_made(FakeDatagramTransport())
+        handler.datagram_received(b"hello", ("127.0.0.1", 55555))
+
+        connection = handler.remotes[("127.0.0.1", 55555)]
+        assert len(connection.transports) == 1
+        assert isinstance(connection.transports[0], UdpTransport)
+        assert connection.transports[0].recv_buffer[0][0] == b"hello"
+    finally:
+        loop.close()
 
 
 def test_message_context_properties_round_trip():

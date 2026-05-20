@@ -490,7 +490,8 @@ class DatagramHandler(asyncio.Protocol):
         if addr in self.remotes:
             self.remotes[addr].transports[0].datagram_received(data, addr)
             return
-        new_connection = Connection(self.preconnection)
+        new_connection = Connection(self.preconnection.preconnection)
+        new_connection._originating_preconnection = self.preconnection
         new_connection.state = ConnectionState.ESTABLISHED
         new_remote_endpoint = RemoteEndpoint()
         logger.info("Received new connection from " +
@@ -512,8 +513,9 @@ class DatagramHandler(asyncio.Protocol):
 
 class StreamHandler(asyncio.Protocol):
 
-    def __init__(self, preconnection, protocol_name="tcp"):
-        new_connection = Connection(preconnection)
+    def __init__(self, listener, protocol_name="tcp"):
+        new_connection = Connection(listener.preconnection)
+        new_connection._originating_preconnection = listener
         self.connection = new_connection
         self.protocol_name = protocol_name
 
