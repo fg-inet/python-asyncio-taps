@@ -53,7 +53,7 @@ class TestServer:
         await self.connection.send(data, reply_context)
 
     async def handle_received(self, data, context, connection):
-        logger.info("Received message %s from %s.", data, context.addr)
+        logger.info("Received message %s from %s.", data, context.remote_address)
         self.loop.create_task(
             self.connection.receive(min_incomplete_length=1, max_length=5)
         )
@@ -105,17 +105,21 @@ class TestServer:
                 sp.add_identity(args.local_identity)
             logger.info("Created SecurityParameters.")
 
-        tp = taps.TransportProperties()
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
         if self.reliable == "False":
-            tp.prohibit("reliability")
-        if self.reliable == "Both":
+            tp = taps.TransportProperties().unreliable_datagram()
+        elif self.reliable == "Both":
+            tp = taps.TransportProperties()
+            tp.ignore("congestionControl")
+            tp.ignore("preserveOrder")
             tp.ignore("reliability")
+        else:
+            tp = taps.TransportProperties().reliable_inorder_stream()
 
-        self.preconnection = taps.Preconnection(local_endpoint=lp,
-                                                transport_properties=tp,
-                                                security_parameters=sp)
+        self.preconnection = taps.Preconnection(
+            local_endpoints=[lp],
+            transport_properties=tp,
+            security_parameters=sp,
+        )
         self.preconnection.on_connection_received(
             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)

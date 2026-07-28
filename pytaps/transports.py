@@ -97,6 +97,16 @@ def _build_quic_configuration(owner, *, is_client):
     return configuration
 
 
+def _presented_tls_certificate_chain(ssl_object):
+    get_chain = getattr(ssl_object, "get_unverified_chain", None)
+    if callable(get_chain):
+        chain = get_chain()
+        if chain:
+            return chain
+    certificate = ssl_object.getpeercert(binary_form=True)
+    return [certificate] if certificate else []
+
+
 class PytapsQuicProtocol(
     QuicConnectionProtocol if QuicConnectionProtocol is not None else object
 ):
@@ -117,6 +127,7 @@ class QuicAssociationManager:
         self.protocol = None
         self.context_manager = None
         self.server = None
+        self.child_associations = set()
         self.stream_transports = set()
         self.anchor_connection = None
 
@@ -128,7 +139,7 @@ class QuicAssociationManager:
         local_endpoint = local_endpoint or connection.local_endpoint
         remote_host = (
             remote_endpoint.host_name
-            or remote_endpoint.address[0]
+            or remote_endpoint.socket_address()
         )
         local_port = local_endpoint.port if local_endpoint else 0
         self.context_manager = aioquic_connect(
@@ -143,6 +154,31 @@ class QuicAssociationManager:
             local_port=local_port or 0,
         )
         self.protocol = await self.context_manager.__aenter__()
+        security_parameters = connection.security_parameters
+        if (
+            security_parameters is not None
+            and security_parameters.pinned_server_certificates
+        ):
+            try:
+                tls = getattr(getattr(self.protocol, "_quic", None), "tls", None)
+                peer_chain = []
+                if tls is not None:
+                    peer_certificate = getattr(tls, "_peer_certificate", None)
+                    if peer_certificate is not None:
+                        peer_chain.append(peer_certificate)
+                    peer_chain.extend(
+                        getattr(tls, "_peer_certificate_chain", None) or []
+                    )
+                security_parameters.verify_pinned_server_certificates(peer_chain)
+            except BaseException as exc:
+                await self.context_manager.__aexit__(
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                )
+                self.protocol = None
+                self.context_manager = None
+                raise
 
     async def start_listener(self, listener):
         if self.server is not None:
@@ -152,14 +188,24 @@ class QuicAssociationManager:
             raise RuntimeError(
                 "QUIC listeners require a certificate identity or public/private key."
             )
+        def create_protocol(quic, stream_handler=None):
+            association = QuicAssociationManager(
+                loop=self.loop,
+                listener=self.listener,
+            )
+            protocol = PytapsQuicProtocol(
+                quic,
+                association=association,
+            )
+            association.protocol = protocol
+            self.child_associations.add(association)
+            return protocol
+
         self.server = await aioquic_serve(
-            listener.local_endpoint.address[0],
+            listener.local_endpoint.address,
             listener.local_endpoint.port,
             configuration=configuration,
-            create_protocol=lambda quic, stream_handler=None: PytapsQuicProtocol(
-                quic,
-                association=self,
-            ),
+            create_protocol=create_protocol,
             stream_handler=None,
         )
         return self.server
@@ -190,30 +236,58 @@ class QuicAssociationManager:
         return transport
 
     async def accept_inbound_stream(self, reader, writer, protocol):
-        from .connection import Connection
-        from .preconnection import Preconnection
-
         self.protocol = protocol
-        remote_endpoint = (
-            self.listener.remote_endpoint.clone() if self.listener.remote_endpoint else None
+        protocol_transport = getattr(protocol, "_transport", None)
+        peername = (
+            protocol_transport.get_extra_info("peername")
+            if protocol_transport is not None
+            else None
         )
-        preconnection = Preconnection(
-            local_endpoint=self.listener.local_endpoint.clone(),
-            remote_endpoint=remote_endpoint,
-            transport_properties=self.listener.transport_properties,
-            security_parameters=self.listener.security_parameters,
-            event_loop=self.loop,
-            connection_context=self.listener.connection_context,
+        sockname = (
+            protocol_transport.get_extra_info("sockname")
+            if protocol_transport is not None
+            else None
         )
-        if self.listener.framer:
-            preconnection.add_framer(self.listener.framer)
-        connection = Connection(preconnection)
+        group_context = (
+            self.anchor_connection.connection_context
+            if self.anchor_connection is not None
+            else None
+        )
+        connection = self.listener._new_connection(
+            connection_context=group_context,
+        )
         connection.protocol = "quic"
         connection.quic_association = self
-        if self.anchor_connection is None:
-            self.anchor_connection = connection
-        else:
-            self.anchor_connection.connection_group.add_connection(connection)
+        if peername:
+            connection.remote_endpoint = (
+                RemoteEndpoint()
+                .with_address(peername[0])
+                .with_port(peername[1])
+            )
+            connection.remote_endpoints = [connection.remote_endpoint]
+        if sockname and connection.local_endpoint is not None:
+            connection.local_endpoint.address = sockname[0]
+            connection.local_endpoint.port = sockname[1]
+            connection.local_endpoints = [connection.local_endpoint]
+        try:
+            if self.anchor_connection is None:
+                connection.connection_group.add_connection(
+                    connection,
+                    from_peer=True,
+                )
+                self.anchor_connection = connection
+            else:
+                self.anchor_connection.connection_group.add_connection(
+                    connection,
+                    from_peer=True,
+                )
+        except RuntimeError as exc:
+            connection._report_connection_error(exc)
+            writer.close()
+            wait_closed = getattr(writer, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
+            return
         transport = QuicTransport(
             connection=connection,
             local_endpoint=connection.local_endpoint,
@@ -265,6 +339,7 @@ class TransportLayer(asyncio.Protocol):
         self.loop = connection.loop
         self.connection.transports.append(self)
         self.waiters = []
+        self._receive_lock = asyncio.Lock()
         self.open_receives = 0
         # Keeping track of how many messages have been sent for msgref
         self.message_count = 0
@@ -282,6 +357,7 @@ class TransportLayer(asyncio.Protocol):
 
         self.transport = None
         self.current_message_context = None
+        self._current_message_was_partial = False
 
     def _new_message_context(self, *, end_of_message=True, framer_context=None):
         context = MessageContext(
@@ -289,11 +365,11 @@ class TransportLayer(asyncio.Protocol):
             framer_context=framer_context,
         )
         if self.remote_endpoint and self.remote_endpoint.address:
-            context.remote_address = self.remote_endpoint.address[0]
+            context.remote_address = self.remote_endpoint.address
         if self.remote_endpoint and self.remote_endpoint.port:
             context.remote_port = self.remote_endpoint.port
         if self.local_endpoint and self.local_endpoint.address:
-            context.local_address = self.local_endpoint.address[0]
+            context.local_address = self.local_endpoint.address
         if self.local_endpoint and self.local_endpoint.port:
             context.local_port = self.local_endpoint.port
         return context
@@ -307,7 +383,7 @@ class TransportLayer(asyncio.Protocol):
             and self.remote_endpoint
             and self.remote_endpoint.address
         ):
-            message_context.remote_address = self.remote_endpoint.address[0]
+            message_context.remote_address = self.remote_endpoint.address
         if (
             message_context.remote_port is None
             and self.remote_endpoint
@@ -319,7 +395,7 @@ class TransportLayer(asyncio.Protocol):
             and self.local_endpoint
             and self.local_endpoint.address
         ):
-            message_context.local_address = self.local_endpoint.address[0]
+            message_context.local_address = self.local_endpoint.address
         if (
             message_context.local_port is None
             and self.local_endpoint
@@ -337,7 +413,8 @@ class TransportLayer(asyncio.Protocol):
         try:
             await waiter
         finally:
-            del self.waiters[0]
+            if waiter in self.waiters:
+                self.waiters.remove(waiter)
 
     """ Function that blocks until a framer has finished deframing
     """
@@ -407,7 +484,10 @@ class TransportLayer(asyncio.Protocol):
         setattr(context, "_pytaps_send_call_id", send_call_id)
         if context.message_id is None:
             context.message_id = self.message_count
-        if self.connection.state != ConnectionState.ESTABLISHED:
+        if self.connection.state not in {
+            ConnectionState.ESTABLISHED,
+            ConnectionState.CLOSING,
+        }:
             logger.warning("SendError occurred, connection is not established.")
             self.connection._queue_send_event(
                 "send_error",
@@ -441,27 +521,81 @@ class TransportLayer(asyncio.Protocol):
                 send_call_id=send_call_id,
             )
             return
-        await self.write(
-            data,
-            message_context,
-            end_of_message,
-            send_call_id=send_call_id,
-        )
+        try:
+            await self.write(
+                data,
+                message_context,
+                end_of_message,
+                send_call_id=send_call_id,
+            )
+        except Exception as exc:
+            self.connection._queue_send_event(
+                "send_error",
+                message_context,
+                exc,
+                send_call_id=send_call_id,
+            )
 
     async def write(self, data, message_context, end_of_message, send_call_id=None):
         pass
 
     def receive(self, min_incomplete_length, max_length):
-        """if self.connection.framer:
-            self.loop.create_task(self.read_framed(min_incomplete_length,
-                                  max_length))
-        else:"""
-        self.loop.create_task(self.read(min_incomplete_length,
-                                        max_length))
+        async def _serialized_read():
+            async with self._receive_lock:
+                await self.read(min_incomplete_length, max_length)
+
+        return self.loop.create_task(_serialized_read())
 
     async def read(self, min_incomplete_length,
                    max_length):
         pass
+
+    async def _read_stream_buffer(self, min_incomplete_length, max_length):
+        if max_length == -1:
+            max_length = float("inf")
+        while True:
+            available = len(self.recv_buffer) if self.recv_buffer is not None else 0
+            if self.at_eof:
+                if available == 0:
+                    raise EOFError("The stream has reached EOF")
+                break
+            if (
+                min_incomplete_length != float("inf")
+                and available >= min_incomplete_length
+            ):
+                break
+            if max_length != float("inf") and available >= max_length:
+                break
+            await self.await_data()
+
+        if max_length == float("inf") or available <= max_length:
+            data = self.recv_buffer
+            self.recv_buffer = None
+        else:
+            data = self.recv_buffer[:max_length]
+            self.recv_buffer = self.recv_buffer[max_length:]
+
+        if self.current_message_context is None:
+            self.current_message_context = self._new_message_context(
+                end_of_message=False
+            )
+        context = self.current_message_context
+        end_of_message = self.at_eof and not self.recv_buffer
+        context.end_of_message = end_of_message
+
+        if end_of_message:
+            context.final = True
+            if self._current_message_was_partial:
+                self.connection._deliver_received_partial(data, context)
+            else:
+                self.connection._deliver_received(data, context)
+            self.connection._received_final_message = True
+            self.current_message_context = None
+            self._current_message_was_partial = False
+            return
+
+        self._current_message_was_partial = True
+        self.connection._deliver_received_partial(data, context)
 
     async def close(self):
         pass
@@ -498,17 +632,26 @@ class TransportLayer(asyncio.Protocol):
     """
 
     def connection_lost(self, exc):
-        if self.recv_buffer and self.current_message_context is not None and not self.at_eof:
+        receive_reason = exc or ConnectionError(
+            "Receive terminated before the current message completed"
+        )
+        if exc is not None:
+            for waiter in list(self.waiters):
+                if not waiter.done():
+                    waiter.set_exception(receive_reason)
+        if (
+            not self.waiters
+            and self.recv_buffer
+            and self.current_message_context is not None
+            and not self.at_eof
+        ):
             self.connection._report_receive_error(
                 self.current_message_context,
-                exc or ConnectionError("Receive terminated before the current message completed"),
+                receive_reason,
             )
         if exc is None:
             logger.warning("Connection lost without error.")
-            if self.connection.state == ConnectionState.CLOSING:
-                self.connection._report_closed()
-            else:
-                self.connection._mark_closed()
+            self.connection._report_closed()
         else:
             logger.warning("Connection lost with error.")
             self.connection._report_connection_error(exc)
@@ -534,7 +677,7 @@ class TransportLayer(asyncio.Protocol):
             self.connection.note_path_change(
                 local_address=sockname[0],
                 local_port=sockname[1],
-                remote_address=new_remote_endpoint.address[0],
+                remote_address=new_remote_endpoint.address,
                 remote_port=new_remote_endpoint.port,
             )
         self.connection._mark_ready()
@@ -572,24 +715,17 @@ class UdpTransport(TransportLayer):
             self.connection.note_path_change(
                 local_address=sockname[0],
                 local_port=sockname[1],
-                remote_address=self.connection.remote_endpoint.address[0],
+                remote_address=self.connection.remote_endpoint.address,
                 remote_port=self.connection.remote_endpoint.port,
             )
         self.connection._mark_ready()
-        if self.connection._pending_message:
-            data, context, eom = self.connection._pending_message
-            self.connection._pending_message = None
-            if context.is_expired():
-                self.connection._report_expired(context)
-            else:
-                await self.write(data, context, eom)
         return
 
     async def write(self, data, message_context, end_of_message, send_call_id=None):
         """ Sends udp data
         """
         logger.info("Writing UDP data to " +
-                    str(self.connection.remote_endpoint.address[0]) +
+                    str(self.connection.remote_endpoint.address) +
                     ":" + str(self.connection.remote_endpoint.port) +
                     ".")
         if isinstance(data, str):
@@ -606,7 +742,7 @@ class UdpTransport(TransportLayer):
                 # Write the data
                 self.transport.sendto(data)
             else:
-                remote_address = self.remote_endpoint.address[0]
+                remote_address = self.remote_endpoint.address
                 remote_port = self.remote_endpoint.port
                 self.transport.sendto(data, (remote_address, remote_port))
         except InterruptedError:
@@ -628,10 +764,13 @@ class UdpTransport(TransportLayer):
 
     async def close(self):
         logger.info("Closing connection.")
-        self.transport.close()
+        if self.transport is not None:
+            self.transport.close()
         self.connection._report_closed()
 
     async def read(self, min_incomplete_length, max_length):
+        if max_length == -1:
+            max_length = float("inf")
         if self.connection.framer:
             if len(self.framer_buffer) == 0:
                 await self.await_data()
@@ -639,12 +778,25 @@ class UdpTransport(TransportLayer):
         else:
             if self.recv_buffer is None:
                 await self.await_data()
+            data, context = self.recv_buffer[0]
+            was_partial = getattr(context, "_pytaps_partial_delivery", False)
+            if max_length != float("inf") and len(data) > max_length:
+                delivered = data[:max_length]
+                remaining = data[max_length:]
+                self.recv_buffer[0] = (remaining, context)
+                context.end_of_message = False
+                setattr(context, "_pytaps_partial_delivery", True)
+                self.connection._deliver_received_partial(delivered, context)
+                return
             if len(self.recv_buffer) == 1:
-                data, context = self.recv_buffer[0]
                 self.recv_buffer = None
             else:
-                data, context = self.recv_buffer.pop(0)
-        self.connection._deliver_received(data, context)
+                self.recv_buffer.pop(0)
+            context.end_of_message = True
+            if was_partial:
+                self.connection._deliver_received_partial(data, context)
+            else:
+                self.connection._deliver_received(data, context)
 
     # Asyncio Callbacks
 
@@ -680,6 +832,7 @@ class UdpTransport(TransportLayer):
     """
 
     def datagram_received(self, data, addr):
+        self.connection._mark_first_message()
         context = self._new_message_context(end_of_message=True)
         context.addr = addr
         self.current_message_context = context
@@ -717,20 +870,23 @@ class MulticastSendTransport(TransportLayer):
         source = None
         source_port = None
         if self.local_endpoint and self.local_endpoint.address:
-            source = self.local_endpoint.address[0]
+            source = self.local_endpoint.address
         if self.local_endpoint and self.local_endpoint.port:
             source_port = self.local_endpoint.port
 
+        interface = self.local_endpoint.interface if self.local_endpoint else None
         interface = getattr(
             self.connection._originating_preconnection,
             "multicast_interface_address",
-            None,
+            interface,
         )
-        ttl = getattr(
-            self.connection._originating_preconnection,
-            "multicast_ttl",
-            1,
-        )
+        ttl = self.remote_endpoint.hop_limit
+        if ttl is None:
+            ttl = getattr(
+                self.connection._originating_preconnection,
+                "multicast_ttl",
+                1,
+            )
         loopback = not getattr(
             self.connection._originating_preconnection,
             "multicast_disable_loopback",
@@ -739,7 +895,7 @@ class MulticastSendTransport(TransportLayer):
 
         self.mctx_context = mctx_core.Context()
         self.publication = self.mctx_context.add_publication(
-            self.remote_endpoint.address[0],
+            self.remote_endpoint.multicast_group,
             self.remote_endpoint.port,
             source=source,
             source_port=source_port,
@@ -761,23 +917,16 @@ class MulticastSendTransport(TransportLayer):
             self.connection.note_path_change(
                 local_address=local_addr[0],
                 local_port=local_addr[1],
-                remote_address=self.remote_endpoint.address[0],
+                remote_address=self.remote_endpoint.multicast_group,
                 remote_port=self.remote_endpoint.port,
             )
 
         logger.info(
             "Connected multicast sender to %s:%s.",
-            self.remote_endpoint.address[0],
+            self.remote_endpoint.multicast_group,
             self.remote_endpoint.port,
         )
         self.connection._mark_ready()
-        if self.connection._pending_message:
-            data, context, eom = self.connection._pending_message
-            self.connection._pending_message = None
-            if context.is_expired():
-                self.connection._report_expired(context)
-            else:
-                await self.write(data, context, eom)
 
     async def write(self, data, message_context, end_of_message, send_call_id=None):
         if isinstance(data, str):
@@ -886,19 +1035,12 @@ class QuicTransport(TransportLayer):
         self._reader_task = self.loop.create_task(self._pump_reader())
         if self.local_endpoint and self.remote_endpoint and self.remote_endpoint.address:
             self.connection.note_path_change(
-                local_address=self.local_endpoint.address[0] if self.local_endpoint.address else None,
+                local_address=self.local_endpoint.address,
                 local_port=self.local_endpoint.port,
-                remote_address=self.remote_endpoint.address[0],
+                remote_address=self.remote_endpoint.address,
                 remote_port=self.remote_endpoint.port,
             )
         self.connection._mark_ready()
-        if self.connection._pending_message:
-            data, context, eom = self.connection._pending_message
-            self.connection._pending_message = None
-            if context.is_expired():
-                self.connection._report_expired(context)
-            else:
-                await self.write(data, context, eom)
 
     async def passive_open_stream(self):
         if self.connection.framer:
@@ -908,9 +1050,9 @@ class QuicTransport(TransportLayer):
         self.connection.local_endpoint = self.local_endpoint
         self.connection.remote_endpoint = self.remote_endpoint
         self._reader_task = self.loop.create_task(self._pump_reader())
-        self.connection._mark_ready()
         if self.listener is not None:
-            self.listener._deliver_connection(self.connection)
+            if not self.listener._deliver_connection(self.connection):
+                await self.close()
 
     async def write(self, data, message_context, end_of_message, send_call_id=None):
         logger.info("Writing QUIC stream data.")
@@ -949,31 +1091,7 @@ class QuicTransport(TransportLayer):
             self.connection._deliver_received(data, context)
             return
 
-        while self.recv_buffer is None or len(self.recv_buffer) < min_incomplete_length:
-            await self.await_data()
-        if max_length == -1 or len(self.recv_buffer) <= max_length:
-            data = self.recv_buffer
-            self.recv_buffer = None
-        else:
-            data = self.recv_buffer[:max_length]
-            self.recv_buffer = self.recv_buffer[max_length:]
-
-        if self.current_message_context is None:
-            self.current_message_context = self._new_message_context(
-                end_of_message=self.at_eof
-            )
-
-        context = self.current_message_context
-        context.end_of_message = self.at_eof
-
-        if self.at_eof:
-            context.final = True
-            self.connection._deliver_received(data, context)
-            self.connection._received_final_message = True
-            self.current_message_context = None
-            return
-
-        self.connection._deliver_received_partial(data, context)
+        await self._read_stream_buffer(min_incomplete_length, max_length)
 
     async def close(self):
         logger.info("Closing QUIC stream.")
@@ -1016,17 +1134,10 @@ class TcpTransport(TransportLayer):
             self.connection.note_path_change(
                 local_address=sockname[0],
                 local_port=sockname[1],
-                remote_address=self.remote_endpoint.address[0],
+                remote_address=self.remote_endpoint.address,
                 remote_port=self.remote_endpoint.port,
             )
         self.connection._mark_ready()
-        if self.connection._pending_message:
-            data, context, eom = self.connection._pending_message
-            self.connection._pending_message = None
-            if context.is_expired():
-                self.connection._report_expired(context)
-            else:
-                await self.write(data, context, eom)
         return
 
     async def write(self, data, message_context, end_of_message, send_call_id=None):
@@ -1071,36 +1182,12 @@ class TcpTransport(TransportLayer):
             self.connection._deliver_received(data, context)
             return
 
-        while self.recv_buffer is None or (
-                len(self.recv_buffer) < min_incomplete_length):
-            await self.await_data()
-        if max_length == -1 or len(self.recv_buffer) <= max_length:
-            data = self.recv_buffer
-            self.recv_buffer = None
-        else:
-            data = self.recv_buffer[:max_length]
-            self.recv_buffer = self.recv_buffer[max_length:]
-
-        if self.current_message_context is None:
-            self.current_message_context = self._new_message_context(
-                end_of_message=self.at_eof
-            )
-
-        context = self.current_message_context
-        context.end_of_message = self.at_eof
-
-        if self.at_eof:
-            context.final = True
-            self.connection._deliver_received(data, context)
-            self.connection._received_final_message = True
-            self.current_message_context = None
-            return
-
-        self.connection._deliver_received_partial(data, context)
+        await self._read_stream_buffer(min_incomplete_length, max_length)
 
     async def close(self):
         logger.info("Closing connection.")
-        self.transport.close()
+        if self.transport is not None:
+            self.transport.close()
         self.connection._report_closed()
 
     # Asyncio Callbacks
@@ -1116,6 +1203,24 @@ class TcpTransport(TransportLayer):
 
         # Check if its an incoming or outgoing connection
         if self.connection.active:
+            if (
+                self.protocol_name == "tls-tcp"
+                and self.connection.security_parameters is not None
+                and self.connection.security_parameters.pinned_server_certificates
+            ):
+                try:
+                    ssl_object = transport.get_extra_info("ssl_object")
+                    if ssl_object is None:
+                        raise ssl.SSLCertVerificationError(
+                            "TLS peer certificate is unavailable"
+                        )
+                    peer_chain = _presented_tls_certificate_chain(ssl_object)
+                    self.connection.security_parameters. \
+                        verify_pinned_server_certificates(peer_chain)
+                except (TypeError, ValueError, ssl.SSLError) as exc:
+                    transport.close()
+                    self.connection._fail_initiate(exc)
+                    return
             self.loop.create_task(self.active_open(transport))
         else:
             self.loop.create_task(self.passive_open(transport))

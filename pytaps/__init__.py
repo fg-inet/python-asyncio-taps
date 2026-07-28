@@ -6,7 +6,7 @@ from .framer import DeframingFailed as DeframingFailed, Framer as Framer
 from .listener import Listener as Listener
 from .message import MessageContext as MessageContext, ReceivedMessage as ReceivedMessage
 from .multicast import do_join as do_join
-from .preconnection import Preconnection as Preconnection, RendezvousResult as RendezvousResult
+from .preconnection import Preconnection as Preconnection
 from .securityParameters import SecurityParameters as SecurityParameters
 from .transportProperties import (
     PreferenceLevel as PreferenceLevel,
@@ -32,7 +32,6 @@ __all__ = [
     "Preconnection",
     "ReceivedMessage",
     "RemoteEndpoint",
-    "RendezvousResult",
     "SecurityParameters",
     "TransportProperties",
     "do_join",

@@ -21,14 +21,12 @@ class TestServer():
         lp = taps.LocalEndpoint()
         lp.with_hostname("localhost")
         lp.with_port(6666)
-        tp = taps.TransportProperties()
+        tp = taps.TransportProperties().unreliable_datagram()
 
-        tp.prohibit("reliability")
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
-
-        self.preconnection = taps.Preconnection(local_endpoint=lp,
-                                                transport_properties=tp)
+        self.preconnection = taps.Preconnection(
+            local_endpoints=[lp],
+            transport_properties=tp,
+        )
         self.preconnection.on_connection_received(
                                     self.handle_connection_received)
         await self.preconnection.listen()

@@ -14,14 +14,12 @@ class TestClient():
         ep = taps.RemoteEndpoint()
         ep.with_hostname("localhost")
         ep.with_port(6666)
-        tp = taps.TransportProperties()
+        tp = taps.TransportProperties().unreliable_datagram()
 
-        tp.prohibit("reliability")
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
-
-        self.preconnection = taps.Preconnection(remote_endpoint=ep,
-                                                transport_properties=tp)
+        self.preconnection = taps.Preconnection(
+            remote_endpoints=[ep],
+            transport_properties=tp,
+        )
         self.connection = await self.preconnection.initiate_with_send("Hello\n")
 
 

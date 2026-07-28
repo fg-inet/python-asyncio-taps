@@ -48,7 +48,7 @@ class TestServer():
             "Received message "
             + str(data)
             + " from "
-            + str(context.addr)
+            + str(context.remote_address)
             + ".",
             color,
         )
@@ -70,7 +70,12 @@ class TestServer():
         taps.print_time("Listener has been stopped")
 
     async def main(self, fname):
-        self.preconnection = taps.Preconnection().from_yangfile(fname)
+        try:
+            self.preconnection = taps.Preconnection().from_yangfile(fname)
+        except ImportError as exc:
+            print(exc)
+            self.loop.stop()
+            return
         taps.print_time("Loaded YANG file: %s." % fname, color)
         self.preconnection.on_connection_received(
                                             self.handle_connection_received)

@@ -39,9 +39,14 @@ On the local machine, replace `LINODE_IP` with the Linode's public address:
 What to look for:
 
 - the selected protocol in the client `ready` log
-- `sent`, `expired`, and receive metadata logs
-- monitoring subscription updates on both sides
+- `payload='hello from local'` in the receive/echo logs
+- `sent`, `expired`, and compact summary logs
 - `reestablishment advice` after `--degrade-path`
+
+By default, the feature demos hide lower-level `pytaps.*` chatter and avoid
+dumping the full property dictionaries. Add `--verbose-monitoring` for monitor
+callbacks, `--dump-properties` for full property snapshots, or
+`--no-quiet-library-logs` for transport/library internals.
 
 ## 2. Force UDP Message Semantics
 
@@ -99,9 +104,13 @@ On the local machine:
 What to look for:
 
 - `rendezvous done` logs
-- `RendezvousResult` completion state
-- passive-side `connection_received` logs
+- one RFC `RendezvousDone` Connection on each peer
+- `received peer payload=...` with the other peer's message
 - shared monitoring updates
+
+The Rendezvous demo also hides library-level logs by default. Use
+`--verbose-monitoring`, `--dump-properties`, or `--no-quiet-library-logs` when
+debugging establishment and candidate selection.
 
 ## 4. Multicast Send/Receive
 

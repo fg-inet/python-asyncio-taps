@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -13,6 +14,23 @@ import pytaps as taps  # noqa: E402
 logger = taps.setup_logger("TAPS Feature Client", "yellow")
 
 
+def payload_preview(data, limit=80):
+    if isinstance(data, str):
+        data = data.encode()
+    preview = data[:limit].decode("utf-8", errors="replace")
+    if len(data) > limit:
+        preview = f"{preview}..."
+    return preview
+
+
+def configure_logging(args):
+    if args.quiet_library_logs:
+        logging.getLogger("pytaps.connection").setLevel(logging.ERROR)
+        logging.getLogger("pytaps.listener").setLevel(logging.ERROR)
+        logging.getLogger("pytaps.preconnection").setLevel(logging.ERROR)
+        logging.getLogger("pytaps.transports").setLevel(logging.ERROR)
+
+
 def build_remote_endpoint(args):
     remote = taps.RemoteEndpoint()
     if args.remote_address:
@@ -20,6 +38,8 @@ def build_remote_endpoint(args):
     else:
         remote.with_hostname(args.remote_host)
     remote.with_port(args.port)
+    if args.transport in {"tcp", "udp"}:
+        remote.with_protocol(args.transport)
     return remote
 
 
@@ -37,33 +57,29 @@ def build_local_endpoint(args):
 
 
 def build_transport_properties(args):
-    properties = taps.TransportProperties()
-    properties.ignore("congestionControl")
-    properties.ignore("preserveOrder")
-    properties.prefer("multistreaming")
-    properties.prefer("zeroRttMsg")
-    properties.set_property("connPriority", args.priority)
     if args.transport == "udp":
-        properties.prohibit("reliability")
-        properties.require("preserveMsgBoundaries")
-    elif args.transport == "tcp":
-        properties.require("reliability")
-        properties.ignore("preserveMsgBoundaries")
+        properties = taps.TransportProperties().unreliable_datagram()
     else:
-        properties.require("reliability")
-        properties.ignore("preserveMsgBoundaries")
+        properties = taps.TransportProperties().reliable_inorder_stream()
+        properties.prefer("multistreaming")
+        properties.prefer("zeroRttMsg")
+    properties.set_property("connPriority", args.priority)
     return properties
 
 
 class FeatureClient:
-    def __init__(self):
+    def __init__(self, *, verbose_monitoring=False, dump_properties=False):
         self.connection = None
         self.received = []
+        self.verbose_monitoring = verbose_monitoring
+        self.dump_properties = dump_properties
 
     def is_connection_open(self):
         return self.connection and self.connection.state is taps.ConnectionState.ESTABLISHED
 
     async def handle_monitoring_update(self, update):
+        if not self.verbose_monitoring:
+            return
         health = update["snapshot"]["healthSummary"]
         logger.info(
             "monitor trigger=%s severity=%s guidance=%s",
@@ -73,7 +89,10 @@ class FeatureClient:
         )
 
     async def handle_sent(self, context, connection):
-        logger.info("sent message_id=%s props=%s", context.message_id, context.get_properties())
+        if self.dump_properties:
+            logger.info("sent message_id=%s props=%s", context.message_id, context.get_properties())
+        else:
+            logger.info("sent message_id=%s", context.message_id)
 
     async def handle_send_error(self, context, reason, connection):
         logger.warning("send error message_id=%s reason=%s", context.message_id, reason)
@@ -82,37 +101,63 @@ class FeatureClient:
         logger.info("expired message_id=%s lifetime=%s", context.message_id, context.lifetime)
 
     async def handle_received(self, data, context, connection):
-        logger.info(
-            "received echo bytes=%s seq=%s props=%s",
-            len(data),
-            context.receive_sequence,
-            context.get_properties(),
-        )
+        if self.dump_properties:
+            logger.info(
+                "received echo bytes=%s seq=%s payload=%r props=%s",
+                len(data),
+                context.receive_sequence,
+                payload_preview(data),
+                context.get_properties(),
+            )
+        else:
+            logger.info(
+                "received echo bytes=%s seq=%s payload=%r",
+                len(data),
+                context.receive_sequence,
+                payload_preview(data),
+            )
         self.received.append(data)
 
     async def handle_received_partial(self, data, context, end_of_message, connection):
-        logger.info(
-            "received partial echo bytes=%s seq=%s eom=%s props=%s",
-            len(data),
-            context.receive_sequence,
-            end_of_message,
-            context.get_properties(),
-        )
+        if self.dump_properties:
+            logger.info(
+                "received partial echo bytes=%s seq=%s eom=%s payload=%r props=%s",
+                len(data),
+                context.receive_sequence,
+                end_of_message,
+                payload_preview(data),
+                context.get_properties(),
+            )
+        else:
+            logger.info(
+                "received partial echo bytes=%s seq=%s eom=%s payload=%r",
+                len(data),
+                context.receive_sequence,
+                end_of_message,
+                payload_preview(data),
+            )
         self.received.append(data)
 
     async def handle_connection_error(self, reason, connection):
         logger.warning("connection error protocol=%s reason=%s", connection.protocol, reason)
 
     async def handle_reestablishment_suggested(self, advice, candidates, connection):
-        logger.info("reestablishment advice=%s candidate_count=%s", advice, len(candidates))
+        recommended = advice.get("recommendedCandidate") if advice else None
+        logger.info(
+            "reestablishment trigger=%s recommended=%s candidate_count=%s",
+            advice.get("trigger") if advice else None,
+            recommended,
+            len(candidates),
+        )
 
     async def main(self, args):
+        configure_logging(args)
         remote = build_remote_endpoint(args)
         local = build_local_endpoint(args)
         properties = build_transport_properties(args)
         preconnection = taps.Preconnection(
-            local_endpoint=local,
-            remote_endpoint=remote,
+            local_endpoints=[local] if local is not None else [],
+            remote_endpoints=[remote],
             transport_properties=properties,
         )
         preconnection.subscribe_monitoring(self.handle_monitoring_update)
@@ -160,14 +205,18 @@ class FeatureClient:
                 args.port,
                 args.port,
             )
-            logger.info("monitoring snapshot=%s", self.connection.get_monitoring_snapshot())
+            if self.dump_properties:
+                logger.info("monitoring snapshot=%s", self.connection.get_monitoring_snapshot())
             return
 
-        logger.info(
-            "ready protocol=%s read_only=%s",
-            self.connection.protocol,
-            self.connection.get_properties()["readOnly"],
-        )
+        if self.dump_properties:
+            logger.info(
+                "ready protocol=%s read_only=%s",
+                self.connection.protocol,
+                self.connection.get_properties()["readOnly"],
+            )
+        else:
+            logger.info("ready protocol=%s", self.connection.protocol)
 
         try:
             await self.connection.receive(
@@ -181,27 +230,29 @@ class FeatureClient:
                 self.connection.protocol,
             )
         if not self.is_connection_open():
-            logger.warning(
-                "connection closed before follow-up demo sends; snapshot=%s",
-                self.connection.get_monitoring_snapshot(),
-            )
+            logger.warning("connection closed before follow-up demo sends")
+            if self.dump_properties:
+                logger.info("monitoring snapshot=%s", self.connection.get_monitoring_snapshot())
             return
 
         batch = []
         for idx in range(args.batch_size):
+            payload = f"{args.payload}-{idx}".encode()
             context = self.connection.new_message_context(
                 msgPriority=idx,
                 safelyReplayable=self.connection.protocol == "udp",
                 final=False,
             )
-            batch.append((f"{args.payload}-{idx}".encode(), context, True))
+            logger.info("queue batch idx=%s payload=%r", idx, payload_preview(payload))
+            batch.append((payload, context, True))
         await self.connection.send_batch(batch)
 
         expired = self.connection.new_message_context(
-            msgLifetime=0,
+            msgLifetime=0.001,
             safelyReplayable=self.connection.protocol == "udp",
             final=False,
         )
+        await asyncio.sleep(0.002)
         await self.connection.send(b"this message should expire", expired)
 
         if args.degrade_path:
@@ -213,7 +264,14 @@ class FeatureClient:
 
         await asyncio.sleep(args.settle_time)
         snapshot = self.connection.get_monitoring_snapshot()
-        logger.info("monitoring snapshot=%s", snapshot)
+        if self.dump_properties:
+            logger.info("monitoring snapshot=%s", snapshot)
+        else:
+            logger.info(
+                "summary health=%s events=%s",
+                snapshot["connectionContext"]["healthSummary"]["severity"],
+                snapshot["connectionContext"]["eventCounters"],
+            )
         if self.connection.state is not taps.ConnectionState.CLOSED:
             self.connection.close()
             await self.connection.wait_closed(timeout=args.timeout)
@@ -239,6 +297,14 @@ def parse_args():
     parser.add_argument("--avoid-protocol", default=None)
     parser.add_argument("--alternate-remote", default=None)
     parser.add_argument("--degrade-path", action="store_true")
+    parser.add_argument("--verbose-monitoring", action="store_true")
+    parser.add_argument("--dump-properties", action="store_true")
+    parser.add_argument(
+        "--quiet-library-logs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hide lower-level pytaps INFO logs by default.",
+    )
     parser.add_argument(
         "--transport",
         choices=["auto", "tcp", "udp"],
@@ -248,4 +314,10 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    asyncio.run(FeatureClient().main(parse_args()))
+    parsed_args = parse_args()
+    asyncio.run(
+        FeatureClient(
+            verbose_monitoring=parsed_args.verbose_monitoring,
+            dump_properties=parsed_args.dump_properties,
+        ).main(parsed_args)
+    )

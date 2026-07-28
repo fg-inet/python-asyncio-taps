@@ -86,6 +86,13 @@ class ConnectionContext:
         self.connection_counts["closed"] += 1
         self._notify_subscribers("connection_detached", was_ready=was_ready)
 
+    def detach_connection_for_transfer(self, *, was_ready=False):
+        if self.connection_counts["active"] > 0:
+            self.connection_counts["active"] -= 1
+        if was_ready and self.connection_counts["ready"] > 0:
+            self.connection_counts["ready"] -= 1
+        self._notify_subscribers("connection_context_transferred")
+
     def attach_listener(self):
         self.listener_counts["active"] += 1
         self._notify_subscribers("listener_attached")

@@ -96,6 +96,8 @@ class Candidate:
     address_family: int
     path: str = "default"
     local_address: str | None = None
+    local_endpoint: object | None = None
+    remote_endpoint: object | None = None
 
 
 def _preference_weight(property_name, transport_properties):
@@ -174,10 +176,14 @@ def rank_protocol_candidates(transport_properties, connection_context=None):
     return ranked_protocols
 
 
-def rank_path_candidates(local_endpoint, transport_properties, connection_context=None):
+def _rank_path_candidate(
+    local_endpoint,
+    transport_properties,
+    connection_context,
+    index,
+):
     if local_endpoint is None or not local_endpoint.interface:
-        return [("default", None)]
-
+        return ("default", None, local_endpoint, 0, 0, 0, index)
     interface_preferences = {
         interface_id: preference
         for preference, interface_id in transport_properties.selection_properties.get("interface", set())
@@ -194,84 +200,133 @@ def rank_path_candidates(local_endpoint, transport_properties, connection_contex
         if preference is PreferenceLevel.PROHIBIT
     }
 
-    ranked_paths = []
-    for interface_id in local_endpoint.interface:
-        if interface_id in prohibited_interfaces:
-            continue
-        if required_interfaces and interface_id not in required_interfaces:
-            continue
+    interface_id = local_endpoint.interface
+    if interface_id in prohibited_interfaces:
+        return None
+    if required_interfaces and interface_id not in required_interfaces:
+        return None
 
-        policy = (
-            connection_context.interface_policy.get(interface_id, {})
-            if connection_context is not None else {}
+    policy = (
+        connection_context.interface_policy.get(interface_id, {})
+        if connection_context is not None else {}
+    )
+    if policy.get("available") is False:
+        return None
+
+    pvd_preferences = {
+        pvd_id: preference
+        for preference, pvd_id in transport_properties.selection_properties.get("pvd", set())
+    }
+    required_pvds = {
+        pvd_id
+        for pvd_id, preference in pvd_preferences.items()
+        if preference is PreferenceLevel.REQUIRE
+    }
+    prohibited_pvds = {
+        pvd_id
+        for pvd_id, preference in pvd_preferences.items()
+        if preference is PreferenceLevel.PROHIBIT
+    }
+    interface_pvd = policy.get("pvdId")
+    if interface_pvd in prohibited_pvds:
+        return None
+    if required_pvds and interface_pvd not in required_pvds:
+        return None
+
+    preference = interface_preferences.get(interface_id, PreferenceLevel.IGNORE)
+    prefer_score = 1 if preference is PreferenceLevel.PREFER else 0
+    avoid_score = 1 if preference is PreferenceLevel.AVOID else 0
+    system_score = policy.get("preferenceAdjustment", 0)
+
+    if policy.get("relativeCost") == "low":
+        system_score += 1
+    elif policy.get("relativeCost") == "high":
+        system_score -= 1
+
+    if (
+        transport_properties.selection_properties.get("useTemporaryLocalAddress")
+        is PreferenceLevel.PREFER
+        and policy
+        and not policy.get("supportsTemporaryAddress", True)
+    ):
+        system_score -= 1
+
+    if interface_pvd in pvd_preferences:
+        pvd_preference = pvd_preferences[interface_pvd]
+        if pvd_preference is PreferenceLevel.PREFER:
+            system_score += 2
+        elif pvd_preference is PreferenceLevel.AVOID:
+            system_score -= 2
+
+    if connection_context is not None and interface_pvd in connection_context.pvd_policy:
+        pvd_policy = connection_context.pvd_policy[interface_pvd]
+        if not pvd_policy.get("available", True):
+            return None
+        system_score += pvd_policy.get("preferenceAdjustment", 0)
+
+    return (
+        interface_id,
+        interface_id,
+        local_endpoint,
+        prefer_score,
+        avoid_score,
+        system_score,
+        index,
+    )
+
+
+def _rank_path_candidates_with_endpoints(
+    local_endpoints,
+    transport_properties,
+    connection_context=None,
+):
+    if local_endpoints is None:
+        local_endpoints = [None]
+    elif not isinstance(local_endpoints, (list, tuple)):
+        local_endpoints = [local_endpoints]
+
+    ranked = []
+    for index, local_endpoint in enumerate(local_endpoints):
+        candidate = _rank_path_candidate(
+            local_endpoint,
+            transport_properties,
+            connection_context,
+            index,
         )
-        if policy.get("available") is False:
-            continue
-
-        pvd_preferences = {
-            pvd_id: preference
-            for preference, pvd_id in transport_properties.selection_properties.get("pvd", set())
-        }
-        required_pvds = {
-            pvd_id
-            for pvd_id, preference in pvd_preferences.items()
-            if preference is PreferenceLevel.REQUIRE
-        }
-        prohibited_pvds = {
-            pvd_id
-            for pvd_id, preference in pvd_preferences.items()
-            if preference is PreferenceLevel.PROHIBIT
-        }
-        interface_pvd = policy.get("pvdId")
-        if interface_pvd in prohibited_pvds:
-            continue
-        if required_pvds and interface_pvd not in required_pvds:
-            continue
-
-        preference = interface_preferences.get(interface_id, PreferenceLevel.IGNORE)
-        prefer_score = 1 if preference is PreferenceLevel.PREFER else 0
-        avoid_score = 1 if preference is PreferenceLevel.AVOID else 0
-        system_score = policy.get("preferenceAdjustment", 0)
-
-        if policy.get("relativeCost") == "low":
-            system_score += 1
-        elif policy.get("relativeCost") == "high":
-            system_score -= 1
-
-        if (
-            transport_properties.selection_properties.get("useTemporaryLocalAddress")
-            is PreferenceLevel.PREFER
-            and policy
-            and not policy.get("supportsTemporaryAddress", True)
-        ):
-            system_score -= 1
-
-        if interface_pvd in pvd_preferences:
-            pvd_preference = pvd_preferences[interface_pvd]
-            if pvd_preference is PreferenceLevel.PREFER:
-                system_score += 2
-            elif pvd_preference is PreferenceLevel.AVOID:
-                system_score -= 2
-
-        if connection_context is not None and interface_pvd in connection_context.pvd_policy:
-            pvd_policy = connection_context.pvd_policy[interface_pvd]
-            if not pvd_policy.get("available", True):
-                continue
-            system_score += pvd_policy.get("preferenceAdjustment", 0)
-
-        total_score = (prefer_score * 2) - avoid_score + system_score
-        ranked_paths.append((interface_id, (prefer_score, avoid_score, system_score, total_score)))
-
-    ranked_paths.sort(
-        key=lambda value: (
-            -value[1][3],
-            -value[1][0],
-            -value[1][2],
-            value[1][1],
-            value[0],
+        if candidate is not None:
+            ranked.append(candidate)
+    ranked.sort(
+        key=lambda candidate: (
+            -(candidate[3] - candidate[4] + candidate[5]),
+            -candidate[3],
+            candidate[4],
+            candidate[6],
         )
     )
-    return [(interface_id, interface_id) for interface_id, _score in ranked_paths]
+    return [
+        (path, path_interface, endpoint)
+        for (
+            path,
+            path_interface,
+            endpoint,
+            _prefer_score,
+            _avoid_score,
+            _system_score,
+            _index,
+        ) in ranked
+    ]
+
+
+def rank_path_candidates(local_endpoint, transport_properties, connection_context=None):
+    """Rank one or more RFC 9622 Local Endpoint candidates."""
+    return [
+        (path, path_interface)
+        for path, path_interface, _endpoint in _rank_path_candidates_with_endpoints(
+            local_endpoint,
+            transport_properties,
+            connection_context=connection_context,
+        )
+    ]
 
 
 def order_remote_addresses(remote_addrs, connection_context=None):
@@ -303,8 +358,9 @@ def create_candidates(connection, remote_addrs=None):
     if remote_addrs is None:
         remote_addrs = []
 
-    ordered_paths = rank_path_candidates(
-        connection.local_endpoint,
+    local_endpoints = getattr(connection, "local_endpoints", None) or [None]
+    ordered_paths = _rank_path_candidates_with_endpoints(
+        local_endpoints,
         connection.transport_properties,
         connection_context=connection.connection_context,
     )
@@ -314,12 +370,33 @@ def create_candidates(connection, remote_addrs=None):
     )
 
     candidates = []
-    for path_label, _path_interface in ordered_paths:
+    for path_label, _path_interface, local_endpoint in ordered_paths:
         for protocol_name in ordered_protocols:
             protocol_details = _protocol_details(protocol_name)
-            protocol_remotes = list(remote_addrs)
+            protocol_remotes = []
+            for remote_entry in remote_addrs:
+                if len(remote_entry) == 2:
+                    family, remote_address = remote_entry
+                    remote_endpoint = connection.remote_endpoint
+                else:
+                    family, remote_address, remote_endpoint = remote_entry
+                if (
+                    remote_endpoint is not None
+                    and remote_endpoint.protocol is not None
+                    and remote_endpoint.protocol != protocol_name
+                ):
+                    continue
+                if (
+                    remote_endpoint is not None
+                    and remote_endpoint.is_multicast
+                    and protocol_name != "udp"
+                ):
+                    continue
+                protocol_remotes.append(
+                    (family, remote_address, remote_endpoint)
+                )
             if protocol_details.get("advertisesAltaddr"):
-                for family, remote_address in remote_addrs:
+                for family, remote_address, remote_endpoint in list(protocol_remotes):
                     for alt_family, alt_remote in connection.connection_context.get_alternate_remotes(
                         remote_address,
                         protocol=protocol_name,
@@ -330,26 +407,74 @@ def create_candidates(connection, remote_addrs=None):
                                 socket.AddressFamily.AF_INET6
                                 if ":" in alt_remote else socket.AddressFamily.AF_INET
                             )
-                        protocol_remotes.append((resolved_family, alt_remote))
+                        protocol_remotes.append(
+                            (resolved_family, alt_remote, remote_endpoint)
+                        )
             ordered_remotes = order_remote_addresses(
-                protocol_remotes,
+                [
+                    (family, remote_address)
+                    for family, remote_address, _endpoint in protocol_remotes
+                ],
                 connection_context=connection.connection_context,
+            )
+            address_order = {}
+            for index, key in enumerate(ordered_remotes):
+                address_order.setdefault(key, index)
+            protocol_remotes = sorted(
+                protocol_remotes,
+                key=lambda entry: address_order[(entry[0], entry[1])],
             )
             seen = set()
             deduped_remotes = []
-            for family, remote_address in ordered_remotes:
-                key = (family, remote_address)
+            for family, remote_address, remote_endpoint in protocol_remotes:
+                remote_port = (
+                    remote_endpoint.effective_port(protocol_name)
+                    if remote_endpoint is not None
+                    else None
+                )
+                key = (family, remote_address, remote_port, protocol_name)
                 if key in seen:
                     continue
                 seen.add(key)
-                deduped_remotes.append((family, remote_address))
-            for family, remote_address in deduped_remotes:
+                deduped_remotes.append(
+                    (family, remote_address, remote_endpoint)
+                )
+            for family, remote_address, remote_endpoint in deduped_remotes:
+                candidate_remote = (
+                    remote_endpoint.clone()
+                    if remote_endpoint is not None
+                    else None
+                )
+                if candidate_remote is not None:
+                    candidate_remote.address = remote_address
+                    candidate_remote.port = candidate_remote.effective_port(
+                        protocol_name
+                    )
+                candidate_local = (
+                    local_endpoint.clone()
+                    if local_endpoint is not None
+                    else None
+                )
+                local_address = (
+                    candidate_local.address
+                    if candidate_local is not None
+                    else None
+                )
+                if (
+                    local_address is not None
+                    and (":" in local_address)
+                    != (family == socket.AddressFamily.AF_INET6)
+                ):
+                    continue
                 candidates.append(
                     Candidate(
                         protocol=protocol_name,
                         remote_address=remote_address,
                         address_family=family,
                         path=path_label,
+                        local_address=local_address,
+                        local_endpoint=candidate_local,
+                        remote_endpoint=candidate_remote,
                     )
                 )
     return candidates
@@ -365,11 +490,27 @@ def order_candidates_for_racing(connection, candidates):
     def sort_key(item):
         index, candidate = item
         local_path = (
-            (candidate.local_address, connection.local_endpoint.port)
-            if candidate.local_address is not None and connection.local_endpoint is not None
+            (
+                candidate.local_address,
+                (
+                    candidate.local_endpoint.port
+                    if candidate.local_endpoint is not None
+                    else (
+                        connection.local_endpoint.port
+                        if connection.local_endpoint is not None
+                        else None
+                    )
+                ),
+            )
+            if candidate.local_address is not None
             else None
         )
-        remote_path = (candidate.remote_address, connection.remote_endpoint.port)
+        remote_port = (
+            candidate.remote_endpoint.port
+            if candidate.remote_endpoint is not None
+            else connection.remote_endpoint.port
+        )
+        remote_path = (candidate.remote_address, remote_port)
         cache_score = connection.connection_context.get_path_score(
             local_path,
             remote_path,

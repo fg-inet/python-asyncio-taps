@@ -12,6 +12,13 @@ import pytaps as taps  # noqa: E402
 color = "yellow"
 
 
+def endpoint_address(endpoint):
+    address = endpoint.address
+    if isinstance(address, list):
+        return address[0] if address else None
+    return address
+
+
 class TestClient():
     def __init__(self):
         self.connection = None
@@ -35,7 +42,7 @@ class TestClient():
             "Received message "
             + str(data)
             + " from "
-            + str(context.addr)
+            + str(context.remote_address)
             + ".",
             color,
         )
@@ -61,7 +68,7 @@ class TestClient():
 
     async def handle_ready(self, connection):
         taps.print_time("Ready cb received from connection to " +
-                        connection.remote_endpoint.address + ":" +
+                        str(endpoint_address(connection.remote_endpoint)) + ":" +
                         str(connection.remote_endpoint.port) +
                         " (hostname: " +
                         str(connection.remote_endpoint.host_name) +
@@ -92,7 +99,12 @@ class TestClient():
     async def main(self, args):
         self.loop = asyncio.get_running_loop()
         fname = args.file
-        self.preconnection = taps.Preconnection().from_yangfile(fname)
+        try:
+            self.preconnection = taps.Preconnection().from_yangfile(fname)
+        except ImportError as exc:
+            print(exc)
+            self.loop.stop()
+            return
         taps.print_time("Loaded YANG file: %s." % fname, color)
 
         self.preconnection.on_initiate_error(self.handle_initiate_error)

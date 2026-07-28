@@ -1,7 +1,7 @@
 import asyncio
+import ipaddress
 import ssl
 from copy import deepcopy
-from dataclasses import dataclass
 from xml.etree.ElementTree import fromstring
 
 from .connection import Connection
@@ -17,7 +17,7 @@ from .message import (
 from .securityParameters import SecurityParameters
 from .transportProperties import PreferenceLevel, TransportProperties, normalize_direction
 from .transports import UdpTransport
-from .utility import schedule_callback, setup_logger
+from .utility import ConnectionState, schedule_callback, setup_logger
 from .yang_validate import (
     YANG_FMT_JSON,
     YANG_FMT_XML,
@@ -27,66 +27,6 @@ from .yang_validate import (
 )
 
 logger = setup_logger(__name__, "green")
-
-
-@dataclass
-class RendezvousResult:
-    connection: "Connection"
-    listener: "Listener"
-    completed: bool = False
-    failed_reason: object = None
-    event_history: list = None
-
-    def __post_init__(self):
-        if self.event_history is None:
-            self.event_history = []
-
-    def _record_event(self, name, **details):
-        event = {
-            "name": name,
-            "details": details,
-        }
-        self.event_history.append(event)
-        return event
-
-    def mark_done(self):
-        self.completed = True
-        self.failed_reason = None
-        self._record_event("rendezvous_done")
-        return self
-
-    def mark_failed(self, reason):
-        self.completed = False
-        self.failed_reason = reason
-        self._record_event("rendezvous_error", reason=str(reason))
-        return self
-
-    async def wait_ready(self, timeout=None):
-        return await self.connection.wait_ready(timeout=timeout)
-
-    async def wait_listening(self, timeout=None):
-        return await self.listener.wait_listening(timeout=timeout)
-
-    async def close(self):
-        self.connection.close()
-        await self.listener.stop()
-        await self.connection.wait_closed()
-        return self
-
-    def get_event_history(self):
-        return list(self.event_history)
-
-    def get_properties(self):
-        return {
-            "completed": self.completed,
-            "failedReason": (
-                str(self.failed_reason)
-                if self.failed_reason is not None else None
-            ),
-            "connection": self.connection,
-            "listener": self.listener,
-            "events": self.get_event_history(),
-        }
 
 
 class Preconnection:
@@ -112,20 +52,59 @@ class Preconnection:
                         one of the current thread is used by default
     """
 
-    def __init__(self, local_endpoint=None, remote_endpoint=None,
-                 transport_properties=None,
-                 security_parameters=None,
-                 event_loop=None,
-                 connection_context=None):
+    def __init__(
+        self,
+        local_endpoints=None,
+        remote_endpoints=None,
+        transport_properties=None,
+        security_parameters=None,
+        event_loop=None,
+        connection_context=None,
+        *,
+        local_endpoint=None,
+        remote_endpoint=None,
+        _security_role=None,
+        _register_context=True,
+    ):
 
         # Initializations from arguments
-        self.local_endpoint = local_endpoint
-        self.remote_endpoint = remote_endpoint
-        self.transport_properties = transport_properties or TransportProperties()
-        self.security_parameters = security_parameters
+        if local_endpoint is not None:
+            if local_endpoints is not None:
+                raise TypeError(
+                    "Specify local_endpoints or local_endpoint, not both"
+                )
+            local_endpoints = local_endpoint
+        if remote_endpoint is not None:
+            if remote_endpoints is not None:
+                raise TypeError(
+                    "Specify remote_endpoints or remote_endpoint, not both"
+                )
+            remote_endpoints = remote_endpoint
+        self.local_endpoints = self._normalize_endpoints(
+            local_endpoints,
+            LocalEndpoint,
+            "local",
+        )
+        self.remote_endpoints = self._normalize_endpoints(
+            remote_endpoints,
+            RemoteEndpoint,
+            "remote",
+        )
+        self.transport_properties = (
+            transport_properties.clone()
+            if transport_properties is not None
+            else TransportProperties()
+        )
+        self.security_parameters = deepcopy(security_parameters)
         self.message_properties = MessageContext()
+        for prop, value in self.transport_properties.get_profile_message_properties().items():
+            self.message_properties.set_property(prop, value)
         self.connection_context = connection_context or ConnectionContext()
-        self.connection_context.register_preconnection()
+        if _register_context:
+            self.connection_context.register_preconnection()
+        self._security_role = _security_role
+        self._rendezvous_mode = False
+        self._reuse_isolated_context = False
         if event_loop is not None:
             self.loop = event_loop
         else:
@@ -149,7 +128,54 @@ class Preconnection:
 
         if self.security_parameters:
             self._apply_security_defaults()
-        self.security_context = self._build_security_context()
+        self.security_context = self._build_security_context(
+            is_listener=_security_role == "listener"
+            if _security_role is not None
+            else None
+        )
+
+    @staticmethod
+    def _normalize_endpoints(endpoints, endpoint_type, label):
+        if endpoints is None:
+            return []
+        if isinstance(endpoints, endpoint_type):
+            endpoints = [endpoints]
+        else:
+            try:
+                endpoints = list(endpoints)
+            except TypeError as exc:
+                raise TypeError(
+                    f"{label}_endpoints must contain {endpoint_type.__name__} objects"
+                ) from exc
+        if not all(isinstance(endpoint, endpoint_type) for endpoint in endpoints):
+            raise TypeError(
+                f"{label}_endpoints must contain only {endpoint_type.__name__} objects"
+            )
+        return [endpoint.clone() for endpoint in endpoints]
+
+    @property
+    def local_endpoint(self):
+        return self.local_endpoints[0] if self.local_endpoints else None
+
+    @local_endpoint.setter
+    def local_endpoint(self, endpoint):
+        self.local_endpoints = self._normalize_endpoints(
+            endpoint,
+            LocalEndpoint,
+            "local",
+        )
+
+    @property
+    def remote_endpoint(self):
+        return self.remote_endpoints[0] if self.remote_endpoints else None
+
+    @remote_endpoint.setter
+    def remote_endpoint(self, endpoint):
+        self.remote_endpoints = self._normalize_endpoints(
+            endpoint,
+            RemoteEndpoint,
+            "remote",
+        )
 
     def _apply_security_defaults(self):
         for prop in (
@@ -187,11 +213,12 @@ class Preconnection:
             available=quic_allowed,
         )
 
-    def _build_security_context(self):
+    def _build_security_context(self, *, is_listener=None):
         if not self.security_parameters:
             return None
 
-        is_listener = self.local_endpoint and not self.remote_endpoint
+        if is_listener is None:
+            is_listener = bool(self.local_endpoints and not self.remote_endpoints)
         if is_listener:
             security_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         else:
@@ -233,8 +260,8 @@ class Preconnection:
                     security_context.maximum_version = ssl.TLSVersion.TLSv1_2
         if self.security_parameters.cipher_suites:
             security_context.set_ciphers(self.security_parameters.cipher_suites)
-        security_context.check_hostname = False
         if is_listener:
+            security_context.check_hostname = False
             if (
                 self.security_parameters.require_peer_authentication
                 and self.security_parameters.trustedCA
@@ -244,7 +271,9 @@ class Preconnection:
                 security_context.verify_mode = ssl.CERT_NONE
         elif self.security_parameters.require_peer_authentication:
             security_context.verify_mode = ssl.CERT_REQUIRED
+            security_context.check_hostname = True
         else:
+            security_context.check_hostname = False
             security_context.verify_mode = ssl.CERT_NONE
         security_context._pytaps_pinned_server_certificates = list(
             self.security_parameters.pinned_server_certificates
@@ -288,39 +317,31 @@ class Preconnection:
             )
         precon = root
 
-        # TBD: jake 2019-05-02: this api accepts only one endpoint,
-        # but the spec talks about accepting multiple endpoints.
-        # not clear what to do?  yang
-        # and implementation api ideally would match tho...
-        # current behavior is to just take the first and stop.
-
-        lp = None
+        local_endpoints = []
         for node in precon.findall('taps:local-endpoints', namespaces=ns):
-            if not lp:
-                lp = LocalEndpoint()
+            endpoint = LocalEndpoint()
             # TBD: jake 2019-05-02: mapping from ifref to interface name?
             interface_ref = node.findtext('taps:ifref', namespaces=ns)
             local_address = node.findtext('taps:local-address', namespaces=ns)
             local_port = node.findtext('taps:local-port', namespaces=ns)
             if interface_ref:
-                lp.with_interface(interface_ref)
+                endpoint.with_interface(interface_ref)
             if local_address:
-                lp.with_address(local_address)
+                endpoint.with_address(local_address)
             if local_port:
-                lp.with_port(local_port)
-            break
+                endpoint.with_port(local_port)
+            local_endpoints.append(endpoint)
 
-        rp = None
+        remote_endpoints = []
         for node in precon.findall('taps:remote-endpoints', namespaces=ns):
-            if not rp:
-                rp = RemoteEndpoint()
+            endpoint = RemoteEndpoint()
             remote_host = node.findtext('taps:remote-host', namespaces=ns)
             remote_port = node.findtext('taps:remote-port', namespaces=ns)
             if remote_host:
-                rp.with_hostname(remote_host)
+                endpoint.with_hostname(remote_host)
             if remote_port:
-                rp.with_port(remote_port)
-            break
+                endpoint.with_port(remote_port)
+            remote_endpoints.append(endpoint)
 
         sp = None
         security = precon.find('taps:security', namespaces=ns)
@@ -430,8 +451,8 @@ class Preconnection:
                     # TBD jake 2019-05-07: interface name/type, pvd
                     pass
 
-        self.remote_endpoint = rp
-        self.local_endpoint = lp
+        self.remote_endpoints = remote_endpoints
+        self.local_endpoints = local_endpoints
         self.transport_properties = tp
         self.security_parameters = sp
         if self.security_parameters:
@@ -439,17 +460,21 @@ class Preconnection:
         self.security_context = self._build_security_context()
         return self
 
-    def clone(self):
+    def _copy_configuration(self, *, action=None, security_role=None):
+        transport_properties = (
+            self.transport_properties.for_action(action)
+            if action is not None
+            else self.transport_properties.clone()
+        )
         cloned = Preconnection(
-            local_endpoint=self.local_endpoint.clone() if self.local_endpoint else None,
-            remote_endpoint=self.remote_endpoint.clone() if self.remote_endpoint else None,
-            transport_properties=TransportProperties(
-                selection_properties=self.transport_properties.get_selection_properties(),
-                connection_properties=self.transport_properties.get_connection_properties(),
-            ),
+            local_endpoints=[endpoint.clone() for endpoint in self.local_endpoints],
+            remote_endpoints=[endpoint.clone() for endpoint in self.remote_endpoints],
+            transport_properties=transport_properties,
             security_parameters=deepcopy(self.security_parameters),
             event_loop=self.loop,
             connection_context=self.connection_context,
+            _security_role=security_role,
+            _register_context=False,
         )
         cloned.message_properties = deepcopy(self.message_properties)
         cloned.read = self.read
@@ -461,27 +486,44 @@ class Preconnection:
         cloned.establishment_error = self.establishment_error
         cloned.rendezvous_done = self.rendezvous_done
         cloned.framer = self.framer
+        cloned._rendezvous_mode = self._rendezvous_mode
+        cloned._reuse_isolated_context = self._reuse_isolated_context
+        for attribute in (
+            "multicast_interface_address",
+            "multicast_ttl",
+            "multicast_disable_loopback",
+        ):
+            if hasattr(self, attribute):
+                setattr(cloned, attribute, deepcopy(getattr(self, attribute)))
         return cloned
 
+    def clone(self):
+        return self._copy_configuration()
+
+    def _snapshot(self, action):
+        security_role = "listener" if action == "listen" else "client"
+        return self._copy_configuration(
+            action=action,
+            security_role=security_role,
+        )
+
     def add_local_endpoint(self, endpoint):
-        self.local_endpoint = endpoint
+        if not isinstance(endpoint, LocalEndpoint):
+            raise TypeError("Local endpoints must be LocalEndpoint objects")
+        self.local_endpoints.append(endpoint.clone())
         return self
 
     def add_remote_endpoint(self, endpoint):
-        self.remote_endpoint = endpoint
+        if not isinstance(endpoint, RemoteEndpoint):
+            raise TypeError("Remote endpoints must be RemoteEndpoint objects")
+        self.remote_endpoints.append(endpoint.clone())
         return self
 
     def add_local_address(self, address):
-        if self.local_endpoint is None:
-            self.local_endpoint = LocalEndpoint()
-        self.local_endpoint.with_address(address)
-        return self
+        return self.add_local_endpoint(LocalEndpoint().with_address(address))
 
     def add_remote_address(self, address):
-        if self.remote_endpoint is None:
-            self.remote_endpoint = RemoteEndpoint()
-        self.remote_endpoint.with_address(address)
-        return self
+        return self.add_remote_endpoint(RemoteEndpoint().with_address(address))
 
     def add_framer(self, framer):
         self.framer = framer
@@ -510,6 +552,8 @@ class Preconnection:
 
     def get_properties(self):
         return {
+            "localEndpoints": [endpoint.clone() for endpoint in self.local_endpoints],
+            "remoteEndpoints": [endpoint.clone() for endpoint in self.remote_endpoints],
             "selection": self.transport_properties.get_selection_properties(),
             "connection": self.transport_properties.get_connection_properties(),
             "message": self.message_properties.get_properties(),
@@ -606,12 +650,20 @@ class Preconnection:
             connection call.
         """
         # Assertions
-        if self.remote_endpoint is None:
+        if not self.remote_endpoints:
             raise Exception("A remote endpoint needs "
                             "to be specified to initiate")
         logger.info("Initiating connection.")
 
-        new_connection = Connection(self)
+        action = "rendezvous" if self._rendezvous_mode else "initiate"
+        snapshot = self._snapshot(action)
+        if (
+            snapshot.transport_properties.get("isolateSession")
+            and not self._reuse_isolated_context
+        ):
+            snapshot.connection_context = ConnectionContext()
+            snapshot.connection_context.register_preconnection()
+        new_connection = Connection(snapshot)
         # Race the candidate sets
         new_connection.race_task = self.loop.create_task(new_connection.race())
         logger.info("Returning connection object.")
@@ -632,8 +684,14 @@ class Preconnection:
         end_of_message=True,
         timeout=None,
     ):
+        if not end_of_message:
+            raise ValueError("InitiateWithSend does not support partial sends")
         connection = await self.initiate()
-        connection._pending_message = (data, message_context, end_of_message)
+        await connection.initiate_with_send(
+            data,
+            message_context,
+            end_of_message,
+        )
         if timeout is not None:
             await connection.wait_ready(timeout=timeout)
         return connection
@@ -642,10 +700,11 @@ class Preconnection:
         """ Tries to start a listener, first chooses candidate protocol and
             then tries to establish it with the appropriate asyncio function.
         """
-        if self.local_endpoint is None:
+        if not self.local_endpoints:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
-        listener = Listener(self)
+        action = "rendezvous" if self._rendezvous_mode else "listen"
+        listener = Listener(self, action=action)
         # Create start_listener task so we can return right away
         listener.listen_task = self.loop.create_task(listener.start_listener())
         if timeout is not None:
@@ -658,67 +717,210 @@ class Preconnection:
                 raise
         return listener
 
-    async def rendezvous(self, timeout=None):
-        if self.local_endpoint is None:
+    async def rendezvous(self, timeout=None, retry_interval=0.25):
+        if not self.local_endpoints:
             raise Exception("A local endpoint needs to be specified to rendezvous")
-        if self.remote_endpoint is None:
+        if not self.remote_endpoints:
             raise Exception("A remote endpoint needs to be specified to rendezvous")
 
         listener_preconnection = self.clone()
         connection_preconnection = self.clone()
+        listener_preconnection._rendezvous_mode = True
         connection_preconnection._rendezvous_mode = True
 
         listener = await listener_preconnection.listen()
-        await listener.wait_listening(timeout=timeout)
-        connection = await connection_preconnection.initiate()
-        result = RendezvousResult(connection=connection, listener=listener)
+        deadline = self.loop.time() + timeout if timeout is not None else None
+        active_attempts = []
+        accept_task = listener.accept()
+        ambiguous_direction = False
+
+        def remaining_time():
+            if deadline is None:
+                return None
+            return max(0, deadline - self.loop.time())
+
+        async def wait_with_deadline(awaitable):
+            remaining = remaining_time()
+            if remaining == 0:
+                raise TimeoutError("Rendezvous timed out")
+            if remaining is None:
+                return await awaitable
+            return await asyncio.wait_for(awaitable, remaining)
+
+        async def establish_active():
+            last_error = None
+            while True:
+                connection = await connection_preconnection.initiate()
+                active_attempts.append(connection)
+                try:
+                    await wait_with_deadline(connection._ready_waiter)
+                    if connection.protocol == "udp":
+                        await wait_with_deadline(connection._first_message_waiter)
+                    return connection
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:
+                    last_error = exc
+                    remaining = remaining_time()
+                    if remaining == 0:
+                        raise last_error
+                    delay = retry_interval
+                    if remaining is not None:
+                        delay = min(delay, remaining)
+                    await asyncio.sleep(delay)
+
+        active_task = self.loop.create_task(establish_active())
+        winner = None
         try:
-            if timeout is not None:
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        result.wait_listening(),
-                        result.wait_ready(),
-                    ),
-                    timeout,
-                )
-            result.mark_done()
-            connection._record_event(
-                "rendezvous_done",
-                listener_state=listener.state.name.title(),
+            await wait_with_deadline(listener.wait_listening())
+
+            local_key = self._rendezvous_endpoint_key(
+                self.local_endpoints[0],
+                protocol="tcp",
             )
+            remote_key = self._rendezvous_endpoint_key(
+                self.remote_endpoints[0],
+                protocol="tcp",
+            )
+            prefer_active = None
+            if local_key != remote_key:
+                prefer_active = local_key < remote_key
+            else:
+                ambiguous_direction = True
+
+            preferred_task = (
+                active_task
+                if prefer_active is not False
+                else accept_task
+            )
+            alternate_task = (
+                accept_task
+                if preferred_task is active_task
+                else active_task
+            )
+            done, _pending = await asyncio.wait(
+                {preferred_task, alternate_task},
+                timeout=remaining_time(),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                raise TimeoutError("Rendezvous timed out")
+
+            if prefer_active is None:
+                completed = next(iter(done))
+                winner = completed.result()
+            elif preferred_task in done:
+                winner = preferred_task.result()
+            else:
+                alternate = alternate_task.result()
+                grace = retry_interval
+                remaining = remaining_time()
+                if remaining is not None:
+                    grace = min(grace, remaining)
+                try:
+                    winner = await asyncio.wait_for(
+                        asyncio.shield(preferred_task),
+                        grace,
+                    )
+                except (TimeoutError, OSError):
+                    winner = alternate
+
+            winner._mark_rendezvous_done()
             schedule_callback(
                 self.loop,
                 self.rendezvous_done,
-                (result, connection),
-                (connection,),
+                (winner,),
+                (winner, self),
                 (self,),
                 (),
             )
+            return winner
         except BaseException as exc:
-            result.mark_failed(exc)
-            connection.abort(reason="Rendezvous failed")
-            await listener.stop()
+            if not isinstance(exc, asyncio.CancelledError):
+                schedule_callback(
+                    self.loop,
+                    self.establishment_error,
+                    (exc, self),
+                    (exc,),
+                    (self,),
+                    (),
+                )
             raise
-        return result
+        finally:
+            for task in (active_task, accept_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                active_task,
+                accept_task,
+                return_exceptions=True,
+            )
+            for connection in active_attempts:
+                if connection is winner:
+                    continue
+                if ambiguous_direction and winner is not None:
+                    continue
+                if connection.state is not ConnectionState.CLOSED:
+                    connection.abort("Rendezvous candidate was not selected")
+            await listener.stop()
 
-    # TODO: Is this actually what the spec talks about?
+    @staticmethod
+    def _rendezvous_endpoint_key(endpoint, *, protocol):
+        address = endpoint.effective_address() or endpoint.host_name or ""
+        try:
+            parsed = ipaddress.ip_address(address)
+            address_key = (parsed.version, parsed.packed)
+        except ValueError:
+            address_key = (0, str(address).casefold().encode())
+        return (
+            address_key,
+            endpoint.effective_port(endpoint.protocol or protocol) or 0,
+        )
+
     async def resolve(self):
-        """ Resolve the address before initiating the connection.
-        """
-        if self.remote_endpoint is None:
-            raise Exception("A remote endpoint needs "
-                            "to be specified to resolve")
-        remote_info = await self.loop.getaddrinfo(
-            self.remote_endpoint.host_name, self.remote_endpoint.port)
-        self.remote_endpoint.address = [remote_info[0][4][0]]
-        return self.remote_endpoint.address
+        """Resolve configured Endpoint names into concrete Endpoint lists."""
+        async def resolve_endpoints(endpoints):
+            resolved = []
+            for endpoint in endpoints:
+                if endpoint.host_name is None or endpoint.effective_address() is not None:
+                    endpoint_copy = endpoint.clone()
+                    if endpoint_copy.port is None and endpoint_copy.service is not None:
+                        endpoint_copy.port = endpoint_copy.effective_port(
+                            endpoint_copy.protocol
+                        )
+                    resolved.append(endpoint_copy)
+                    continue
+                endpoint_port = (
+                    endpoint.port
+                    if endpoint.port is not None
+                    else endpoint.service
+                )
+                endpoint_info = await self.loop.getaddrinfo(
+                    endpoint.host_name,
+                    endpoint_port,
+                )
+                seen = set()
+                for info in endpoint_info:
+                    key = (info[4][0], info[4][1])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    endpoint_copy = endpoint.clone()
+                    endpoint_copy.address = info[4][0]
+                    endpoint_copy.port = info[4][1]
+                    resolved.append(endpoint_copy)
+            return resolved
+
+        resolved_locals = await resolve_endpoints(self.local_endpoints)
+        resolved_remotes = await resolve_endpoints(self.remote_endpoints)
+        return resolved_locals, resolved_remotes
 
     # Events for active open
     def on_ready(self, callback):
         """ Set callback for ready events that get thrown once the
             connection is ready to send and receive data.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -728,7 +930,7 @@ class Preconnection:
         """ Set callback for initiate error events that
             get thrown if an error occurs during initiation.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -742,7 +944,7 @@ class Preconnection:
         """ Set callback for connection received events that get thrown when a
         new connection has been received by the listener.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -753,7 +955,7 @@ class Preconnection:
             get thrown if an error occurs
             while the listener waits for new connections.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -764,7 +966,7 @@ class Preconnection:
             get thrown when the listener stopped
             accepting new connections.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -774,25 +976,37 @@ class Preconnection:
         self.rendezvous_done = callback
 
     # TODO: Refactor this probably
-    def got_mc(self, listener, data, port):
+    def got_mc(self, listener, data, port, source_address=None):
         """ Method that redirects incoming multicast
             data to the relevant connection object
         """
         try:
             cb_data = data
-            addr = listener.remote_endpoint.address
+            source_address = (
+                source_address
+                or (
+                    listener.remote_endpoint.effective_address()
+                    if listener.remote_endpoint is not None
+                    else None
+                )
+                or listener.local_endpoint.multicast_source
+            )
+            if source_address is None:
+                raise ValueError("Multicast packet did not include a source address")
             if port in listener.active_ports:
                 listener.active_ports[port].transports[0].datagram_received(
-                    cb_data, (addr, port))
+                    cb_data, (source_address, port))
             else:
                 rp = RemoteEndpoint()
-                rp.with_address(listener.remote_endpoint.address)
+                rp.with_address(source_address)
                 rp.with_port(port)
-                precon = Preconnection(listener.local_endpoint,
-                                       rp,
-                                       listener.transport_properties,
-                                       listener.security_parameters,
-                                       listener.loop)
+                precon = Preconnection(
+                    local_endpoints=[listener.local_endpoint],
+                    remote_endpoints=[rp],
+                    transport_properties=listener.transport_properties,
+                    security_parameters=listener.security_parameters,
+                    event_loop=listener.loop,
+                )
                 if listener.framer:
                     precon.add_framer(listener.framer)
                 conn = Connection(precon)
@@ -800,7 +1014,12 @@ class Preconnection:
                                        conn.local_endpoint,
                                        conn.remote_endpoint)
                 listener.active_ports[port] = conn
-                listener.loop.create_task(new_udp.active_open(None))
+
+                async def open_and_deliver():
+                    await new_udp.active_open(None)
+                    new_udp.datagram_received(cb_data, (source_address, port))
+
+                listener.loop.create_task(open_and_deliver())
                 listener._deliver_connection(conn)
                 logger.info("Delivered multicast connection to listener.")
         except Exception:

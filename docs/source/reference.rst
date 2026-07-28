@@ -21,16 +21,33 @@ Local Endpoint
 	.. autoclass:: LocalEndpoint
 
 		.. automethod:: with_interface
+		.. automethod:: without_interface
+		.. automethod:: with_ip_address
 		.. automethod:: with_address
+		.. automethod:: without_address
+		.. automethod:: with_hostname
 		.. automethod:: with_port
+		.. automethod:: with_service
+		.. automethod:: with_protocol
+		.. automethod:: with_stun_server
+		.. automethod:: with_any_source_multicast_group_ip
+		.. automethod:: with_single_source_multicast_group_ip
+		.. automethod:: with_hop_limit
 
 Remote Endpoint
 ---------------
 	.. autoclass:: RemoteEndpoint
 
+		.. automethod:: with_ip_address
 		.. automethod:: with_address
+		.. automethod:: without_address
 		.. automethod:: with_hostname
 		.. automethod:: with_port
+		.. automethod:: with_service
+		.. automethod:: with_protocol
+		.. automethod:: with_interface
+		.. automethod:: with_multicast_group_ip
+		.. automethod:: with_hop_limit
 
 Transport Properties
 --------------------
@@ -80,6 +97,8 @@ Preconnection
 		.. automethod:: listen
 		.. automethod:: rendezvous
 		.. automethod:: resolve
+		.. automethod:: add_local_endpoint
+		.. automethod:: add_remote_endpoint
 		.. automethod:: add_framer
 		.. automethod:: get_connection_context
 		.. automethod:: set_protocol_policy
@@ -98,16 +117,6 @@ Preconnection
 		.. automethod:: on_listen_error
 		.. automethod:: on_stopped
 		.. automethod:: on_rendezvous_done
-
-Rendezvous Result
------------------
-	.. autoclass:: RendezvousResult
-
-		.. automethod:: wait_ready
-		.. automethod:: wait_listening
-		.. automethod:: get_properties
-		.. automethod:: get_event_history
-		.. automethod:: close
 
 Connection
 ----------
@@ -141,7 +150,6 @@ Connection
 		.. automethod:: note_path_change
 		.. automethod:: note_soft_error
 		.. automethod:: clear_path_degradation
-		.. automethod:: note_alternate_remote
 		.. automethod:: close
 		.. automethod:: get_event_history
 		.. automethod:: get_group_properties
@@ -175,6 +183,7 @@ Listener
 		.. automethod:: note_alternate_remote
 		.. automethod:: get_monitoring_snapshot
 		.. automethod:: get_property
+		.. automethod:: set_new_connection_limit
 		.. automethod:: wait_listening
 		.. automethod:: accept
 		.. automethod:: wait_stopped

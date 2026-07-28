@@ -14,7 +14,12 @@ def _require_mcrx_core():
 
 def _got_packet(listener, packet):
     payload = bytes(packet.payload)
-    listener.preconnection.got_mc(listener, payload, packet.source_port)
+    listener.preconnection.got_mc(
+        listener,
+        payload,
+        packet.source_port,
+        source_address=getattr(packet, "source_address", None),
+    )
 
 
 def do_join(listener):
@@ -22,15 +27,16 @@ def do_join(listener):
     if listener.loop is None:
         raise Exception("joining with no asyncio loop attached to connection")
 
-    remote = listener.remote_endpoint.address[0]
-    local = listener.local_endpoint.address[0]
+    local = listener.local_endpoint.multicast_group
+    if local is None:
+        raise ValueError(
+            "A multicast Listener requires a Local Endpoint configured "
+            "with a multicast group"
+        )
+    remote = listener.local_endpoint.multicast_source
     interface = getattr(listener.preconnection, "multicast_interface_address", None)
     if interface is None:
-        interface = (
-            listener.local_endpoint.interface[0]
-            if getattr(listener.local_endpoint, "interface", None)
-            else None
-        )
+        interface = listener.local_endpoint.interface
 
     ctx = mcrx_core.Context()
     sub = ctx.add_subscription(

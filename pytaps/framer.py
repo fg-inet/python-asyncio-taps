@@ -34,7 +34,7 @@ class Framer:
             implementation should execute any code required
             during connection establishment here.
 
-        Attributes:
+        Args:
             connection (connection, required):
                 The connection object that is to be
                 handled by the framer.
@@ -47,7 +47,7 @@ class Framer:
             The framer should frame the message and then call
             the send() function on itself.
 
-        Attributes:
+        Args:
             data (string, required):
                 The data that is to be framed.
             context (context, required):
@@ -67,7 +67,7 @@ class Framer:
             deliver_and_advance_receive_cursor() which combines
             both functions.
 
-        Attributes:
+        Args:
             connection (connection, required):
                 The connection object on which new data has
                 arrived.
@@ -114,7 +114,7 @@ class Framer:
         """ Should be called with framed data after a
             new_sent_message() event.
 
-        Attributes:
+        Args:
             data (string, required):
                 The framed message.
         """

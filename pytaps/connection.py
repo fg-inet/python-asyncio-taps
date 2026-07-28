@@ -1,5 +1,4 @@
 import asyncio
-import ipaddress
 import socket
 from copy import deepcopy
 try:
@@ -17,8 +16,8 @@ from .message import (
     is_message_property,
 )
 from .transportProperties import (
+    PREFERENCE_SELECTION_PROPERTIES,
     PreferenceLevel,
-    TransportProperties,
     canonicalize_property_name,
 )
 from .transports import MulticastSendTransport, QuicAssociationManager, TcpTransport, UdpTransport
@@ -66,19 +65,20 @@ class Connection:
 
     def __init__(self, preconnection):
         # Initializations
+        self.local_endpoints = [
+            endpoint.clone() for endpoint in preconnection.local_endpoints
+        ]
+        self.remote_endpoints = [
+            endpoint.clone() for endpoint in preconnection.remote_endpoints
+        ]
         self.local_endpoint = (
-            preconnection.local_endpoint.clone()
-            if preconnection.local_endpoint else None
+            self.local_endpoints[0] if self.local_endpoints else None
         )
         self.remote_endpoint = (
-            preconnection.remote_endpoint.clone()
-            if preconnection.remote_endpoint else None
+            self.remote_endpoints[0] if self.remote_endpoints else None
         )
-        self.transport_properties = TransportProperties(
-            selection_properties=preconnection.transport_properties.get_selection_properties(),
-            connection_properties=preconnection.transport_properties.get_connection_properties(),
-        )
-        self.security_parameters = preconnection.security_parameters
+        self.transport_properties = preconnection.transport_properties.clone()
+        self.security_parameters = deepcopy(preconnection.security_parameters)
         self.security_context = preconnection.security_context
         self.message_properties = deepcopy(preconnection.message_properties)
         self.connection_context = preconnection.connection_context
@@ -90,7 +90,10 @@ class Connection:
         self._originating_preconnection = preconnection
         self._ready_waiter = self.loop.create_future()
         self._closed_waiter = self.loop.create_future()
+        self._first_message_waiter = self.loop.create_future()
         self._pending_message = None
+        self._pre_ready_sends = []
+        self._pre_ready_flush_task = None
         self._receive_waiters = []
         self.last_error = None
         # Current state of the connection object
@@ -105,12 +108,20 @@ class Connection:
         self._batch_counter = 0
         self._send_sequence = 0
         self._send_call_sequence = 0
+        self._message_sequence = 0
         self._next_send_event_id = 1
         self._pending_send_events = {}
+        self._send_calls = {}
+        self._completed_send_calls = set()
+        self._send_drain_waiter = self.loop.create_future()
+        self._send_drain_waiter.set_result(None)
+        self._partial_send_contexts = {}
         self._receive_sequence = 0
         self._queued_messages = []
         self._sent_final_message = False
         self._received_final_message = False
+        self._close_requested = False
+        self._close_task = None
         self._rendezvous_mode = getattr(preconnection, "_rendezvous_mode", False)
         self._context_ready_recorded = False
         self._context_detached = False
@@ -164,13 +175,23 @@ class Connection:
         if message_context is None:
             message_context = MessageContext(end_of_message=end_of_message)
         message_context.end_of_message = end_of_message
-        return self._apply_message_defaults(message_context.ensure_created())
+        return self._apply_message_defaults(
+            message_context.ensure_created(),
+            resolve_connection_defaults=self.protocol is not None,
+        )
 
-    def _apply_message_defaults(self, context):
+    def _apply_message_defaults(
+        self,
+        context,
+        *,
+        resolve_connection_defaults=True,
+    ):
         for prop in self.message_properties.explicit_properties:
             if prop not in context.explicit_properties:
                 if getattr(context, prop) == MESSAGE_PROPERTY_DEFAULTS[prop]:
                     setattr(context, prop, getattr(self.message_properties, prop))
+        if not resolve_connection_defaults:
+            return context
         if context.ordered is None:
             if self.protocol in {"tcp", "tls-tcp"}:
                 context.ordered = True
@@ -199,7 +220,10 @@ class Connection:
         context = MessageContext()
         for name, value in properties.items():
             context.set_property(name, value)
-        return self._apply_message_defaults(context.ensure_created())
+        return self._apply_message_defaults(
+            context.ensure_created(),
+            resolve_connection_defaults=self.protocol is not None,
+        )
 
     def get_message_properties(self, message_or_context):
         if isinstance(message_or_context, ReceivedMessage):
@@ -245,11 +269,12 @@ class Connection:
         if not self._context_ready_recorded:
             self.connection_context.mark_connection_ready()
             self._context_ready_recorded = True
-        self._record_event(
-            "ready",
-            protocol=self.protocol,
-            path=self._current_path.copy(),
-        )
+        if not self._rendezvous_mode:
+            self._record_event(
+                "ready",
+                protocol=self.protocol,
+                path=self._current_path.copy(),
+            )
         self.connection_context.record_candidate_outcome(
             self._current_path.get("local"),
             self._current_path.get("remote"),
@@ -259,7 +284,49 @@ class Connection:
         self.sleeper_for_racing.cancel_all()
         if not self._ready_waiter.done():
             self._ready_waiter.set_result(self)
-        schedule_callback(self.loop, self.ready, (self,))
+        if self._pre_ready_sends and (
+            self._pre_ready_flush_task is None
+            or self._pre_ready_flush_task.done()
+        ):
+            self._pre_ready_flush_task = self.loop.create_task(
+                self._flush_pre_ready_sends()
+            )
+        if not self._rendezvous_mode:
+            schedule_callback(self.loop, self.ready, (self,))
+
+    def _mark_passive_ready(self):
+        self._set_state(ConnectionState.ESTABLISHED)
+        if not self._context_ready_recorded:
+            self.connection_context.mark_connection_ready()
+            self._context_ready_recorded = True
+        self.connection_context.record_candidate_outcome(
+            self._current_path.get("local"),
+            self._current_path.get("remote"),
+            self.protocol,
+            True,
+        )
+        if not self._ready_waiter.done():
+            self._ready_waiter.set_result(self)
+
+    def _mark_first_message(self):
+        if not self._first_message_waiter.done():
+            self._first_message_waiter.set_result(self)
+
+    async def wait_first_message(self, timeout=None):
+        waiter = asyncio.shield(self._first_message_waiter)
+        if timeout is None:
+            return await waiter
+        return await asyncio.wait_for(waiter, timeout)
+
+    def _mark_rendezvous_done(self):
+        if self.state is not ConnectionState.ESTABLISHED:
+            self._mark_passive_ready()
+        self._record_event(
+            "rendezvous_done",
+            protocol=self.protocol,
+            path=self._current_path.copy(),
+        )
+        return self
 
     def _report_sent(self, message_context):
         self._queue_send_event("sent", message_context)
@@ -269,37 +336,54 @@ class Connection:
             return
         self._set_state(ConnectionState.CLOSED)
         self._record_event("closed", last_error=str(self.last_error) if self.last_error else None)
+        if not self._first_message_waiter.done():
+            self._first_message_waiter.cancel()
         self._detach_from_connection_context()
         if not self._closed_waiter.done():
             self._closed_waiter.set_result(self)
 
     def _fail_initiate(self, error):
+        if self._is_terminal():
+            return
+        self._fail_pending_sends(
+            error,
+            suppress_initiate_with_send=True,
+        )
+        self._fail_receive_waiters(error)
         self._set_state(ConnectionState.CLOSED, error)
-        self._record_event("initiate_error", error=str(error))
+        self._record_event("establishment_error", error=str(error))
         self._detach_from_connection_context()
         if not self._ready_waiter.done():
             self._ready_waiter.set_exception(error)
-        schedule_callback(
-            self.loop,
-            self.initiate_error,
-            (error, self),
-            (self,),
-            (),
-        )
-        schedule_callback(
-            self.loop,
-            self.establishment_error,
-            (error, self),
-            (self,),
-            (),
-        )
+            self._ready_waiter.exception()
+        if not self._first_message_waiter.done():
+            self._first_message_waiter.cancel()
+        if not self._closed_waiter.done():
+            self._closed_waiter.set_result(self)
+        if not self._rendezvous_mode:
+            schedule_callback(
+                self.loop,
+                self.initiate_error,
+                (error, self),
+                (self,),
+                (),
+            )
+            schedule_callback(
+                self.loop,
+                self.establishment_error,
+                (error, self),
+                (self,),
+                (),
+            )
 
-    def _report_connection_error(self, error):
-        if self._is_terminal() and self._event_history and self._event_history[-1]["name"] == "connection_error":
+    def _report_connection_error(self, error, *, suggest_reestablishment=True):
+        if self._is_terminal():
             return
-        self._set_state(ConnectionState.CLOSED, error)
-        self.last_error = error
-        self._record_event("connection_error", error=str(error))
+        was_establishing = self.state is ConnectionState.ESTABLISHING
+        if not isinstance(error, BaseException):
+            error = ConnectionAbortedError(str(error))
+        self._fail_pending_sends(error)
+        self._fail_receive_waiters(error)
         current_local = self._current_path.get("local")
         current_remote = self._current_path.get("remote")
         if current_local is not None or current_remote is not None:
@@ -317,7 +401,16 @@ class Connection:
             False,
             error,
         )
-        self._refresh_reestablishment_guidance("connection_error")
+        if suggest_reestablishment:
+            self._refresh_reestablishment_guidance("connection_error")
+        self._set_state(ConnectionState.CLOSED, error)
+        self.last_error = error
+        self._record_event("connection_error", error=str(error))
+        if was_establishing and not self._ready_waiter.done():
+            self._ready_waiter.set_exception(error)
+            self._ready_waiter.exception()
+        if not self._first_message_waiter.done():
+            self._first_message_waiter.cancel()
         self._detach_from_connection_context()
         if not self._closed_waiter.done():
             self._closed_waiter.set_result(self)
@@ -339,6 +432,15 @@ class Connection:
             (self,),
             (),
         )
+
+    def _fail_receive_waiters(self, reason, message_context=None):
+        waiters = list(self._receive_waiters)
+        self._receive_waiters.clear()
+        for waiter in waiters:
+            if waiter.done():
+                continue
+            self._report_receive_error(message_context, reason)
+            waiter.set_exception(reason)
 
     def _report_clone_error(self, reason, *, detached=False):
         self.last_error = reason
@@ -466,6 +568,14 @@ class Connection:
         )
 
     def _report_closed(self):
+        if self._is_terminal():
+            return
+        self._fail_pending_sends(
+            ConnectionError("Connection closed before the Send completed")
+        )
+        self._fail_receive_waiters(
+            ConnectionError("Connection closed before the Receive completed")
+        )
         self._mark_closed()
         schedule_callback(self.loop, self.closed, (self,))
 
@@ -478,6 +588,44 @@ class Connection:
         self._send_call_sequence += 1
         return self._send_call_sequence
 
+    def _track_send_call(
+        self,
+        message_context,
+        *,
+        initiate_with_send=False,
+    ):
+        call_id = self._allocate_send_call_id()
+        if not self._send_calls and self._send_drain_waiter.done():
+            self._send_drain_waiter = self.loop.create_future()
+        self._send_calls[call_id] = {
+            "context": message_context,
+            "initiateWithSend": initiate_with_send,
+        }
+        return call_id
+
+    def _finish_send_call(self, call_id):
+        self._send_calls.pop(call_id, None)
+        self._completed_send_calls.add(call_id)
+        if not self._send_calls and not self._send_drain_waiter.done():
+            self._send_drain_waiter.set_result(None)
+
+    def _fail_pending_sends(self, reason, *, suppress_initiate_with_send=False):
+        for call_id in sorted(self._send_calls):
+            send_call = self._send_calls.get(call_id)
+            if send_call is None:
+                continue
+            if suppress_initiate_with_send and send_call["initiateWithSend"]:
+                self._finish_send_call(call_id)
+                continue
+            self._queue_send_event(
+                "send_error",
+                send_call["context"],
+                reason,
+                send_call_id=call_id,
+            )
+        self._pre_ready_sends.clear()
+        self._queued_messages.clear()
+
     def _queue_send_event(self, kind, message_context, reason=None, *, send_call_id=None):
         if self._is_terminal():
             return
@@ -486,7 +634,10 @@ class Connection:
             call_id = getattr(message_context, "_pytaps_send_call_id", None)
         if call_id is None:
             call_id = self._allocate_send_call_id()
+        if call_id in self._completed_send_calls:
+            return
         self._pending_send_events[call_id] = (kind, message_context, reason)
+        self._finish_send_call(call_id)
         self._flush_send_events()
 
     def _flush_send_events(self):
@@ -550,11 +701,15 @@ class Connection:
         candidate = getattr(task, "_pytaps_candidate", None)
         if candidate is not None:
             local_path = (
-                (candidate.local_address, self.local_endpoint.port)
-                if candidate.local_address is not None and self.local_endpoint is not None
+                (candidate.local_address, candidate.local_endpoint.port)
+                if candidate.local_address is not None
+                and candidate.local_endpoint is not None
                 else None
             )
-            remote_path = (candidate.remote_address, self.remote_endpoint.port)
+            remote_path = (
+                candidate.remote_address,
+                candidate.remote_endpoint.port,
+            )
             self.connection_context.record_candidate_outcome(
                 local_path,
                 remote_path,
@@ -567,11 +722,15 @@ class Connection:
 
     def _candidate_racing_delay(self, candidate):
         local_path = (
-            (candidate.local_address, self.local_endpoint.port)
-            if candidate.local_address is not None and self.local_endpoint is not None
+            (candidate.local_address, candidate.local_endpoint.port)
+            if candidate.local_address is not None
+            and candidate.local_endpoint is not None
             else None
         )
-        remote_path = (candidate.remote_address, self.remote_endpoint.port)
+        remote_path = (
+            candidate.remote_address,
+            candidate.remote_endpoint.port,
+        )
         score = self.connection_context.get_path_score(
             local_path,
             remote_path,
@@ -586,10 +745,17 @@ class Connection:
     def _deliver_received(self, data, context):
         if self._is_terminal():
             return None
+        self._mark_first_message()
         self._receive_sequence += 1
         context.received_at = context.received_at or self.loop.time()
         context.receive_sequence = self._receive_sequence
         received_message = ReceivedMessage(data, context, self)
+        self._record_event(
+            "received",
+            bytesReceived=len(data),
+            message_id=getattr(context, "message_id", None),
+            receiveSequence=context.receive_sequence,
+        )
         if self._receive_waiters:
             waiter = self._receive_waiters.pop(0)
             if not waiter.done():
@@ -601,10 +767,18 @@ class Connection:
     def _deliver_received_partial(self, data, context):
         if self._is_terminal():
             return None
+        self._mark_first_message()
         self._receive_sequence += 1
         context.received_at = context.received_at or self.loop.time()
         context.receive_sequence = self._receive_sequence
         received_message = ReceivedMessage(data, context, self)
+        self._record_event(
+            "received_partial",
+            bytesReceived=len(data),
+            message_id=getattr(context, "message_id", None),
+            receiveSequence=context.receive_sequence,
+            endOfMessage=context.end_of_message,
+        )
         if self._receive_waiters:
             waiter = self._receive_waiters.pop(0)
             if not waiter.done():
@@ -622,18 +796,16 @@ class Connection:
 
     def _check_send_allowed(self, message_context=None):
         if self._sent_final_message:
-            error = RuntimeError("Cannot send after a final message has been sent")
-            self.last_error = error
-            schedule_callback(
-                self.loop,
-                self.send_error,
-                (message_context, error, self),
-                (message_context, self),
-                (self,),
-                (),
-            )
-            return False
-        return True
+            return RuntimeError("Cannot send after a final message has been sent")
+        if self._close_requested or self.state in {
+            ConnectionState.CLOSING,
+            ConnectionState.CLOSED,
+        }:
+            return RuntimeError("Cannot send after Close has been requested")
+        direction = str(self.transport_properties.get("direction") or "").lower()
+        if direction == "unidirectional receive":
+            return RuntimeError("The Connection does not support sending")
+        return None
 
     def _send_limits(self):
         if self.protocol == "udp":
@@ -641,6 +813,12 @@ class Connection:
                 "singularTransmissionMsgMaxLen": 65507,
                 "sendMsgMaxLen": 65507,
                 "recvMsgMaxLen": 65507,
+            }
+        if self.protocol in {"tcp", "tls-tcp", "quic"}:
+            return {
+                "singularTransmissionMsgMaxLen": 0,
+                "sendMsgMaxLen": (1 << 63) - 1,
+                "recvMsgMaxLen": (1 << 63) - 1,
             }
         return {
             "singularTransmissionMsgMaxLen": 0,
@@ -652,13 +830,17 @@ class Connection:
         direction = str(self.transport_properties.get("direction") or "").lower()
         if direction == "unidirectional receive":
             return False
-        return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING}
+        return self.state is ConnectionState.ESTABLISHED and not self._close_requested
 
     def _can_receive(self):
         direction = str(self.transport_properties.get("direction") or "").lower()
         if direction == "unidirectional send":
             return False
-        return self.state in {ConnectionState.ESTABLISHED, ConnectionState.CLOSING} and not self._received_final_message
+        return (
+            self.state is ConnectionState.ESTABLISHED
+            and not self._close_requested
+            and not self._received_final_message
+        )
 
     def _selected_protocol_details(self):
         if self.protocol is None:
@@ -679,24 +861,10 @@ class Connection:
         selected_protocol = self._selected_protocol_details() or {}
         properties = {}
         for prop, value in self.transport_properties.get_selection_properties().items():
-            if prop == "direction":
-                properties[prop] = value
-            elif prop == "interface":
-                if self.local_endpoint is None:
-                    properties[prop] = False
-                else:
-                    configured = {interface_id for _pref, interface_id in value}
-                    if not configured:
-                        properties[prop] = bool(self.local_endpoint.interface)
-                    else:
-                        properties[prop] = any(
-                            interface in configured
-                            for interface in self.local_endpoint.interface
-                        )
-            elif prop == "pvd":
-                properties[prop] = bool(value)
-            else:
+            if prop in PREFERENCE_SELECTION_PROPERTIES:
                 properties[prop] = bool(selected_protocol.get(prop))
+            else:
+                properties[prop] = value
         return properties
 
     def _validate_message_context(self, data, context):
@@ -704,11 +872,11 @@ class Connection:
         if (
             context.reliable is not None
             and context.reliable != connection_reliable
-            and self.transport_properties.get("perMessageReliability")
+            and self.transport_properties.get("perMsgReliability")
             is not PreferenceLevel.REQUIRE
         ):
             return RuntimeError(
-                "Per-message reliability overrides require perMessageReliability support"
+                "Per-message reliability overrides require perMsgReliability support"
             )
         if self.protocol == "udp" and not context.safely_replayable:
             return RuntimeError(
@@ -737,8 +905,12 @@ class Connection:
         if is_message_property(prop):
             self.message_properties.set_property(prop, value)
         else:
-            self.transport_properties.set_property(prop, value)
             canonical = canonicalize_property_name(prop)
+            if canonical in self.transport_properties.selection_properties:
+                raise ValueError(
+                    f"Selection Property {canonical} is read-only on a Connection"
+                )
+            self.transport_properties.set_property(canonical, value)
             if self.connection_group is not None:
                 self.connection_group.set_property(canonical, value)
         return None
@@ -763,11 +935,17 @@ class Connection:
             self.message_properties.explicit_properties.discard(canonical)
             return self
 
-        self.transport_properties.default_property(prop)
+        canonical = canonicalize_property_name(prop)
+        if canonical in self.transport_properties.selection_properties:
+            raise ValueError(
+                f"Selection Property {canonical} is read-only on a Connection"
+            )
+        self.transport_properties.default_property(canonical)
         if self.connection_group is not None:
-            canonical = canonicalize_property_name(prop)
-            if canonical in self.connection_group.shared_connection_properties:
-                self.connection_group.shared_connection_properties.pop(canonical, None)
+            self.connection_group.set_property(
+                canonical,
+                self.transport_properties.get(canonical),
+            )
         return self
 
     def get_properties(self):
@@ -824,119 +1002,237 @@ class Connection:
 
     async def wait_ready(self, timeout=None):
         if timeout is None:
-            await self._ready_waiter
+            await asyncio.shield(self._ready_waiter)
         else:
-            await asyncio.wait_for(self._ready_waiter, timeout)
+            await asyncio.wait_for(asyncio.shield(self._ready_waiter), timeout)
         return self
 
     async def wait_closed(self, timeout=None):
         if timeout is None:
-            await self._closed_waiter
+            await asyncio.shield(self._closed_waiter)
         else:
-            await asyncio.wait_for(self._closed_waiter, timeout)
+            await asyncio.wait_for(asyncio.shield(self._closed_waiter), timeout)
         return self
 
     def add_remote(self, remote_endpoints):
         for endpoint in remote_endpoints:
-            endpoint_copy = endpoint.clone()
-            for address in endpoint_copy.address:
-                if self.remote_endpoint is None:
-                    self.remote_endpoint = endpoint_copy
-                    break
-                self.remote_endpoint.with_address(address)
-            if self.remote_endpoint and endpoint_copy.host_name and not self.remote_endpoint.host_name:
-                self.remote_endpoint.host_name = endpoint_copy.host_name
-        return self.remote_endpoint
+            if not hasattr(endpoint, "clone"):
+                raise TypeError("Remote endpoints must be RemoteEndpoint objects")
+            self.remote_endpoints.append(endpoint.clone())
+        if self.remote_endpoint is None and self.remote_endpoints:
+            self.remote_endpoint = self.remote_endpoints[0]
+        return list(self.remote_endpoints)
 
     def remove_remote(self, remote_endpoints):
-        if self.remote_endpoint is None:
-            return None
-        for endpoint in remote_endpoints:
-            for address in endpoint.address:
-                self.remote_endpoint.without_address(address)
-        return self.remote_endpoint
+        remove_values = [endpoint.__dict__ for endpoint in remote_endpoints]
+        self.remote_endpoints = [
+            endpoint
+            for endpoint in self.remote_endpoints
+            if endpoint.__dict__ not in remove_values
+        ]
+        if (
+            self.remote_endpoint is not None
+            and self.remote_endpoint.__dict__ in remove_values
+        ):
+            self.remote_endpoint = (
+                self.remote_endpoints[0] if self.remote_endpoints else None
+            )
+        return list(self.remote_endpoints)
 
     def add_local(self, local_endpoints):
         for endpoint in local_endpoints:
-            endpoint_copy = endpoint.clone()
-            if self.local_endpoint is None:
-                self.local_endpoint = endpoint_copy
-                continue
-            for address in endpoint_copy.address:
-                self.local_endpoint.with_address(address)
-            for interface in endpoint_copy.interface:
-                self.local_endpoint.with_interface(interface)
-        return self.local_endpoint
+            if not hasattr(endpoint, "clone"):
+                raise TypeError("Local endpoints must be LocalEndpoint objects")
+            self.local_endpoints.append(endpoint.clone())
+        if self.local_endpoint is None and self.local_endpoints:
+            self.local_endpoint = self.local_endpoints[0]
+        return list(self.local_endpoints)
 
     def remove_local(self, local_endpoints):
-        if self.local_endpoint is None:
-            return None
-        for endpoint in local_endpoints:
-            for address in endpoint.address:
-                self.local_endpoint.without_address(address)
-            for interface in endpoint.interface:
-                self.local_endpoint.without_interface(interface)
-        return self.local_endpoint
+        remove_values = [endpoint.__dict__ for endpoint in local_endpoints]
+        self.local_endpoints = [
+            endpoint
+            for endpoint in self.local_endpoints
+            if endpoint.__dict__ not in remove_values
+        ]
+        if (
+            self.local_endpoint is not None
+            and self.local_endpoint.__dict__ in remove_values
+        ):
+            self.local_endpoint = (
+                self.local_endpoints[0] if self.local_endpoints else None
+            )
+        return list(self.local_endpoints)
 
     async def clone(self, framer=None, connection_properties=None):
         template = self._originating_preconnection.clone()
-        template.local_endpoint = self.local_endpoint.clone() if self.local_endpoint else None
-        template.remote_endpoint = self.remote_endpoint.clone() if self.remote_endpoint else None
-        template.transport_properties = TransportProperties(
-            selection_properties=self.transport_properties.get_selection_properties(),
-            connection_properties=self.transport_properties.get_connection_properties(),
-        )
+        template.local_endpoints = [
+            self.local_endpoint.clone()
+        ] if self.local_endpoint else []
+        template.remote_endpoints = [
+            self.remote_endpoint.clone()
+        ] if self.remote_endpoint else []
+        template.transport_properties = self.transport_properties.clone()
         template.message_properties = deepcopy(self.message_properties)
         if framer is not None:
             template.framer = framer
         if connection_properties:
             for prop, value in connection_properties.items():
                 template.transport_properties.set_property(prop, value)
-        isolate_session = bool(template.transport_properties.get("isolateSession"))
-        if isolate_session:
-            template.separate_connection_context()
+        template.connection_context = self.connection_context
+        template._reuse_isolated_context = True
         try:
             if (
                 self.protocol == "quic"
                 and self.quic_association is not None
-                and not isolate_session
             ):
                 cloned_connection = Connection(template)
                 self.connection_group.add_connection(cloned_connection)
                 await self.quic_association.open_stream_connection(cloned_connection)
-                return cloned_connection
-            cloned_connection = await template.initiate()
-            if not isolate_session:
+            else:
+                cloned_connection = await template.initiate()
                 self.connection_group.add_connection(cloned_connection)
+            if connection_properties:
+                for prop, value in connection_properties.items():
+                    cloned_connection.set_property(prop, value)
             return cloned_connection
         except Exception as exc:
             self._report_clone_error(exc)
             raise
 
-    async def send(self, data, message_context=None, end_of_message=True):
+    def _prepare_send_context(self, message_context, end_of_message):
+        if not isinstance(end_of_message, bool):
+            raise TypeError("endOfMessage must be a Boolean")
+        if message_context is not None and not isinstance(
+            message_context,
+            MessageContext,
+        ):
+            raise TypeError("messageContext must be a MessageContext")
+        if not end_of_message and message_context is None:
+            raise ValueError("Partial sends require a MessageContext")
+
+        partial_key = id(message_context) if message_context is not None else None
+        partial = (
+            self._partial_send_contexts.get(partial_key)
+            if partial_key is not None
+            else None
+        )
+        if partial is not None and partial["source"] is message_context:
+            context = deepcopy(partial["context"])
+        else:
+            context = deepcopy(message_context) if message_context is not None else MessageContext()
+            context.end_of_message = end_of_message
+            context = self._apply_message_defaults(
+                context.ensure_created(),
+                resolve_connection_defaults=self.protocol is not None,
+            )
+            self._message_sequence += 1
+            context.message_id = self._message_sequence
+            if message_context is not None:
+                message_context.message_id = context.message_id
+            if not end_of_message:
+                self._partial_send_contexts[partial_key] = {
+                    "source": message_context,
+                    "context": deepcopy(context),
+                }
+
+        context.end_of_message = end_of_message
+        if end_of_message and partial_key is not None:
+            self._partial_send_contexts.pop(partial_key, None)
+        return context
+
+    def _enqueue_send_action(
+        self,
+        data,
+        message_context=None,
+        end_of_message=True,
+        *,
+        defer=False,
+        initiate_with_send=False,
+    ):
         if isinstance(data, str):
             data = data.encode()
-        context = self._coerce_message_context(
+        context = self._prepare_send_context(
             message_context,
-            end_of_message=end_of_message,
+            end_of_message,
         )
-        send_call_id = self._allocate_send_call_id()
+        send_call_id = self._track_send_call(
+            context,
+            initiate_with_send=initiate_with_send,
+        )
         setattr(context, "_pytaps_send_call_id", send_call_id)
-        if not self._check_send_allowed(context):
-            return None
-        validation_error = self._validate_message_context(data, context)
-        if validation_error is not None:
-            self._queue_send_event("send_error", context, validation_error, send_call_id=send_call_id)
-            return None
+        send_error = self._check_send_allowed(context)
+        if send_error is not None:
+            self._queue_send_event(
+                "send_error",
+                context,
+                send_error,
+                send_call_id=send_call_id,
+            )
+            return context.message_id
+        if context.final:
+            self._sent_final_message = True
+
+        entry = {
+            "sequence": send_call_id,
+            "data": data,
+            "context": context,
+            "end_of_message": end_of_message,
+            "send_call_id": send_call_id,
+        }
+        if defer:
+            self._queued_messages.append(entry)
+        elif self.state is ConnectionState.ESTABLISHING:
+            self._pre_ready_sends.append(entry)
+        elif self.state is ConnectionState.ESTABLISHED:
+            self._dispatch_send(entry)
+        else:
+            self._queue_send_event(
+                "send_error",
+                context,
+                RuntimeError("Connection is not established"),
+                send_call_id=send_call_id,
+            )
+        return context.message_id
+
+    def _dispatch_send(self, entry):
+        context = self._apply_message_defaults(entry["context"])
+        send_call_id = entry["send_call_id"]
         if context.is_expired():
             self._queue_send_event("expired", context, send_call_id=send_call_id)
-            return None
-        result = self.transports[0].send(
-            data,
-            context,
-            end_of_message,
-            send_call_id=send_call_id,
-        )
+            return
+        validation_error = self._validate_message_context(entry["data"], context)
+        if validation_error is not None:
+            self._queue_send_event(
+                "send_error",
+                context,
+                validation_error,
+                send_call_id=send_call_id,
+            )
+            return
+        if not self.transports:
+            self._queue_send_event(
+                "send_error",
+                context,
+                RuntimeError("Connection has no established transport"),
+                send_call_id=send_call_id,
+            )
+            return
+        try:
+            result = self.transports[0].send(
+                entry["data"],
+                context,
+                entry["end_of_message"],
+                send_call_id=send_call_id,
+            )
+        except Exception as exc:
+            self._queue_send_event(
+                "send_error",
+                context,
+                exc,
+                send_call_id=send_call_id,
+            )
+            return
         if isinstance(result, PartialSendError):
             self._queue_send_event(
                 "send_error",
@@ -944,9 +1240,22 @@ class Connection:
                 result,
                 send_call_id=send_call_id,
             )
+            return
         if result is not None and context.final:
             self._sent_final_message = True
-        return result
+
+    async def _flush_pre_ready_sends(self):
+        queued = self._pre_ready_sends
+        self._pre_ready_sends = []
+        for entry in queued:
+            self._dispatch_send(entry)
+
+    async def send(self, data, message_context=None, end_of_message=True):
+        return self._enqueue_send_action(
+            data,
+            message_context,
+            end_of_message,
+        )
 
     async def send_batch(self, messages):
         self._batch_counter += 1
@@ -963,10 +1272,8 @@ class Connection:
                 context = None
                 end_of_message = True
 
-            context = self._coerce_message_context(
-                context,
-                end_of_message=end_of_message,
-            )
+            if context is None:
+                context = MessageContext()
             if context.batch_id is None:
                 context.batch_id = batch_id
             queued_ids.append(
@@ -976,24 +1283,12 @@ class Connection:
         return queued_ids
 
     def enqueue_message(self, data, message_context=None, end_of_message=True):
-        context = self._coerce_message_context(
+        return self._enqueue_send_action(
+            data,
             message_context,
-            end_of_message=end_of_message,
+            end_of_message,
+            defer=True,
         )
-        if not self._check_send_allowed(context):
-            return None
-        self._send_sequence += 1
-        if context.message_id is None:
-            context.message_id = self._send_sequence
-        self._queued_messages.append(
-            {
-                "sequence": self._send_sequence,
-                "data": data,
-                "context": context,
-                "end_of_message": end_of_message,
-            }
-        )
-        return context.message_id
 
     async def flush_messages(self):
         def sort_key(entry):
@@ -1009,26 +1304,22 @@ class Connection:
         message_ids = []
         for entry in queued_messages:
             context = entry["context"]
-            if context.is_expired():
-                self._report_expired(context)
-                message_ids.append(None)
-                continue
-            message_ids.append(
-                await self.send(
-                    entry["data"],
-                    context,
-                    entry["end_of_message"],
-                )
-            )
+            message_ids.append(context.message_id)
+            if self.state is ConnectionState.ESTABLISHING:
+                self._pre_ready_sends.append(entry)
+            else:
+                self._dispatch_send(entry)
         return message_ids
 
     async def initiate_with_send(self, data, message_context=None, end_of_message=True):
-        context = self._coerce_message_context(
+        if not end_of_message:
+            raise ValueError("InitiateWithSend does not support partial sends")
+        return self._enqueue_send_action(
+            data,
             message_context,
-            end_of_message=end_of_message,
+            end_of_message,
+            initiate_with_send=True,
         )
-        self._pending_message = (data, context, end_of_message)
-        return self
 
     async def close_group(self):
         if self.connection_group:
@@ -1037,12 +1328,17 @@ class Connection:
     def abort(self, reason="Aborted by local endpoint"):
         if self._is_terminal():
             return
+        self._close_requested = True
+        self._report_connection_error(reason, suggest_reestablishment=False)
         for transport in list(self.transports):
             if getattr(transport, "transport", None) is not None:
-                transport.transport.close()
+                abort_transport = getattr(transport.transport, "abort", None)
+                if callable(abort_transport):
+                    abort_transport()
+                else:
+                    transport.transport.close()
             else:
                 self.loop.create_task(transport.close())
-        self._report_connection_error(reason)
 
     async def abort_group(self):
         if self.connection_group:
@@ -1069,85 +1365,98 @@ class Connection:
             self._fail_initiate(RuntimeError("Candidate set is empty"))
             return
 
-        if self.remote_endpoint.host_name:
-            # Resolve address
-            # FIXME: Unfortunately, asyncio getaddrinfo does not
-            # FIXME: allow to resolve on specific interfaces
-            # FIXME: Consider migrating to something better, e.g., getdns
-            remote_info = await self.loop.getaddrinfo(
-                self.remote_endpoint.host_name, self.remote_endpoint.port)
-            # Concat v6 and v4 address lists, making sure we try v6 first
-            remote_addrs_v6 = list(
-                set([
-                    info[4][0] for info in remote_info
-                    if info[0] == socket.AddressFamily.AF_INET6]
-                    )
-            )
-            remote_addrs_v4 = list(
-                set([
-                    info[4][0] for info in remote_info
-                    if info[0] == socket.AddressFamily.AF_INET]
-                    )
-            )
-            remote_addrs = [
-                (socket.AddressFamily.AF_INET6, address) for address in remote_addrs_v6
-            ] + [
-                (socket.AddressFamily.AF_INET, address) for address in remote_addrs_v4
-            ]
-            logger.info("Resolved " + str(self.remote_endpoint.host_name) +
-                        " to " + str([address for _, address in remote_addrs]))
-
-        else:
-            remote_addrs = []
-            for address in self.remote_endpoint.address:
+        remote_addrs = []
+        for remote_endpoint in self.remote_endpoints:
+            address = remote_endpoint.effective_address()
+            if address is not None:
                 family = (
                     socket.AddressFamily.AF_INET6
-                    if ":" in address else socket.AddressFamily.AF_INET
+                    if ":" in address
+                    else socket.AddressFamily.AF_INET
                 )
-                remote_addrs.append((family, address))
-            logger.info("Not resolving - using address " +
-                        str(self.remote_endpoint.address) + " --> " +
-                        str([address for _, address in remote_addrs]))
+                remote_addrs.append((family, address, remote_endpoint.clone()))
+                logger.info("Not resolving - using address %s", address)
+                continue
+
+            if remote_endpoint.host_name:
+                # asyncio does not expose interface-scoped DNS resolution.
+                remote_info = await self.loop.getaddrinfo(
+                    remote_endpoint.host_name,
+                    remote_endpoint.port or 0,
+                )
+                seen = set()
+                for info in remote_info:
+                    if info[0] not in {
+                        socket.AddressFamily.AF_INET,
+                        socket.AddressFamily.AF_INET6,
+                    }:
+                        continue
+                    key = (info[0], info[4][0], info[4][1])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    resolved_endpoint = remote_endpoint.clone()
+                    resolved_endpoint.port = remote_endpoint.port
+                    remote_addrs.append(
+                        (info[0], info[4][0], resolved_endpoint)
+                    )
+                logger.info(
+                    "Resolved %s to %s",
+                    remote_endpoint.host_name,
+                    [address for _family, address, _endpoint in remote_addrs],
+                )
+                continue
+
+            raise ValueError(
+                "A Remote Endpoint needs a hostname, IP address, "
+                "or multicast group"
+            )
 
         candidate_set = create_candidates(self, remote_addrs)
 
-        if self.local_endpoint:
-            # Local interface specified -->
-            # try local addresses on that interface
+        if any(endpoint.interface for endpoint in self.local_endpoints):
             _require_netifaces()
             local_addresses_by_family = {}
-            for local_interface in self.local_endpoint.interface:
+            for endpoint in self.local_endpoints:
+                local_interface = endpoint.interface
+                if local_interface is None:
+                    continue
                 try:
-                    # Unfortunately, link-local IPv6 addresses don't work
-                    # because they're broken in
-                    # asyncio: https://bugs.python.org/issue35545
-                    local_v6_addrs = [entry['addr']
-                                      for entry in netifaces.ifaddresses
-                                      (local_interface)[netifaces.AF_INET6]
-                                      if entry['addr'][:4] != "fe80"]
-                    local_v4_addrs = [entry['addr']
-                                      for entry in netifaces.ifaddresses
-                                      (local_interface)[netifaces.AF_INET]]
+                    interface_addresses = netifaces.ifaddresses(local_interface)
+                    local_v6_addrs = [
+                        entry["addr"]
+                        for entry in interface_addresses.get(netifaces.AF_INET6, [])
+                        if entry["addr"][:4] != "fe80"
+                    ]
+                    local_v4_addrs = [
+                        entry["addr"]
+                        for entry in interface_addresses.get(netifaces.AF_INET, [])
+                    ]
                     local_addresses_by_family[local_interface] = {
                         socket.AddressFamily.AF_INET6: local_v6_addrs,
                         socket.AddressFamily.AF_INET: local_v4_addrs,
                     }
-                    logger.info("Trying addresses of local interface " +
-                                str(self.local_endpoint.interface) + " --> " +
-                                str(local_v6_addrs) + ", " +
-                                str(local_v4_addrs))
+                    logger.info(
+                        "Trying addresses of local interface %s --> %s, %s",
+                        local_interface,
+                        local_v6_addrs,
+                        local_v4_addrs,
+                    )
                 except ValueError as err:
-                    logger.critical("Cannot get IP addresses for " +
-                                    str(self.local_endpoint.interface) + ": " +
-                                    str(err))
-                    # TODO throw error
+                    logger.critical(
+                        "Cannot get IP addresses for %s: %s",
+                        local_interface,
+                        err,
+                    )
             expanded_candidates = []
             for candidate in candidate_set:
-                if candidate.path == "default":
+                if candidate.path == "default" or candidate.local_address is not None:
                     expanded_candidates.append(candidate)
                     continue
                 family_addrs = local_addresses_by_family.get(candidate.path, {})
                 for local_address in family_addrs.get(candidate.address_family, []):
+                    local_endpoint = candidate.local_endpoint.clone()
+                    local_endpoint.address = local_address
                     expanded_candidates.append(
                         Candidate(
                             protocol=candidate.protocol,
@@ -1155,6 +1464,8 @@ class Connection:
                             address_family=candidate.address_family,
                             path=candidate.path,
                             local_address=local_address,
+                            local_endpoint=local_endpoint,
+                            remote_endpoint=candidate.remote_endpoint,
                         )
                     )
             candidate_set = expanded_candidates
@@ -1173,24 +1484,34 @@ class Connection:
                         " and remote address: " + str(candidate.remote_address) +
                         (" and local address: " + str(candidate.local_address)
                          if candidate.local_address else ""))
-            if candidate.local_address:
-                # bind to a specific local address
-                local_address_to_use = (candidate.local_address, None)
-                self.local_endpoint.address = [candidate.local_address]
-            else:
-                local_address_to_use = None
+            candidate_remote = candidate.remote_endpoint.clone()
+            candidate_local = (
+                candidate.local_endpoint.clone()
+                if candidate.local_endpoint is not None
+                else None
+            )
+            if candidate.local_address and candidate_local is not None:
+                candidate_local.address = candidate.local_address
+            local_address_to_use = None
+            if candidate_local is not None and (
+                candidate_local.address is not None
+                or candidate_local.port is not None
+            ):
+                local_address_to_use = (
+                    candidate_local.socket_address(),
+                    (
+                        0
+                        if self._rendezvous_mode
+                        else candidate_local.port or 0
+                    ),
+                )
 
             if candidate.protocol == 'udp':
                 logger.info("Creating UDP connect task with remote addr " +
                             str(candidate.remote_address) + ", port " +
-                            str(self.remote_endpoint.port))
-                candidate_remote = self.remote_endpoint.clone()
-                candidate_remote.address = [candidate.remote_address]
-                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
-                if candidate_local and candidate.local_address:
-                    candidate_local.address = [candidate.local_address]
+                            str(candidate_remote.port))
 
-                if ipaddress.ip_address(candidate.remote_address).is_multicast:
+                if candidate_remote.is_multicast:
                     task = self.loop.create_task(
                         MulticastSendTransport(
                             connection=self,
@@ -1213,7 +1534,7 @@ class Connection:
                 task = self.loop.create_task(
                     self.loop.create_datagram_endpoint(
                         lambda: udp_transport,
-                        remote_addr=(candidate_remote.address[0],
+                        remote_addr=(candidate_remote.socket_address(),
                                      candidate_remote.port),
                         local_addr=local_address_to_use))
                 task._pytaps_candidate = candidate
@@ -1234,13 +1555,8 @@ class Connection:
                 logger.info(
                     "Creating QUIC stream candidate to %s:%s.",
                     candidate.remote_address,
-                    self.remote_endpoint.port,
+                    candidate_remote.port,
                 )
-                candidate_remote = self.remote_endpoint.clone()
-                candidate_remote.address = [candidate.remote_address]
-                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
-                if candidate_local and candidate.local_address:
-                    candidate_local.address = [candidate.local_address]
                 self.quic_association = QuicAssociationManager(loop=self.loop)
                 task = self.loop.create_task(
                     self.quic_association.open_stream_connection(
@@ -1268,11 +1584,6 @@ class Connection:
                     candidate.protocol,
                     candidate.remote_address,
                 )
-                candidate_remote = self.remote_endpoint.clone()
-                candidate_remote.address = [candidate.remote_address]
-                candidate_local = self.local_endpoint.clone() if self.local_endpoint else None
-                if candidate_local and candidate.local_address:
-                    candidate_local.address = [candidate.local_address]
                 server_hostname = None
                 if candidate.protocol == "tls-tcp" and self.security_context:
                     if (
@@ -1281,7 +1592,10 @@ class Connection:
                     ):
                         server_hostname = self.security_parameters.server_name
                     else:
-                        server_hostname = self.remote_endpoint.host_name
+                        server_hostname = (
+                            candidate_remote.host_name
+                            or candidate_remote.address
+                        )
                 # If the protocol is tcp, create a asyncio connection
                 tcp_transport = TcpTransport(
                     connection=self,
@@ -1292,7 +1606,7 @@ class Connection:
                 task = self.loop.create_task(
                     self.loop.create_connection(
                         lambda: tcp_transport,
-                        candidate_remote.address[0],
+                        candidate_remote.socket_address(),
                         candidate_remote.port,
                         ssl=self.security_context if candidate.protocol == "tls-tcp" else None,
                         server_hostname=server_hostname,
@@ -1322,7 +1636,26 @@ class Connection:
             data = data.encode()
         return await self.send(data, message_context, end_of_message)
 
-    async def receive(self, min_incomplete_length=float("inf"), max_length=-1, timeout=None):
+    @staticmethod
+    def _normalize_receive_length(value, name, *, allow_zero):
+        if value in {None, "Infinite", -1} or value == float("inf"):
+            return float("inf")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or (value == 0 and not allow_zero)
+        ):
+            qualifier = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{name} must be a {qualifier} Integer or Infinite")
+        return value
+
+    async def receive(
+        self,
+        min_incomplete_length=float("inf"),
+        max_length=float("inf"),
+        timeout=None,
+    ):
         """ Queues the reception of a message.
         Attributes:
             min_incomplete_length (integer, optional):
@@ -1331,25 +1664,99 @@ class Connection:
             max_length (integer, optional):
                 The maximum length a message can have.
         """
-        if self._received_final_message:
-            error = RuntimeError("No more messages can be received after a final message")
-            self._report_receive_error(None, error)
-            raise error
-        waiter = self.loop.create_future()
-        self._receive_waiters.append(waiter)
-        self.transports[0].receive(min_incomplete_length, max_length)
-        try:
-            if timeout is None:
-                return await waiter
-            return await asyncio.wait_for(waiter, timeout)
-        finally:
-            if waiter in self._receive_waiters:
-                self._receive_waiters.remove(waiter)
+        min_incomplete_length = self._normalize_receive_length(
+            min_incomplete_length,
+            "minIncompleteLength",
+            allow_zero=True,
+        )
+        max_length = self._normalize_receive_length(
+            max_length,
+            "maxLength",
+            allow_zero=False,
+        )
+        if (
+            min_incomplete_length != float("inf")
+            and max_length != float("inf")
+            and min_incomplete_length > max_length
+        ):
+            raise ValueError("minIncompleteLength cannot exceed maxLength")
+
+        async def _receive_action():
+            if self.state is ConnectionState.ESTABLISHING:
+                await asyncio.shield(self._ready_waiter)
+            if self._received_final_message:
+                error = RuntimeError(
+                    "No more messages can be received after a final message"
+                )
+                self._report_receive_error(None, error)
+                raise error
+            if not self._can_receive():
+                error = RuntimeError("The Connection cannot receive data")
+                self._report_receive_error(None, error)
+                raise error
+            if not self.transports:
+                error = RuntimeError("Connection has no established transport")
+                self._report_receive_error(None, error)
+                raise error
+
+            waiter = self.loop.create_future()
+            self._receive_waiters.append(waiter)
+            read_task = self.transports[0].receive(
+                min_incomplete_length,
+                max_length,
+            )
+            try:
+                if read_task is None:
+                    return await waiter
+                done, _pending = await asyncio.wait(
+                    {waiter, read_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if waiter in done:
+                    if not read_task.done():
+                        read_task.cancel()
+                    else:
+                        try:
+                            read_task.exception()
+                        except asyncio.CancelledError:
+                            pass
+                    return await waiter
+
+                error = read_task.exception()
+                if error is not None:
+                    self._report_receive_error(
+                        getattr(
+                            self.transports[0],
+                            "current_message_context",
+                            None,
+                        ),
+                        error,
+                    )
+                    raise error
+                if waiter.done():
+                    return await waiter
+                error = RuntimeError(
+                    "Receive completed without a Receive event"
+                )
+                self._report_receive_error(None, error)
+                raise error
+            finally:
+                if read_task is not None and not read_task.done():
+                    read_task.cancel()
+                if waiter in self._receive_waiters:
+                    self._receive_waiters.remove(waiter)
+                if not waiter.done():
+                    waiter.cancel()
+
+        action = _receive_action()
+        if timeout is None:
+            return await action
+        return await asyncio.wait_for(action, timeout)
 
     async def receive_message(
         self,
         min_incomplete_length=float("inf"),
-        max_length=-1,
+        max_length=float("inf"),
         timeout=None,
     ):
         return await self.receive(min_incomplete_length, max_length, timeout=timeout)
@@ -1358,11 +1765,29 @@ class Connection:
         """ Attempts to close the connection, issues a closed event
         on success.
         """
+        if self._is_terminal():
+            return self._close_task
+        if self._close_task is not None and not self._close_task.done():
+            return self._close_task
+        self._close_requested = True
+        if self.state is ConnectionState.ESTABLISHING:
+            self.abort("Close requested before establishment completed")
+            return self._close_task
         self._set_state(ConnectionState.CLOSING)
-        if self.multicast_open:
-            self.multicast_leave()
-            return
-        self.loop.create_task(self.transports[0].close())
+        self._close_task = self.loop.create_task(self._graceful_close())
+        return self._close_task
+
+    async def _graceful_close(self):
+        try:
+            if self._queued_messages:
+                await self.flush_messages()
+            await asyncio.shield(self._send_drain_waiter)
+            if self.transports:
+                await self.transports[0].close()
+            else:
+                self._report_closed()
+        except Exception as exc:
+            self._report_connection_error(exc)
 
     def parse(self, min_incomplete_length=0, max_length=0):
         """ Returns the message buffer of the
@@ -1391,7 +1816,7 @@ class Connection:
                     self.local_endpoint = origin.clone()
             if self.local_endpoint is None:
                 return self._current_path
-            self.local_endpoint.address = [local_address]
+            self.local_endpoint.address = local_address
         if local_port is not None and self.local_endpoint is not None:
             self.local_endpoint.port = local_port
         if remote_address is not None:
@@ -1401,13 +1826,13 @@ class Connection:
                     self.remote_endpoint = origin.clone()
             if self.remote_endpoint is None:
                 return self._current_path
-            self.remote_endpoint.address = [remote_address]
+            self.remote_endpoint.address = remote_address
         if remote_port is not None and self.remote_endpoint is not None:
             self.remote_endpoint.port = remote_port
         current_path = {
-            "local": (self.local_endpoint.address[0], self.local_endpoint.port)
+            "local": (self.local_endpoint.address, self.local_endpoint.port)
             if self.local_endpoint and self.local_endpoint.address else None,
-            "remote": (self.remote_endpoint.address[0], self.remote_endpoint.port)
+            "remote": (self.remote_endpoint.address, self.remote_endpoint.port)
             if self.remote_endpoint and self.remote_endpoint.address else None,
         }
         self._current_path = current_path.copy()
@@ -1464,12 +1889,12 @@ class Connection:
                 preference_adjustment=10,
             )
         if self.local_endpoint is not None:
-            template.local_endpoint = self.local_endpoint.clone()
+            template.local_endpoints = [self.local_endpoint.clone()]
             if best.local_address is not None:
-                template.local_endpoint.address = [best.local_address]
+                template.local_endpoint.address = best.local_address
         if self.remote_endpoint is not None:
-            template.remote_endpoint = self.remote_endpoint.clone()
-            template.remote_endpoint.address = [best.remote_address]
+            template.remote_endpoints = [self.remote_endpoint.clone()]
+            template.remote_endpoint.address = best.remote_address
         new_connection = await template.initiate(timeout=timeout)
         self._last_reestablished_connection = new_connection
         self._record_event(
@@ -1491,13 +1916,15 @@ class Connection:
     def get_reestablishment_candidates(self):
         if self.remote_endpoint is None:
             return []
-        remote_addrs = []
-        for address in self.remote_endpoint.address:
-            family = (
-                socket.AddressFamily.AF_INET6
-                if ":" in address else socket.AddressFamily.AF_INET
-            )
-            remote_addrs.append((family, address))
+        address = self.remote_endpoint.effective_address()
+        if address is None:
+            return []
+        family = (
+            socket.AddressFamily.AF_INET6
+            if ":" in address
+            else socket.AddressFamily.AF_INET
+        )
+        remote_addrs = [(family, address, self.remote_endpoint)]
         return order_candidates_for_racing(
             self,
             create_candidates(self, remote_addrs),
@@ -1597,7 +2024,7 @@ class Connection:
             get thrown once the connection is ready
             to send and receive data.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1608,7 +2035,7 @@ class Connection:
             get thrown if an error occurs
             during initiation.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1619,7 +2046,7 @@ class Connection:
         """ Set callback for sent events that get thrown if a message has been
         successfully sent.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1630,7 +2057,7 @@ class Connection:
             that get thrown if an error occurs
             during sending of a message.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1640,7 +2067,7 @@ class Connection:
         """ Set callback for expired events that
             get thrown if a message expires.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1651,7 +2078,7 @@ class Connection:
         """ Set callback for received events that get thrown if a new message
         has been received.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1662,7 +2089,7 @@ class Connection:
             get thrown if a new partial
             message has been received.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1673,7 +2100,7 @@ class Connection:
             get thrown if an error occurs
             during reception of a message.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1684,7 +2111,7 @@ class Connection:
             get thrown if an error occurs
             while the connection is open.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.
         """
@@ -1716,7 +2143,7 @@ class Connection:
         """ Set callback for on closed events that get thrown if the
         connection has been closed successfully.
 
-        Attributes:
+        Args:
             callback (callback, required): Function that implements the
                 callback.  Callback signature should accept a connection
                 as its parameter.

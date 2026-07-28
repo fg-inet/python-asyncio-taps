@@ -12,6 +12,13 @@ import pytaps as taps  # noqa: E402
 color = "yellow"
 
 
+def endpoint_address(endpoint):
+    address = endpoint.address
+    if isinstance(address, list):
+        return address[0] if address else None
+    return address
+
+
 class TestClient():
     def __init__(self):
         self.connection = None
@@ -35,7 +42,7 @@ class TestClient():
             "Received message "
             + str(data)
             + " from "
-            + str(context.addr)
+            + str(context.remote_address)
             + ".",
             color,
         )
@@ -61,7 +68,7 @@ class TestClient():
 
     async def handle_ready(self, connection):
         taps.print_time("Ready cb received from connection to " +
-                        connection.remote_endpoint.address + ":" +
+                        str(endpoint_address(connection.remote_endpoint)) + ":" +
                         str(connection.remote_endpoint.port) +
                         " (hostname: " +
                         str(connection.remote_endpoint.host_name) +
@@ -130,18 +137,18 @@ class TestClient():
 
         # Create transportProperties Object and set properties
         # Does nothing yet
-        tp = taps.TransportProperties()
-        tp.require("reliability") if args.reliable in ["yes", "true"] else tp.prohibit("reliability")
-
-        tp.ignore("congestion-control")
-        tp.ignore("preserve-order")
-        # tp.add("Reliable_Data_Transfer", taps.preferenceLevel.REQUIRE)
+        if args.reliable in ["yes", "true"]:
+            tp = taps.TransportProperties().reliable_inorder_stream()
+        else:
+            tp = taps.TransportProperties().unreliable_datagram()
 
         # Create the preconnection object with the two prev created EPs
-        self.preconnection = taps.Preconnection(remote_endpoint=ep,
-                                                local_endpoint=lp,
-                                                transport_properties=tp,
-                                                security_parameters=sp)
+        self.preconnection = taps.Preconnection(
+            remote_endpoints=[ep],
+            local_endpoints=[lp] if lp is not None else [],
+            transport_properties=tp,
+            security_parameters=sp,
+        )
         # Set callbacks
         self.preconnection.on_initiate_error(self.handle_initiate_error)
         self.preconnection.on_ready(self.handle_ready)

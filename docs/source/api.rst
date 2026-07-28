@@ -22,14 +22,16 @@ A Preconnection consists of the local and remote endpoints as well as the Transp
 
 	remote_endpoint = taps.RemoteEndpoint()
 	remote_endpoint.with_hostname("example.org")
-	remote_endpoint.with_port("80")
+	remote_endpoint.with_port(80)
 
 	local_endpoint = taps.LocalEndpoint()
-	local_endpoint.with_port("6666")
+	local_endpoint.with_port(6666)
 
 Transport Properties specify which behavior and properties an application expects a new connection to have. This has also an impact on which transport protocol gets chosen by the TAPS system.
 
-The **default TransportProperties will result in a TCP connection**::
+The default Transport Properties describe a reliable, ordered connection. The
+implementation selects and races compatible transports rather than promising a
+specific protocol::
 
 	properties = taps.TransportProperties()
 
@@ -49,23 +51,20 @@ To specify a Certificate Authority to trust or to set a certificate as the local
 	security.add_trust_ca(args.trust_ca)
 	security.add_identity(args.local_identity)
 
-To enforce using **UDP, set TransportProperties** that prohibit the use of TCP, for example:
+To request an **unreliable datagram** service, use the RFC 9622 profile::
 
-* "congestion-control": "ignore"
-* "preserve-order": "ignore"
-* "reliability": "prohibit"
-
-.. note::
-	Setting all TransportProperties to "ignore" results in "racing" TCP and UDP. Here, UDP "wins" because it does not perform a handshake.
+	properties = taps.TransportProperties().unreliable_datagram()
 
 To **join a multicast group**, configure your Preconnection :ref:`as described here<Joining a multicast group>`.
 
 After all the prerequisite and optional objects have been configured, the preconnection itself can finally be created::
 
-	preconnection = taps.Preconnection(remote_endpoint=endpoint,
-					local_endpoint=None,
-					transport_properties=properties,
-					security_parameters=security)
+	preconnection = taps.Preconnection(
+		remote_endpoints=[remote_endpoint],
+		local_endpoints=[local_endpoint],
+		transport_properties=properties,
+		security_parameters=security,
+	)
 
 
 Initiating a Connection
@@ -112,7 +111,7 @@ First, the application will have to create a Preconnection.
 
 Once this is done, the application will have to set a callback on the Preconnection that gets called once a new connection has been received::
 
-	async def handle_connection_received():
+	async def handle_connection_received(connection):
 		print("A new connection has been received.")
 	
 	preconnection.on_connection_received(handle_connection_received)
@@ -124,20 +123,28 @@ Now the application can get the event loop, call the listen the coroutine and th
 	loop.create_task(preconnection.listen())
 	loop.run_forever()
 
+The Listener can cap future ``ConnectionReceived`` deliveries. The value is
+decremented after each delivery and can be reset to ``"Infinite"``::
+
+	listener = await preconnection.listen()
+	listener.set_new_connection_limit(100)
+
 Rendezvous
 ----------
 
-To simultaneously listen and initiate from the same preconnection template, call ``rendezvous()``. The returned ``RendezvousResult`` gives access to both the actively initiated connection and the passive listener::
+To listen and initiate simultaneously from the same Preconnection, call
+``rendezvous()``. It completes with the single winning Connection; the
+internal Listener and losing candidates are not exposed::
 
-	result = await preconnection.rendezvous(timeout=5)
-	connection = result.connection
-	listener = result.listener
+	connection = await preconnection.rendezvous(timeout=5)
 
-``RendezvousResult`` also records completion state and a small event history so
-applications can inspect whether the rendezvous completed cleanly::
+The same Connection is delivered to the ``RendezvousDone`` callback. A
+connectionless candidate does not complete until its first Message arrives::
 
-	assert result.completed is True
-	assert result.get_event_history()[-1]["name"] == "rendezvous_done"
+	async def handle_rendezvous_done(connection):
+		await connection.send(data)
+
+	preconnection.on_rendezvous_done(handle_rendezvous_done)
 
 Sending data
 ------------
@@ -234,23 +241,25 @@ Joining a multicast group
 PyTAPS currently supports Source-Specific Multicast (SSM) through the optional
 `mcrx-core-py` Python bindings.
 
-To join a multicast group and receive multicast messages, first :ref:`configure your Preconnection<Creating a Preconnection>` as follows:
+Use the explicit RFC 9622 multicast Endpoint identifiers rather than
+overloading ordinary IP-address fields::
 
-* Local endpoint: IP address of the multicast group to join
-
-* Remote endpoint: Source IP address from which to receive multicast messages
-
-* Transport properties:
-
-  * "direction": "unidirection-receive"
-
-  * "congestion-control": "ignore",
-
-  * "reliability": "prohibit",
-
-  * "preserve-order": "ignore"
-
-Then, :ref:`initiate the Preconnection<Initiating a Connection>`.
+	local_endpoint = (
+		taps.LocalEndpoint()
+		.with_port(5001)
+		.with_single_source_multicast_group_ip(
+			"ff3e::8000:1234",
+			"2001:db8::1",
+		)
+	)
+	properties = taps.TransportProperties().unreliable_datagram()
+	properties.set_property("direction", "Unidirectional Receive")
+	preconnection = taps.Preconnection(
+		local_endpoints=[local_endpoint],
+		transport_properties=properties,
+	)
+	listener = await preconnection.listen()
+	await listener.wait_listening()
 
 To test against a live multicast source, start the multicast receiver example
 with the desired group, source, port, and interface-address values, then send

@@ -37,22 +37,18 @@ class MulticastReceiver:
 
     async def main(self, args):
         local = taps.LocalEndpoint()
-        local.with_address(args.group)
+        local.with_single_source_multicast_group_ip(args.group, args.source)
         local.with_port(args.port)
+        if args.interface:
+            local.with_interface(args.interface)
 
-        remote = taps.RemoteEndpoint()
-        remote.with_address(args.source)
-        remote.with_port(args.port)
-
-        props = taps.TransportProperties()
-        props.set_property("direction", "unidirection-receive")
-        props.ignore("congestion-control")
+        props = taps.TransportProperties().unreliable_datagram()
+        props.set_property("direction", "Unidirectional Receive")
         props.prohibit("reliability")
-        props.ignore("preserve-order")
 
         preconnection = taps.Preconnection(
-            local_endpoint=local,
-            remote_endpoint=remote,
+            local_endpoints=[local],
+            remote_endpoints=[],
             transport_properties=props,
         )
         if args.interface_address:
@@ -89,6 +85,11 @@ def parse_args():
         help="UDP destination port for the multicast subscription.",
     )
     parser.add_argument(
+        "--interface",
+        default=None,
+        help="Local interface name to constrain the multicast Endpoint.",
+    )
+    parser.add_argument(
         "--interface-address",
         default=None,
         help="Local unicast interface address to use for the subscription.",
@@ -97,8 +98,7 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    receiver = MulticastReceiver()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(receiver.main(parse_args()))
-    loop.run_forever()
+    try:
+        asyncio.run(MulticastReceiver().main(parse_args()))
+    except KeyboardInterrupt:
+        logger.info("receiver stopped")

@@ -20,7 +20,7 @@ class MulticastSender:
     async def handle_ready(self, connection):
         logger.info(
             "Multicast sender ready for %s:%s.",
-            connection.remote_endpoint.address[0],
+            connection.remote_endpoint.multicast_group,
             connection.remote_endpoint.port,
         )
 
@@ -33,22 +33,20 @@ class MulticastSender:
                 local.with_port(args.source_port)
 
         remote = taps.RemoteEndpoint()
-        remote.with_address(args.group)
+        remote.with_multicast_group_ip(args.group)
         remote.with_port(args.port)
+        remote.with_hop_limit(args.ttl)
 
-        props = taps.TransportProperties()
+        props = taps.TransportProperties().unreliable_datagram()
         props.prohibit("reliability")
-        props.ignore("congestion-control")
-        props.ignore("preserve-order")
-        props.set_property("direction", "unidirection-send")
+        props.set_property("direction", "Unidirectional Send")
 
         preconnection = taps.Preconnection(
-            local_endpoint=local,
-            remote_endpoint=remote,
+            local_endpoints=[local] if local is not None else [],
+            remote_endpoints=[remote],
             transport_properties=props,
         )
         preconnection.multicast_interface_address = args.interface_address
-        preconnection.multicast_ttl = args.ttl
         preconnection.multicast_disable_loopback = args.disable_loopback
         preconnection.on_ready(self.handle_ready)
 

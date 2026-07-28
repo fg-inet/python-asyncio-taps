@@ -1,6 +1,7 @@
 import asyncio
 import socket
 import ssl
+import time
 import types
 from textwrap import dedent
 from pathlib import Path
@@ -46,6 +47,7 @@ def test_stream_listener_attaches_transport_before_data_arrives():
         event_loop=loop,
     )
     listener = Listener(preconnection)
+    listener._mark_listening()
     handler = StreamHandler(listener, "tcp")
 
     class FakeTransport:
@@ -73,6 +75,7 @@ def test_datagram_listener_builds_connection_from_original_preconnection():
         event_loop=loop,
     )
     listener = Listener(preconnection)
+    listener._mark_listening()
     handler = DatagramHandler(listener)
 
     class FakeDatagramTransport:
@@ -83,6 +86,7 @@ def test_datagram_listener_builds_connection_from_original_preconnection():
         handler.datagram_received(b"hello", ("127.0.0.1", 55555))
 
         connection = handler.remotes[("127.0.0.1", 55555)]
+        assert connection.protocol == "udp"
         assert len(connection.transports) == 1
         assert isinstance(connection.transports[0], UdpTransport)
         assert connection.transports[0].recv_buffer[0][0] == b"hello"
@@ -126,9 +130,9 @@ def test_message_context_supports_rfc_style_helpers():
 
     assert context.get("msgPriority") == 5
     assert context.get("msgLifetime") == 3.5
-    assert remote.address == ["203.0.113.10"]
+    assert remote.address == "203.0.113.10"
     assert remote.port == 443
-    assert local.address == ["192.0.2.10"]
+    assert local.address == "192.0.2.10"
     assert local.port == 8443
 
 
@@ -152,12 +156,13 @@ def test_transport_property_profiles_match_rfc_style_convenience_profiles():
 
     assert stream.get("reliability") is taps.PreferenceLevel.REQUIRE
     assert stream.get("preserveOrder") is taps.PreferenceLevel.REQUIRE
-    assert stream.get("preserveMsgBoundaries") is taps.PreferenceLevel.PROHIBIT
+    assert stream.get("preserveMsgBoundaries") is taps.PreferenceLevel.IGNORE
 
     assert message.get("reliability") is taps.PreferenceLevel.REQUIRE
     assert message.get("preserveMsgBoundaries") is taps.PreferenceLevel.REQUIRE
 
-    assert datagram.get("reliability") is taps.PreferenceLevel.PROHIBIT
+    assert datagram.get("reliability") is taps.PreferenceLevel.AVOID
+    assert datagram.get("preserveOrder") is taps.PreferenceLevel.AVOID
     assert datagram.get("preserveMsgBoundaries") is taps.PreferenceLevel.REQUIRE
     assert datagram.get("congestionControl") is taps.PreferenceLevel.IGNORE
 
@@ -201,7 +206,11 @@ def test_preconnection_is_reusable_after_initiate():
     loop.close()
 
     assert preconnection.get_properties()["connection"]["connPriority"] == 10
-    assert second_connection._pending_message[0] == "hello"
+    assert second_connection._pre_ready_sends[0]["data"] == b"hello"
+    assert isinstance(
+        second_connection._pre_ready_sends[0]["context"],
+        taps.MessageContext,
+    )
 
 
 def test_connection_group_property_propagation():
@@ -255,16 +264,16 @@ def test_connection_group_limit_is_enforced():
     second = taps.Connection(preconnection)
     third = taps.Connection(preconnection)
 
-    first.connection_group.set_property("groupConnLimit", 2)
-    first.connection_group.add_connection(second)
+    first.connection_group.set_property("groupConnLimit", 1)
+    first.connection_group.add_connection(second, from_peer=True)
 
     with pytest.raises(RuntimeError, match="limit"):
-        first.connection_group.add_connection(third)
+        first.connection_group.add_connection(third, from_peer=True)
 
     first.loop.close()
 
 
-def test_connection_group_entanglement_failure_emits_clone_error():
+def test_lower_group_limit_preserves_existing_connections():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
     preconnection = taps.Preconnection(
@@ -282,19 +291,17 @@ def test_connection_group_entanglement_failure_emits_clone_error():
     first.on_clone_error(handle_clone_error)
     second.on_clone_error(handle_clone_error)
 
-    with pytest.raises(RuntimeError, match="groupConnLimit"):
-        first.connection_group.set_property("groupConnLimit", 1)
+    first.connection_group.set_property("groupConnLimit", 0)
 
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert first.connection_group is None
-    assert second.connection_group is None
-    assert len(clone_errors) == 2
-    assert all("limit" in reason.lower() for reason, _connection in clone_errors)
+    assert first.connection_group is second.connection_group
+    assert len(first.grouped_connections()) == 2
+    assert clone_errors == []
 
 
-def test_connection_group_isolate_session_breaks_entanglement():
+def test_connection_group_isolate_session_remains_entangled():
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
     preconnection = taps.Preconnection(
@@ -312,16 +319,16 @@ def test_connection_group_isolate_session_breaks_entanglement():
     first.on_clone_error(handle_clone_error)
     second.on_clone_error(handle_clone_error)
 
-    with pytest.raises(RuntimeError, match="isolateSession"):
-        first.connection_group.set_property("isolateSession", True)
+    first.connection_group.set_property("isolateSession", True)
 
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert first.connection_group is None
-    assert second.connection_group is None
-    assert len(clone_errors) == 2
-    assert all("isolatesession" in reason.lower() for reason, _connection in clone_errors)
+    assert first.connection_group is second.connection_group
+    assert first.connection_context is second.connection_context
+    assert first.get_property("isolateSession") is True
+    assert second.get_property("isolateSession") is True
+    assert clone_errors == []
 
 
 def test_preconnection_clone_copies_configuration():
@@ -337,8 +344,8 @@ def test_preconnection_clone_copies_configuration():
     clone = preconnection.clone()
 
     assert clone is not preconnection
-    assert clone.local_endpoint.address == ["127.0.0.1"]
-    assert clone.local_endpoint.interface == ["lo0"]
+    assert clone.local_endpoint.address == "127.0.0.1"
+    assert clone.local_endpoint.interface == "lo0"
     assert clone.get_properties()["connection"]["connPriority"] == 5
     assert clone.get_properties()["message"]["msgPriority"] == 7
     assert clone.get_connection_context() is preconnection.get_connection_context()
@@ -406,11 +413,17 @@ def test_protocol_candidates_honor_dynamic_protocol_policy():
 
 
 def test_candidate_order_prefers_paths_before_protocols():
-    remote = taps.RemoteEndpoint().with_address("2001:db8::1").with_address("192.0.2.1").with_port(443)
-    local = taps.LocalEndpoint().with_interface("wifi").with_interface("cell")
+    remotes = [
+        taps.RemoteEndpoint().with_address("2001:db8::1").with_port(443),
+        taps.RemoteEndpoint().with_address("192.0.2.1").with_port(443),
+    ]
+    locals_ = [
+        taps.LocalEndpoint().with_interface("wifi"),
+        taps.LocalEndpoint().with_interface("cell"),
+    ]
     preconnection = taps.Preconnection(
-        local_endpoint=local,
-        remote_endpoint=remote,
+        local_endpoints=locals_,
+        remote_endpoints=remotes,
         event_loop=asyncio.new_event_loop(),
     )
     preconnection.transport_properties.add_interface_preference("wifi", taps.PreferenceLevel.PREFER)
@@ -476,7 +489,10 @@ def test_dynamic_interface_policy_influences_ranked_paths():
     properties = taps.TransportProperties()
     properties.add_interface_preference("wifi", taps.PreferenceLevel.PREFER)
     properties.add_interface_preference("cell", taps.PreferenceLevel.AVOID)
-    local = taps.LocalEndpoint().with_interface("wifi").with_interface("cell")
+    local = [
+        taps.LocalEndpoint().with_interface("wifi"),
+        taps.LocalEndpoint().with_interface("cell"),
+    ]
     context = taps.ConnectionContext()
     context.set_interface_policy(
         "wifi",
@@ -591,9 +607,10 @@ def test_connection_add_and_remove_endpoints():
     connection.remove_remote([extra_remote])
     connection.remove_local([extra_local])
 
-    assert "203.0.113.10" not in connection.remote_endpoint.address
-    assert "192.0.2.10" not in connection.local_endpoint.address
-    assert "en0" not in connection.local_endpoint.interface
+    assert [endpoint.address for endpoint in connection.remote_endpoints] == [None]
+    assert [endpoint.address for endpoint in connection.local_endpoints] == [
+        "127.0.0.1"
+    ]
 
 
 def test_connection_send_preserves_message_context():
@@ -622,9 +639,11 @@ def test_connection_send_preserves_message_context():
     )
     connection.loop.close()
 
-    assert result == 77
+    assert result == context.message_id
     assert transport.calls[0][0] == b"hello"
-    assert transport.calls[0][1] is context
+    assert transport.calls[0][1] is not context
+    assert transport.calls[0][1].message_id == context.message_id
+    assert transport.calls[0][1].end_of_message is False
     assert transport.calls[0][2] is False
     assert context.end_of_message is False
 
@@ -763,7 +782,7 @@ def test_flush_messages_prefers_higher_priority():
     result = connection.loop.run_until_complete(connection.flush_messages())
     connection.loop.close()
 
-    assert result == [1, 2, 3]
+    assert result == [high.message_id, mid.message_id, low.message_id]
     assert transport.calls == [
         (b"high", 10),
         (b"mid", 50),
@@ -825,12 +844,18 @@ def test_flush_messages_reports_expired_queued_message():
 
     connection.on_expired(handle_expired)
     connection.transports = [DummyTransport()]
-    connection.enqueue_message("gone", taps.MessageContext(lifetime=0))
+    connection.enqueue_message(
+        "gone",
+        taps.MessageContext(
+            lifetime=0.001,
+            created_at=time.monotonic() - 1,
+        ),
+    )
     result = loop.run_until_complete(connection.flush_messages())
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert result == [None]
+    assert result == [1]
     assert expired["connection"] is connection
 
 
@@ -850,6 +875,11 @@ def test_final_message_is_sent_last_and_blocks_future_sends():
 
         def send(self, data, message_context=None, end_of_message=True, send_call_id=None):
             self.calls.append((data, message_context.final))
+            connection._queue_send_event(
+                "sent",
+                message_context,
+                send_call_id=send_call_id,
+            )
             return len(self.calls)
 
     async def handle_send_error(message_ref, failed_connection):
@@ -870,7 +900,7 @@ def test_final_message_is_sent_last_and_blocks_future_sends():
         (b"body", False),
         (b"trailer", True),
     ]
-    assert blocked is None
+    assert blocked == 3
     assert send_errors[0][1] is connection
 
 
@@ -900,15 +930,19 @@ def test_message_expired_callback_fires_before_send():
     connection.on_expired(handle_expired)
     transport = DummyTransport()
     connection.transports = [transport]
-    context = taps.MessageContext(lifetime=0)
+    context = taps.MessageContext(
+        lifetime=0.001,
+        created_at=time.monotonic() - 1,
+    )
 
     result = loop.run_until_complete(connection.send("hello", context))
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert result is None
+    assert result == context.message_id
     assert transport.calls == []
-    assert expired["context"] is context
+    assert expired["context"] is not context
+    assert expired["context"].message_id == context.message_id
     assert expired["connection"] is connection
 
 
@@ -1035,8 +1069,9 @@ def test_partial_send_reports_send_error_with_byte_counts():
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert isinstance(result, PartialSendError)
-    assert callback["message"] is context
+    assert result == context.message_id
+    assert callback["message"] is not context
+    assert callback["message"].message_id == context.message_id
     assert callback["connection"] is connection
     assert callback["reason"].bytes_sent == 3
     assert callback["reason"].total_bytes == 5
@@ -1072,8 +1107,9 @@ def test_udp_send_requires_safely_replayable():
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert result is None
-    assert send_errors["context"] is context
+    assert result == context.message_id
+    assert send_errors["context"] is not context
+    assert send_errors["context"].message_id == context.message_id
     assert send_errors["connection"] is connection
     assert "safely replayable" in str(send_errors["reason"]).lower()
 
@@ -1093,14 +1129,18 @@ def test_pending_message_can_expire_before_active_open():
         expired["connection"] = expired_connection
 
     connection.on_expired(handle_expired)
-    context = taps.MessageContext(lifetime=0)
+    context = taps.MessageContext(
+        lifetime=0.001,
+        created_at=time.monotonic() - 1,
+    )
     loop.run_until_complete(connection.initiate_with_send("hello", context))
     transport = UdpTransport(connection=connection, remote_endpoint=remote)
     loop.run_until_complete(transport.active_open(None))
-    loop.run_until_complete(asyncio.sleep(0))
+    loop.run_until_complete(asyncio.sleep(0.01))
     loop.close()
 
-    assert expired["context"] is context
+    assert expired["context"] is not context
+    assert expired["context"].message_id == context.message_id
     assert expired["connection"] is connection
 
 
@@ -1129,9 +1169,9 @@ def test_received_message_exposes_receive_side_helpers():
 
     assert received.get("msgPriority") == 3
     assert received.is_complete is True
-    assert received.remote_endpoint.address == ["203.0.113.10"]
+    assert received.remote_endpoint.address == "203.0.113.10"
     assert received.remote_endpoint.port == 4444
-    assert received.local_endpoint.address == ["192.0.2.10"]
+    assert received.local_endpoint.address == "192.0.2.10"
     assert received.local_endpoint.port == 5555
     assert received.get_read_only_properties()["receivedAt"] == 12.5
     assert received.get_read_only_properties()["receiveSequence"] == 7
@@ -1306,12 +1346,12 @@ def test_clone_respects_isolate_session_property(monkeypatch):
     loop.close()
 
     assert clone is not connection
-    assert clone.connection_group is not connection.connection_group
-    assert clone not in connection.grouped_connections()
-    assert clone.connection_context is not connection.connection_context
+    assert clone.connection_group is connection.connection_group
+    assert clone in connection.grouped_connections()
+    assert clone.connection_context is connection.connection_context
 
 
-def test_clone_error_fires_when_group_rejects_isolated_clone(monkeypatch):
+def test_isolated_clone_joins_the_existing_group(monkeypatch):
     remote = taps.RemoteEndpoint().with_hostname("localhost").with_port(443)
     loop = asyncio.new_event_loop()
     preconnection = taps.Preconnection(
@@ -1319,6 +1359,7 @@ def test_clone_error_fires_when_group_rejects_isolated_clone(monkeypatch):
         event_loop=loop,
     )
     connection = taps.Connection(preconnection)
+    connection.set_property("isolateSession", True)
     clone_error = {}
 
     async def fake_initiate(self, timeout=None):
@@ -1333,14 +1374,15 @@ def test_clone_error_fires_when_group_rejects_isolated_clone(monkeypatch):
     connection.on_clone_error(handle_clone_error)
     monkeypatch.setattr(taps.Preconnection, "initiate", fake_initiate)
 
-    with pytest.raises(RuntimeError, match="isolateSession"):
-        loop.run_until_complete(connection.clone())
+    clone = loop.run_until_complete(connection.clone())
 
     loop.run_until_complete(asyncio.sleep(0))
     loop.close()
 
-    assert "isolateSession" in str(clone_error["reason"])
-    assert clone_error["connection"] is connection
+    assert clone.connection_group is connection.connection_group
+    assert clone.get_property("isolateSession") is True
+    assert connection.get_property("isolateSession") is True
+    assert clone_error == {}
 
 
 def test_soft_error_emits_automatic_reestablishment_guidance():
@@ -1459,8 +1501,12 @@ def test_attempt_reestablishment_uses_recommended_candidate(monkeypatch):
 
     async def fake_initiate(self, timeout=None):
         captured["timeout"] = timeout
-        captured["remote"] = list(self.remote_endpoint.address)
-        captured["local"] = list(self.local_endpoint.address)
+        captured["remote"] = [
+            endpoint.address for endpoint in self.remote_endpoints
+        ]
+        captured["local"] = [
+            endpoint.address for endpoint in self.local_endpoints
+        ]
         captured["protocolPolicy"] = dict(self.connection_context.protocol_policy)
         replacement = taps.Connection(self)
         replacement.protocol = "quic"
@@ -1755,10 +1801,10 @@ def test_listener_event_history_records_failures_and_connections():
     assert [event["name"] for event in history[:3]] == [
         "listening",
         "connection_received",
-        "listen_error",
+        "establishment_error",
     ]
     assert read_only["eventCount"] == 3
-    assert read_only["lastEvent"]["name"] == "listen_error"
+    assert read_only["lastEvent"]["name"] == "establishment_error"
     assert read_only["connectionContext"]["eventCounters"]["listening"] == 1
 
 
@@ -1949,6 +1995,7 @@ def test_quic_listener_maps_incoming_streams_to_connections(monkeypatch):
     )
     listener = Listener(preconnection)
     listener.protocol = "quic"
+    listener._mark_listening()
     listener.quic_association = transport_impl.QuicAssociationManager(
         loop=preconnection.loop,
         listener=listener,
@@ -2250,6 +2297,7 @@ def test_receive_returns_received_message_for_udp():
     )
     connection = taps.Connection(preconnection)
     transport = UdpTransport(connection=connection, remote_endpoint=remote)
+    connection._mark_ready()
 
     receive_task = loop.create_task(connection.receive(1, -1))
     transport.datagram_received(b"payload", ("203.0.113.10", 4444))
@@ -2272,6 +2320,7 @@ def test_receive_returns_partial_stream_delivery():
     )
     connection = taps.Connection(preconnection)
     transport = TcpTransport(connection=connection, remote_endpoint=remote)
+    connection._mark_ready()
 
     receive_task = loop.create_task(connection.receive(1, 2))
     transport.data_received(b"hello")
@@ -2294,6 +2343,7 @@ def test_partial_stream_receive_reuses_message_context_until_eof():
     )
     connection = taps.Connection(preconnection)
     transport = TcpTransport(connection=connection, remote_endpoint=remote)
+    connection._mark_ready()
 
     first_task = loop.create_task(connection.receive(1, 2))
     transport.data_received(b"hello")
@@ -2325,6 +2375,7 @@ def test_receive_timeout_cleans_up_waiter():
         event_loop=loop,
     )
     connection = taps.Connection(preconnection)
+    connection._mark_ready()
 
     class DummyTransport:
         def receive(self, min_incomplete_length, max_length):
@@ -2698,7 +2749,7 @@ def test_pinned_server_certificate_is_used_as_trust_anchor(monkeypatch):
     )
 
 
-def test_preconnection_rendezvous_returns_listener_and_connection():
+def test_preconnection_rendezvous_returns_one_connection():
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -2719,20 +2770,18 @@ def test_preconnection_rendezvous_returns_listener_and_connection():
         events["rendezvous"] = connection
 
     preconnection.on_rendezvous_done(handle_rendezvous_done)
-    result = loop.run_until_complete(preconnection.rendezvous(timeout=1))
+    connection = loop.run_until_complete(preconnection.rendezvous(timeout=1))
     loop.run_until_complete(asyncio.sleep(0.05))
-    result.connection.close()
-    loop.run_until_complete(result.connection.wait_closed(timeout=1))
-    loop.run_until_complete(result.listener.stop())
+    connection.close()
+    loop.run_until_complete(connection.wait_closed(timeout=1))
     loop.close()
 
-    assert isinstance(result, taps.RendezvousResult)
-    assert result.connection.state is taps.ConnectionState.CLOSED
-    assert result.listener.state is taps.ConnectionState.CLOSED
-    assert events["rendezvous"] is result.connection
+    assert isinstance(connection, taps.Connection)
+    assert connection.state is taps.ConnectionState.CLOSED
+    assert events["rendezvous"] is connection
 
 
-def test_rendezvous_result_tracks_completion_and_events():
+def test_rendezvous_done_is_the_only_establishment_event():
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -2748,28 +2797,24 @@ def test_rendezvous_result_tracks_completion_and_events():
     )
     callback = {}
 
-    async def handle_rendezvous_done(result, connection):
-        callback["result"] = result
+    async def handle_rendezvous_done(connection):
         callback["connection"] = connection
 
     preconnection.on_rendezvous_done(handle_rendezvous_done)
-    result = loop.run_until_complete(preconnection.rendezvous(timeout=1))
+    connection = loop.run_until_complete(preconnection.rendezvous(timeout=1))
     loop.run_until_complete(asyncio.sleep(0.05))
-    result.connection.close()
-    loop.run_until_complete(result.connection.wait_closed(timeout=1))
-    loop.run_until_complete(result.listener.stop())
+    establishment_events = [
+        event["name"]
+        for event in connection.get_event_history()
+        if event["name"] in {"ready", "connection_received", "rendezvous_done"}
+    ]
+    connection.close()
+    loop.run_until_complete(connection.wait_closed(timeout=1))
     loop.close()
 
-    assert result.completed is True
-    assert result.failed_reason is None
-    assert result.get_event_history()[-1]["name"] == "rendezvous_done"
-    assert callback["result"] is result
-    assert callback["connection"] is result.connection
-    assert result.connection.get_event_history()[-1]["name"] == "closed"
-    assert any(
-        event["name"] == "rendezvous_done"
-        for event in result.connection.get_event_history()
-    )
+    assert callback["connection"] is connection
+    assert establishment_events == ["rendezvous_done"]
+    assert connection.get_event_history()[-1]["name"] == "closed"
 
 
 def test_receive_error_fires_for_incomplete_stream_termination():
@@ -2781,6 +2826,7 @@ def test_receive_error_fires_for_incomplete_stream_termination():
     )
     connection = taps.Connection(preconnection)
     transport = TcpTransport(connection=connection, remote_endpoint=remote)
+    connection._mark_passive_ready()
     callback = {}
 
     async def handle_receive_error(context, reason, failed_connection):
@@ -2815,7 +2861,8 @@ def test_connection_and_listener_preserve_security_context():
     preconnection.loop.close()
 
     assert connection.security_context is preconnection.security_context
-    assert listener.security_context is preconnection.security_context
+    assert listener.security_context is not preconnection.security_context
+    assert listener.security_parameters is not preconnection.security_parameters
 
 
 def test_multicast_adapter_uses_mcrx_core(monkeypatch):
@@ -2859,12 +2906,16 @@ def test_multicast_adapter_uses_mcrx_core(monkeypatch):
     loop = asyncio.new_event_loop()
     listener = types.SimpleNamespace(
         loop=loop,
-        local_endpoint=types.SimpleNamespace(
-            address=["232.1.2.3"],
-            port=5000,
-            interface=["192.0.2.10"],
+        local_endpoint=(
+            taps.LocalEndpoint()
+            .with_single_source_multicast_group_ip(
+                "232.1.2.3",
+                "198.51.100.10",
+            )
+            .with_port(5000)
+            .with_interface("192.0.2.10")
         ),
-        remote_endpoint=types.SimpleNamespace(address=["198.51.100.10"]),
+        remote_endpoint=None,
         preconnection=types.SimpleNamespace(got_mc=lambda *args: None),
     )
 
@@ -2877,14 +2928,19 @@ def test_multicast_adapter_uses_mcrx_core(monkeypatch):
         "interface": "192.0.2.10",
     }
 
-    packet = types.SimpleNamespace(payload=b"hello", source_port=6000)
+    packet = types.SimpleNamespace(
+        payload=b"hello",
+        source_address="198.51.100.10",
+        source_port=6000,
+    )
     forwarded = {}
     listener.preconnection = types.SimpleNamespace(
-        got_mc=lambda current_listener, data, port: forwarded.update(
+        got_mc=lambda current_listener, data, port, source_address=None: forwarded.update(
             {
                 "listener": current_listener,
                 "data": data,
                 "port": port,
+                "source_address": source_address,
             }
         )
     )
@@ -2896,9 +2952,46 @@ def test_multicast_adapter_uses_mcrx_core(monkeypatch):
         "listener": listener,
         "data": b"hello",
         "port": 6000,
+        "source_address": "198.51.100.10",
     }
     assert calls["left"] is True
     assert calls["closed"] is True
+
+
+def test_multicast_got_mc_delivers_first_packet_to_new_connection():
+    loop = asyncio.new_event_loop()
+    local = taps.LocalEndpoint().with_address("232.1.1.1").with_port(5000)
+    remote = taps.RemoteEndpoint().with_address("127.0.0.1").with_port(5000)
+    properties = taps.TransportProperties()
+    preconnection = taps.Preconnection(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        transport_properties=properties,
+        event_loop=loop,
+    )
+    delivered = []
+    listener = types.SimpleNamespace(
+        local_endpoint=local,
+        remote_endpoint=remote,
+        transport_properties=properties,
+        security_parameters=None,
+        loop=loop,
+        framer=None,
+        active_ports={},
+        _deliver_connection=delivered.append,
+    )
+
+    try:
+        preconnection.got_mc(listener, b"first", 6000)
+        loop.run_until_complete(asyncio.sleep(0))
+
+        connection = listener.active_ports[6000]
+        assert delivered == [connection]
+        assert connection.remote_endpoint.address == "127.0.0.1"
+        assert connection.transports[0].recv_buffer[0][0] == b"first"
+        assert connection.transports[0].recv_buffer[0][1].remote_address == "127.0.0.1"
+    finally:
+        loop.close()
 
 
 def test_multicast_send_uses_mctx_core(monkeypatch):
@@ -2959,7 +3052,11 @@ def test_multicast_send_uses_mctx_core(monkeypatch):
 
     loop = asyncio.new_event_loop()
     local = taps.LocalEndpoint().with_address("fd06::1").with_port(5001)
-    remote = taps.RemoteEndpoint().with_address("ff3e::8000:1234").with_port(5001)
+    remote = (
+        taps.RemoteEndpoint()
+        .with_multicast_group_ip("ff3e::8000:1234")
+        .with_port(5001)
+    )
     preconnection = taps.Preconnection(
         local_endpoint=local,
         remote_endpoint=remote,

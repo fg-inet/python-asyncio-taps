@@ -1,6 +1,73 @@
+import hashlib
+import os
+import re
+import ssl
+
 from .utility import setup_logger
 
 logger = setup_logger(__name__, "magenta")
+
+_PEM_CERTIFICATE_PATTERN = re.compile(
+    br"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+    re.DOTALL,
+)
+
+
+def _certificate_bytes(value):
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, str):
+        if "-----BEGIN CERTIFICATE-----" not in value:
+            try:
+                is_file = os.path.isfile(value)
+            except OSError:
+                is_file = False
+            if is_file:
+                with open(value, "rb") as certificate_file:
+                    return certificate_file.read()
+        return value.encode("ascii")
+    if isinstance(value, bytes):
+        return value
+    return None
+
+
+def _certificate_to_der(value):
+    raw = _certificate_bytes(value)
+    if raw is not None:
+        blocks = _PEM_CERTIFICATE_PATTERN.findall(raw)
+        if blocks:
+            return [
+                ssl.PEM_cert_to_DER_cert(block.decode("ascii"))
+                for block in blocks
+            ]
+        return [raw]
+
+    public_bytes = getattr(value, "public_bytes", None)
+    if not callable(public_bytes):
+        raise TypeError(f"Unsupported certificate object: {type(value).__name__}")
+
+    try:
+        import _ssl
+
+        return [public_bytes(_ssl.ENCODING_DER)]
+    except (ImportError, TypeError, ValueError):
+        try:
+            from cryptography.hazmat.primitives.serialization import Encoding
+
+            return [public_bytes(Encoding.DER)]
+        except (ImportError, TypeError, ValueError) as exc:
+            raise TypeError(
+                f"Unsupported certificate object: {type(value).__name__}"
+            ) from exc
+
+
+def _flatten_certificates(value):
+    if isinstance(value, (list, tuple)):
+        certificates = []
+        for certificate in value:
+            certificates.extend(_flatten_certificates(certificate))
+        return certificates
+    return _certificate_to_der(value)
 
 
 class SecurityParameters:
@@ -28,7 +95,8 @@ class SecurityParameters:
     def add_identity(self, identity):
         """ Adds a local identity with which to
             prove ones identity to a remote.
-        Attributes:
+
+        Args:
             identity (string, required): Identity to be added.
         """
         if isinstance(identity, list):
@@ -39,7 +107,8 @@ class SecurityParameters:
 
     def add_trust_ca(self, cert):
         """ Adds a certificate to be trusted.
-        Attributes:
+
+        Args:
             cert (string, required):  Certificate to be trusted.
         """
         self.trustedCA.append(cert)
@@ -119,6 +188,38 @@ class SecurityParameters:
     def set_session_cache_lifetime(self, lifetime):
         self.session_cache_lifetime = lifetime
         logger.info("Configured session cache lifetime: " + str(lifetime))
+
+    def get_pinned_server_certificate_digests(self):
+        digests = set()
+        for certificate_chain in self.pinned_server_certificates:
+            certificates = _flatten_certificates(certificate_chain)
+            if certificates:
+                # The first certificate identifies the server; later
+                # certificates only establish its chain of trust.
+                digests.add(hashlib.sha256(certificates[0]).digest())
+        return digests
+
+    def verify_pinned_server_certificates(self, peer_certificate_chain):
+        if not self.pinned_server_certificates:
+            return True
+        if peer_certificate_chain is None:
+            peer_certificate_chain = []
+        if not isinstance(peer_certificate_chain, (list, tuple)):
+            peer_certificate_chain = [peer_certificate_chain]
+
+        pinned = self.get_pinned_server_certificate_digests()
+        presented = _flatten_certificates(peer_certificate_chain)
+        presented_leaf = (
+            hashlib.sha256(presented[0]).digest()
+            if presented
+            else None
+        )
+        if presented_leaf not in pinned:
+            raise ssl.SSLCertVerificationError(
+                "The presented server certificate chain does not match "
+                "a configured pinnedServerCertificate"
+            )
+        return True
 
     def get_configuration(self):
         return {
