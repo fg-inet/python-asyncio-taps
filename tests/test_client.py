@@ -22,6 +22,7 @@ class ClientHarness:
 
     async def handle_closed(self, conn):
         print("Closed")
+        await asyncio.sleep(0)
         self.loop.stop()
 
     async def handle_received(self, data, context, connection):
@@ -41,6 +42,7 @@ class ClientHarness:
 
     async def sent_and_stop(self, message_ref, connection):
         print("Sent and stop")
+        await connection.close()
         self.loop.stop()
 
     async def handle_ready(self, connection):
@@ -77,9 +79,10 @@ class ClientHarness:
         ep = taps.RemoteEndpoint()
         ep.with_hostname(remote_hostname)
         ep.with_port(remote_port)
-        tp = taps.TransportProperties()
-
-        if not reliable:
+        if reliable:
+            tp = taps.TransportProperties()
+        else:
+            tp = taps.TransportProperties().unreliable_datagram()
             tp.prohibit("reliability")
         tp.ignore("congestion-control")
         tp.ignore("preserve-order")
@@ -146,6 +149,7 @@ def test_echo_udp(echo_servers):
         loop.create_task(
             client.main(
                 data_to_send=teststring,
+                remote_hostname="::1",
                 remote_port=echo_servers["echo_port"],
             )
         )

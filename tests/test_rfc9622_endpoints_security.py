@@ -331,13 +331,19 @@ async def test_section_6_3_3_quic_pin_failure_closes_the_association(
     class FakeConnectContext:
         def __init__(self):
             self.exited = False
+
+            async def wait_connected():
+                return None
+
             self.protocol = SimpleNamespace(
                 _quic=SimpleNamespace(
                     tls=SimpleNamespace(
                         _peer_certificate=ROOT_CERTIFICATE.read_bytes(),
                         _peer_certificate_chain=[],
                     )
-                )
+                ),
+                transmit=lambda: None,
+                wait_connected=wait_connected,
             )
 
         async def __aenter__(self):
@@ -379,12 +385,15 @@ async def test_section_6_3_3_quic_pin_failure_closes_the_association(
 
 @pytest.mark.asyncio
 async def test_section_6_3_tls_hostname_and_exact_pin_verification():
+    tls_properties = taps.TransportProperties()
+    tls_properties.prohibit("multistreaming")
     server_security = taps.SecurityParameters()
     server_security.add_identity(str(SERVER_CERTIFICATE))
     server = taps.Preconnection(
         local_endpoints=[
             taps.LocalEndpoint().with_address("127.0.0.1").with_port(0)
         ],
+        transport_properties=tls_properties,
         security_parameters=server_security,
     )
     listener = await server.listen(timeout=2)
@@ -403,6 +412,7 @@ async def test_section_6_3_tls_hostname_and_exact_pin_verification():
                     .with_port(server_port)
                 )
             ],
+            transport_properties=tls_properties,
             security_parameters=security,
         )
         return await preconnection.initiate(timeout=2)

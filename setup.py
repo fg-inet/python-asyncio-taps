@@ -78,7 +78,10 @@ setup(
             "mctx-core-py",
         ],
         "quic": [
-            "aioquic>=1.2.0",
+            "aioquic>=1.3.0",
+        ],
+        "system-policy": [
+            "pyobjc-framework-Network>=12.2.1; sys_platform == 'darwin'",
         ],
         "dev": [
             "ruff>=0.11",

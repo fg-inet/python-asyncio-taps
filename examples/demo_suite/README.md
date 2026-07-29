@@ -127,6 +127,13 @@ Receiver:
   --interface-address RECEIVER_INTERFACE_IP
 ```
 
+Use `--interface INTERFACE_NAME` instead when the receiver should follow a
+named interface through dynamic System Policy updates. PyTAPS joins a
+replacement membership before leaving the old one when that interface's
+address or network identity changes; the example starts the policy monitor
+automatically. `--interface-address` is an explicit, fixed local-address
+constraint.
+
 Sender:
 
 ```bash
@@ -152,3 +159,9 @@ python -m pip install -e /Users/mfranke/Devtools/Multicast/mctx-core/mctx-core-p
 If `aioquic` is installed, the `auto` demos include QUIC stream candidates.
 Without `aioquic`, QUIC candidates are skipped cleanly and the demos continue
 with the available transports.
+
+The dedicated [`quic_example`](../quic_example/README.md) demonstrates
+bidirectional streams, unidirectional streams, and RFC 9221 datagrams on one
+association. It then resumes a second association and exercises replay-safe
+`InitiateWithSend` over genuine QUIC 0-RTT, including the received
+`isEarlyData` metadata.

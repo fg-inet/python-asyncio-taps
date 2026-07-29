@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import datetime
 import logging
 import socket
@@ -9,7 +10,13 @@ from enum import Enum
 from pytaps.transportProperties import (
     PreferenceLevel,
     canonicalize_property_name,
+    get_protocol_capabilities,
     get_protocols,
+)
+
+_CURRENT_CANDIDATE_VIEW = contextvars.ContextVar(
+    "pytaps_current_candidate_view",
+    default=None,
 )
 
 colors = {
@@ -98,6 +105,18 @@ class Candidate:
     local_address: str | None = None
     local_endpoint: object | None = None
     remote_endpoint: object | None = None
+    branch_id: str | None = None
+    resolution_source: str = "configured"
+    resolution_duration: float | None = None
+
+
+@dataclass(frozen=True)
+class CandidateBranch:
+    protocol: str
+    path: str
+    local_endpoint: object | None
+    remote_endpoint: object
+    branch_id: str
 
 
 def _preference_weight(property_name, transport_properties):
@@ -117,17 +136,43 @@ def _supports_selection_property(protocol, property_name, property_value):
     return supported_value is not False
 
 
-def _protocol_details(protocol_name):
-    for protocol in get_protocols():
-        if protocol["name"] == protocol_name:
-            return protocol
-    raise KeyError(f"Unknown protocol: {protocol_name}")
+def _protocol_details(protocol_name, transport_properties=None):
+    return get_protocol_capabilities(protocol_name, transport_properties)
 
 
-def rank_protocol_candidates(transport_properties, connection_context=None):
+def rank_protocol_candidates(
+    transport_properties,
+    connection_context=None,
+    available_protocols=None,
+):
     """Rank protocol branches per RFC 9623 sorting guidance."""
+    available_protocols = (
+        set(available_protocols)
+        if available_protocols is not None
+        else None
+    )
     ranked_protocols = []
-    for protocol in get_protocols():
+    for protocol in get_protocols(transport_properties):
+        if (
+            available_protocols is not None
+            and protocol["name"] not in available_protocols
+        ):
+            continue
+        if (
+            protocol["name"] == "udp"
+            and transport_properties.get("direction")
+            != "Unidirectional Receive"
+            and transport_properties.get_profile_message_properties().get(
+                "safelyReplayable"
+            )
+            is not True
+        ):
+            continue
+        quic_datagram_mode = (
+            protocol["name"] == "quic"
+            and transport_properties.get("_pytaps.quicTransportMode")
+            == "Datagram"
+        )
         if (
             connection_context is not None
             and connection_context.protocol_policy.get(protocol["name"], {}).get("available") is False
@@ -141,9 +186,36 @@ def rank_protocol_candidates(transport_properties, connection_context=None):
             canonical_property = canonicalize_property_name(property_name)
             if canonical_property in {"direction", "interface", "pvd"}:
                 continue
+            if (
+                quic_datagram_mode
+                and canonical_property
+                in {
+                    "reliability",
+                    "preserveMsgBoundaries",
+                    "perMsgReliability",
+                    "preserveOrder",
+                }
+                and canonical_property
+                not in transport_properties.explicit_selection_properties
+            ):
+                continue
 
             support = _supports_selection_property(protocol, canonical_property, property_value)
             if support is None:
+                continue
+            if canonical_property in {
+                "advertisesAltaddr",
+            }:
+                if not support:
+                    excluded = True
+                    break
+                continue
+            if canonical_property == "multipath":
+                if property_value != "Disabled" and support:
+                    prefer_score += _preference_weight(
+                        canonical_property,
+                        transport_properties,
+                    )
                 continue
 
             weight = _preference_weight(canonical_property, transport_properties)
@@ -183,7 +255,29 @@ def _rank_path_candidate(
     index,
 ):
     if local_endpoint is None or not local_endpoint.interface:
-        return ("default", None, local_endpoint, 0, 0, 0, index)
+        performance_score = (
+            connection_context.get_network_performance_score(
+                connection_context.get_network_id(
+                    local_address=(
+                        local_endpoint.effective_address()
+                        if local_endpoint is not None
+                        else None
+                    )
+                )
+            )
+            if connection_context is not None
+            else 0
+        )
+        return (
+            "default",
+            None,
+            local_endpoint,
+            0,
+            0,
+            0,
+            performance_score,
+            index,
+        )
     interface_preferences = {
         interface_id: preference
         for preference, interface_id in transport_properties.selection_properties.get("interface", set())
@@ -264,6 +358,16 @@ def _rank_path_candidate(
             return None
         system_score += pvd_policy.get("preferenceAdjustment", 0)
 
+    performance_score = (
+        connection_context.get_network_performance_score(
+            connection_context.get_network_id(
+                interface_id,
+                local_address=local_endpoint.effective_address(),
+            )
+        )
+        if connection_context is not None
+        else 0
+    )
     return (
         interface_id,
         interface_id,
@@ -271,6 +375,7 @@ def _rank_path_candidate(
         prefer_score,
         avoid_score,
         system_score,
+        performance_score,
         index,
     )
 
@@ -300,7 +405,8 @@ def _rank_path_candidates_with_endpoints(
             -(candidate[3] - candidate[4] + candidate[5]),
             -candidate[3],
             candidate[4],
-            candidate[6],
+            -candidate[6],
+            candidate[7],
         )
     )
     return [
@@ -312,6 +418,7 @@ def _rank_path_candidates_with_endpoints(
             _prefer_score,
             _avoid_score,
             _system_score,
+            _performance_score,
             _index,
         ) in ranked
     ]
@@ -343,22 +450,30 @@ def order_remote_addresses(remote_addrs, connection_context=None):
     return sorted(remote_addrs, key=sort_key)
 
 
-def build_protocol_candidates(transport_properties, connection_context=None):
+def build_protocol_candidates(
+    transport_properties,
+    connection_context=None,
+    available_protocols=None,
+):
     return [
         protocol_info[0]["name"]
         for protocol_info in rank_protocol_candidates(
             transport_properties,
             connection_context=connection_context,
+            available_protocols=available_protocols,
         )
     ]
 
 
-def create_candidates(connection, remote_addrs=None):
-    """Build leaf candidates ordered as path -> protocol -> endpoint."""
-    if remote_addrs is None:
-        remote_addrs = []
-
-    local_endpoints = getattr(connection, "local_endpoints", None) or [None]
+def build_candidate_branches(
+    connection,
+    *,
+    local_endpoints=None,
+    available_protocols=None,
+):
+    """Build unresolved path -> protocol -> endpoint branches."""
+    if local_endpoints is None:
+        local_endpoints = getattr(connection, "local_endpoints", None) or [None]
     ordered_paths = _rank_path_candidates_with_endpoints(
         local_endpoints,
         connection.transport_properties,
@@ -367,12 +482,72 @@ def create_candidates(connection, remote_addrs=None):
     ordered_protocols = build_protocol_candidates(
         connection.transport_properties,
         connection_context=connection.connection_context,
+        available_protocols=available_protocols,
+    )
+
+    branches = []
+    for path_index, (path_label, _path_interface, local_endpoint) in enumerate(
+        ordered_paths
+    ):
+        for protocol_index, protocol_name in enumerate(ordered_protocols):
+            for endpoint_index, remote_endpoint in enumerate(
+                connection.remote_endpoints
+            ):
+                if (
+                    remote_endpoint.protocol is not None
+                    and remote_endpoint.protocol != protocol_name
+                ):
+                    continue
+                if remote_endpoint.is_multicast and protocol_name != "udp":
+                    continue
+                branch_id = (
+                    f"path-{path_index}:protocol-{protocol_index}:"
+                    f"endpoint-{endpoint_index}"
+                )
+                branches.append(
+                    CandidateBranch(
+                        protocol=protocol_name,
+                        path=path_label,
+                        local_endpoint=(
+                            local_endpoint.clone()
+                            if local_endpoint is not None
+                            else None
+                        ),
+                        remote_endpoint=remote_endpoint.clone(),
+                        branch_id=branch_id,
+                    )
+                )
+    return branches
+
+
+def create_candidates(
+    connection,
+    remote_addrs=None,
+    available_protocols=None,
+    local_endpoints=None,
+):
+    """Build leaf candidates ordered as path -> protocol -> endpoint."""
+    if remote_addrs is None:
+        remote_addrs = []
+
+    if local_endpoints is None:
+        local_endpoints = (
+            getattr(connection, "local_endpoints", None) or [None]
+        )
+    ordered_paths = _rank_path_candidates_with_endpoints(
+        local_endpoints,
+        connection.transport_properties,
+        connection_context=connection.connection_context,
+    )
+    ordered_protocols = build_protocol_candidates(
+        connection.transport_properties,
+        connection_context=connection.connection_context,
+        available_protocols=available_protocols,
     )
 
     candidates = []
     for path_label, _path_interface, local_endpoint in ordered_paths:
         for protocol_name in ordered_protocols:
-            protocol_details = _protocol_details(protocol_name)
             protocol_remotes = []
             for remote_entry in remote_addrs:
                 if len(remote_entry) == 2:
@@ -395,21 +570,24 @@ def create_candidates(connection, remote_addrs=None):
                 protocol_remotes.append(
                     (family, remote_address, remote_endpoint)
                 )
-            if protocol_details.get("advertisesAltaddr"):
-                for family, remote_address, remote_endpoint in list(protocol_remotes):
-                    for alt_family, alt_remote in connection.connection_context.get_alternate_remotes(
+            for family, remote_address, remote_endpoint in list(
+                protocol_remotes
+            ):
+                for alt_family, alt_remote in (
+                    connection.connection_context.get_alternate_remotes(
                         remote_address,
                         protocol=protocol_name,
-                    ):
-                        resolved_family = alt_family
-                        if resolved_family is None:
-                            resolved_family = (
-                                socket.AddressFamily.AF_INET6
-                                if ":" in alt_remote else socket.AddressFamily.AF_INET
-                            )
-                        protocol_remotes.append(
-                            (resolved_family, alt_remote, remote_endpoint)
+                    )
+                ):
+                    resolved_family = alt_family
+                    if resolved_family is None:
+                        resolved_family = (
+                            socket.AddressFamily.AF_INET6
+                            if ":" in alt_remote else socket.AddressFamily.AF_INET
                         )
+                    protocol_remotes.append(
+                        (resolved_family, alt_remote, remote_endpoint)
+                    )
             ordered_remotes = order_remote_addresses(
                 [
                     (family, remote_address)
@@ -511,10 +689,23 @@ def order_candidates_for_racing(connection, candidates):
             else connection.remote_endpoint.port
         )
         remote_path = (candidate.remote_address, remote_port)
+        network_id = connection.connection_context.get_network_id(
+            (
+                candidate.local_endpoint.interface
+                if candidate.local_endpoint is not None
+                else (
+                    candidate.path
+                    if candidate.path != "default"
+                    else None
+                )
+            ),
+            local_address=candidate.local_address,
+        )
         cache_score = connection.connection_context.get_path_score(
             local_path,
             remote_path,
             protocol=candidate.protocol,
+            network_id=network_id,
         )
         return (
             path_order[candidate.path],

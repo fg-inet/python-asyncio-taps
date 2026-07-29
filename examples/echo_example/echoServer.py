@@ -120,6 +120,8 @@ class TestServer:
             transport_properties=tp,
             security_parameters=sp,
         )
+        if self.reliable == "Both":
+            self.preconnection.set_property("safelyReplayable", True)
         self.preconnection.on_connection_received(
             self.handle_connection_received)
         self.preconnection.on_listen_error(self.handle_listen_error)

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import ssl
 import socket
@@ -12,6 +13,34 @@ import pytest
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 ECHO_SERVER = REPO_ROOT / "examples" / "echo_example" / "echoServer.py"
+
+
+@pytest.fixture(autouse=True)
+def close_test_owned_event_loops(monkeypatch):
+    """Close loops created directly by synchronous tests."""
+    created_loops = []
+    original_new_event_loop = asyncio.new_event_loop
+
+    def tracked_new_event_loop():
+        loop = original_new_event_loop()
+        created_loops.append(loop)
+        return loop
+
+    monkeypatch.setattr(asyncio, "new_event_loop", tracked_new_event_loop)
+    yield
+
+    for loop in reversed(created_loops):
+        if loop.is_closed():
+            continue
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
 
 def _wait_for_tcp_port(host, port, timeout=5.0):
@@ -35,6 +64,7 @@ def _wait_for_tls_port(host, port, cafile, server_name="localhost", timeout=5.0)
     while time.time() < deadline:
         with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.5)
+            wrapped = None
             try:
                 wrapped = context.wrap_socket(
                     sock,
@@ -44,6 +74,8 @@ def _wait_for_tls_port(host, port, cafile, server_name="localhost", timeout=5.0)
                 wrapped.close()
                 return
             except OSError:
+                if wrapped is not None:
+                    wrapped.close()
                 time.sleep(0.1)
     raise RuntimeError(f"Timed out waiting for TLS server on [{host}]:{port}")
 

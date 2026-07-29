@@ -39,7 +39,6 @@ MESSAGE_PROPERTY_DEFAULTS = {
     "receive_sequence": None,
     "ecn": None,
     "is_early_data": False,
-    "framer_context": None,
 }
 
 SETTABLE_MESSAGE_PROPERTIES = frozenset(
@@ -68,11 +67,25 @@ BOOLEAN_MESSAGE_PROPERTIES = frozenset(
     }
 )
 
+_MISSING = object()
+
+
+_MESSAGE_PROPERTY_NAME_LOOKUP = {
+    **{
+        property_name.casefold(): property_name
+        for property_name in SETTABLE_MESSAGE_PROPERTIES
+    },
+    **{
+        alias.casefold(): canonical
+        for alias, canonical in MESSAGE_PROPERTY_ALIASES.items()
+    },
+}
+
 
 def canonicalize_message_property_name(name):
     if not isinstance(name, str):
         raise TypeError("Message Property names must be strings")
-    return MESSAGE_PROPERTY_ALIASES.get(name, name)
+    return _MESSAGE_PROPERTY_NAME_LOOKUP.get(name.casefold(), name)
 
 
 def is_message_property(name):
@@ -122,7 +135,17 @@ def _normalize_message_property_value(name, value, *, allow_unset=False):
     raise KeyError(f"Unknown Message Property: {name}")
 
 
-@dataclass
+def _framer_namespace(framer):
+    if isinstance(framer, str):
+        return framer
+    namespace = getattr(framer, "namespace", None)
+    if isinstance(namespace, str) and namespace:
+        return namespace
+    framer_type = type(framer)
+    return f"{framer_type.__module__}.{framer_type.__qualname__}"
+
+
+@dataclass(init=False)
 class MessageContext:
     message_id: int | None = None
     batch_id: int | None = None
@@ -146,18 +169,84 @@ class MessageContext:
     local_port: int | None = None
     ecn: int | None = None
     is_early_data: bool = False
-    framer_context: object | None = None
+    framer_metadata: dict[str, dict[str, object]] = field(default_factory=dict)
     explicit_properties: set[str] = field(default_factory=set, repr=False)
 
-    def __post_init__(self):
-        for prop in SETTABLE_MESSAGE_PROPERTIES:
+    def __init__(
+        self,
+        message_id=None,
+        batch_id=None,
+        priority=_MISSING,
+        ordered=_MISSING,
+        reliable=_MISSING,
+        final=_MISSING,
+        safely_replayable=_MISSING,
+        checksum_length=_MISSING,
+        capacity_profile=_MISSING,
+        no_fragmentation=_MISSING,
+        no_segmentation=_MISSING,
+        end_of_message=True,
+        lifetime=_MISSING,
+        created_at=None,
+        received_at=None,
+        receive_sequence=None,
+        remote_address=None,
+        remote_port=None,
+        local_address=None,
+        local_port=None,
+        ecn=None,
+        is_early_data=False,
+        framer_metadata=None,
+        explicit_properties=None,
+    ):
+        self.message_id = message_id
+        self.batch_id = batch_id
+        self.end_of_message = end_of_message
+        self.created_at = created_at
+        self.received_at = received_at
+        self.receive_sequence = receive_sequence
+        self.remote_address = remote_address
+        self.remote_port = remote_port
+        self.local_address = local_address
+        self.local_port = local_port
+        self.ecn = ecn
+        self.is_early_data = is_early_data
+        self.framer_metadata = (
+            {}
+            if framer_metadata is None
+            else {
+                namespace: dict(values)
+                for namespace, values in framer_metadata.items()
+            }
+        )
+        self.explicit_properties = set(explicit_properties or ())
+
+        supplied_properties = {
+            "priority": priority,
+            "ordered": ordered,
+            "reliable": reliable,
+            "final": final,
+            "safely_replayable": safely_replayable,
+            "checksum_length": checksum_length,
+            "capacity_profile": capacity_profile,
+            "no_fragmentation": no_fragmentation,
+            "no_segmentation": no_segmentation,
+            "lifetime": lifetime,
+        }
+        for prop, supplied_value in supplied_properties.items():
+            was_supplied = supplied_value is not _MISSING
+            value = (
+                supplied_value
+                if was_supplied
+                else MESSAGE_PROPERTY_DEFAULTS[prop]
+            )
             value = _normalize_message_property_value(
                 prop,
-                getattr(self, prop),
+                value,
                 allow_unset=True,
             )
             setattr(self, prop, value)
-            if value != MESSAGE_PROPERTY_DEFAULTS[prop]:
+            if was_supplied:
                 self.explicit_properties.add(prop)
 
     @property
@@ -179,14 +268,60 @@ class MessageContext:
             self.created_at = time.monotonic()
         return self
 
-    def add(self, name, value):
-        return self.set_property(name, value)
+    def add(self, property_or_framer, key_or_value, value=_MISSING):
+        """Add a Message Property or namespaced Framer metadata."""
 
-    def get(self, name, default=None):
+        if value is _MISSING:
+            return self.set_property(property_or_framer, key_or_value)
+        return self.add_framer_metadata(
+            property_or_framer,
+            key_or_value,
+            value,
+        )
+
+    def get(self, property_or_framer, key_or_default=_MISSING, default=_MISSING):
+        """Get a Message Property or namespaced Framer metadata."""
+
+        if not isinstance(property_or_framer, str):
+            if key_or_default is _MISSING:
+                raise TypeError("Framer metadata lookup requires a key")
+            fallback = None if default is _MISSING else default
+            return self.get_framer_metadata(
+                property_or_framer,
+                key_or_default,
+                fallback,
+            )
+
+        if (
+            property_or_framer in self.framer_metadata
+            and key_or_default is not _MISSING
+        ):
+            fallback = None if default is _MISSING else default
+            return self.get_framer_metadata(
+                property_or_framer,
+                key_or_default,
+                fallback,
+            )
+
+        property_default = (
+            None if key_or_default is _MISSING else key_or_default
+        )
+        name = property_or_framer
         canonical = canonicalize_message_property_name(name)
         if canonical == "lifetime":
             return self.lifetime if self.lifetime is not None else "Infinite"
-        return getattr(self, canonical, default)
+        return getattr(self, canonical, property_default)
+
+    def add_framer_metadata(self, framer, key, value):
+        if not isinstance(key, str) or not key:
+            raise TypeError("Framer metadata keys must be non-empty strings")
+        namespace = _framer_namespace(framer)
+        self.framer_metadata.setdefault(namespace, {})[key] = value
+        return self
+
+    def get_framer_metadata(self, framer, key, default=None):
+        namespace = _framer_namespace(framer)
+        return self.framer_metadata.get(namespace, {}).get(key, default)
 
     def is_expired(self):
         if self.lifetime is None:
@@ -253,7 +388,10 @@ class MessageContext:
             "localEndpoint": self.get_local_endpoint(),
             "ecn": self.ecn,
             "isEarlyData": self.is_early_data,
-            "framer_context": self.framer_context,
+            "framerMetadata": {
+                namespace: dict(values)
+                for namespace, values in self.framer_metadata.items()
+            },
         }
 
 
@@ -284,8 +422,12 @@ class ReceivedMessage:
     def is_complete(self):
         return self._end_of_message
 
-    def get(self, name, default=None):
-        return self.context.get(name, default)
+    def get(self, property_or_framer, key_or_default=_MISSING, default=_MISSING):
+        return self.context.get(
+            property_or_framer,
+            key_or_default,
+            default,
+        )
 
     def get_properties(self):
         properties = self.context.get_properties()

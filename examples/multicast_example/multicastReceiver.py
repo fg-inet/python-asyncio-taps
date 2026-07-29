@@ -36,6 +36,8 @@ class MulticastReceiver:
         await connection.receive(min_incomplete_length=1)
 
     async def main(self, args):
+        context = taps.ConnectionContext()
+        policy_monitor = None
         local = taps.LocalEndpoint()
         local.with_single_source_multicast_group_ip(args.group, args.source)
         local.with_port(args.port)
@@ -50,20 +52,34 @@ class MulticastReceiver:
             local_endpoints=[local],
             remote_endpoints=[],
             transport_properties=props,
+            connection_context=context,
         )
         if args.interface_address:
             preconnection.multicast_interface_address = args.interface_address
         preconnection.on_connection_received(self.handle_connection_received)
 
-        self.listener = await preconnection.listen()
-        await self.listener.wait_listening()
-        logger.info(
-            "Listening for multicast from source %s to group %s:%s.",
-            args.source,
-            args.group,
-            args.port,
-        )
-        await asyncio.Event().wait()
+        if args.interface:
+            policy_monitor = taps.SystemPolicyMonitor(
+                context,
+                interval=args.policy_interval,
+            )
+            await policy_monitor.refresh()
+            policy_monitor.start()
+        try:
+            self.listener = await preconnection.listen()
+            await self.listener.wait_listening()
+            logger.info(
+                "Listening for multicast from source %s to group %s:%s.",
+                args.source,
+                args.group,
+                args.port,
+            )
+            await asyncio.Event().wait()
+        finally:
+            if self.listener is not None:
+                await self.listener.stop()
+            if policy_monitor is not None:
+                await policy_monitor.stop()
 
 
 def parse_args():
@@ -92,7 +108,13 @@ def parse_args():
     parser.add_argument(
         "--interface-address",
         default=None,
-        help="Local unicast interface address to use for the subscription.",
+        help="Fixed local unicast address to use for the subscription.",
+    )
+    parser.add_argument(
+        "--policy-interval",
+        type=float,
+        default=2.0,
+        help="System Policy refresh interval when --interface is used.",
     )
     return parser.parse_args()
 

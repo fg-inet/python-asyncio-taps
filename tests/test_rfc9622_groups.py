@@ -25,18 +25,18 @@ def test_sections_7_4_and_8_all_connection_properties_are_entangled():
         "recvChecksumLen": 0,
         "connTimeout": 10,
         "keepAliveTimeout": 5,
-        "connScheduler": "Round Robin",
+        "connScheduler": "Weighted Fair Queueing",
         "connCapacityProfile": "Scavenger",
         "multipathPolicy": "Aggregate",
         "minSendRate": 1,
         "minRecvRate": 2,
-        "maxSendRate": 3,
-        "maxRecvRate": 4,
+        "maxSendRate": "Unlimited",
+        "maxRecvRate": "Unlimited",
         "groupConnLimit": 5,
         "isolateSession": True,
-        "tcp.userTimeoutValue": 1000,
-        "tcp.userTimeoutEnabled": True,
-        "tcp.userTimeoutChangeable": False,
+        "tcp.userTimeoutValue": None,
+        "tcp.userTimeoutEnabled": False,
+        "tcp.userTimeoutChangeable": True,
     }
 
     assert (
@@ -181,6 +181,9 @@ def test_section_7_4_quic_associations_keep_distinct_peers_in_separate_groups():
     listener._mark_listening()
     first_association = QuicAssociationManager(loop=loop, listener=listener)
     second_association = QuicAssociationManager(loop=loop, listener=listener)
+    for association in (first_association, second_association):
+        association.handshake_complete = True
+        association._handshake_complete_event.set()
 
     async def accept_associations():
         await asyncio.gather(

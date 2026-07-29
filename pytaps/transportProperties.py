@@ -13,6 +13,8 @@ PROPERTY_ALIASES = {
     "preserve-msg-boundaries": "preserveMsgBoundaries",
     "per-msg-reliability": "perMsgReliability",
     "perMessageReliability": "perMsgReliability",
+    "_pytaps.quic-stream-type": "_pytaps.quicStreamType",
+    "_pytaps.quic-transport-mode": "_pytaps.quicTransportMode",
     "preserve-order": "preserveOrder",
     "zero-rtt-msg": "zeroRttMsg",
     "per-msg-checksum-len-send": "fullChecksumSend",
@@ -112,6 +114,23 @@ CONNECTION_PROPERTY_DEFAULTS = {
     "tcp.userTimeoutChangeable": True,
 }
 
+PROTOCOL_PROPERTY_DEFAULTS = {
+    "_pytaps.quicStreamType": "Auto",
+    "_pytaps.quicTransportMode": "Stream",
+}
+
+PROTOCOL_ENUM_VALUES = {
+    "_pytaps.quicStreamType": {
+        "Auto",
+        "Bidirectional",
+        "Unidirectional",
+    },
+    "_pytaps.quicTransportMode": {
+        "Stream",
+        "Datagram",
+    },
+}
+
 CONNECTION_ENUM_VALUES = {
     "connCapacityProfile": {
         "Default",
@@ -139,15 +158,16 @@ PROTOCOLS = [
         "preserveMsgBoundaries": False,
         "perMsgReliability": False,
         "preserveOrder": True,
-        "zeroRttMsg": "optional",
+        # The asyncio backend does not currently issue TCP Fast Open data.
+        "zeroRttMsg": False,
         "multistreaming": False,
         "fullChecksumSend": True,
         "fullChecksumRecv": True,
         "congestionControl": True,
         "keepAlive": True,
-        "multipath": "optional",
+        "multipath": False,
         "advertisesAltaddr": False,
-        "softErrorNotify": True,
+        "softErrorNotify": False,
         "activeReadBeforeSend": True,
     },
     {
@@ -160,7 +180,7 @@ PROTOCOLS = [
         "preserveMsgBoundaries": True,
         "perMsgReliability": False,
         "preserveOrder": False,
-        "zeroRttMsg": True,
+        "zeroRttMsg": False,
         "multistreaming": False,
         "fullChecksumSend": True,
         "fullChecksumRecv": True,
@@ -168,7 +188,7 @@ PROTOCOLS = [
         "keepAlive": False,
         "multipath": False,
         "advertisesAltaddr": False,
-        "softErrorNotify": True,
+        "softErrorNotify": False,
         "activeReadBeforeSend": True,
     },
     {
@@ -181,7 +201,7 @@ PROTOCOLS = [
         "preserveMsgBoundaries": False,
         "perMsgReliability": False,
         "preserveOrder": True,
-        "zeroRttMsg": True,
+        "zeroRttMsg": False,
         "multistreaming": False,
         "fullChecksumSend": True,
         "fullChecksumRecv": True,
@@ -207,19 +227,127 @@ PROTOCOLS = [
         "fullChecksumSend": True,
         "fullChecksumRecv": True,
         "congestionControl": True,
-        "keepAlive": True,
-        "multipath": False,
-        "advertisesAltaddr": True,
-        "softErrorNotify": True,
+        "keepAlive": False,
+        # QUIC migration provides validated path handover. This does not
+        # advertise concurrent multipath scheduling.
+        "multipath": True,
+        "advertisesAltaddr": False,
+        "softErrorNotify": False,
         "activeReadBeforeSend": True,
     },
 ]
 
 
+CONNECTION_PROPERTY_SUPPORT = {
+    "tcp": {
+        "recvChecksumLen": "enforced",
+        "connPriority": "advisory",
+        "connTimeout": "platform-dependent",
+        "keepAliveTimeout": "platform-dependent",
+        "connScheduler": "not-implemented",
+        "connCapacityProfile": "advisory:dscp",
+        "multipathPolicy": "no-op",
+        "minSendRate": "advisory",
+        "minRecvRate": "advisory",
+        "maxSendRate": "not-implemented",
+        "maxRecvRate": "not-implemented",
+        "groupConnLimit": "enforced",
+        "isolateSession": "enforced",
+        "tcp.userTimeoutValue": "unsupported",
+        "tcp.userTimeoutEnabled": "unsupported",
+        "tcp.userTimeoutChangeable": "unsupported",
+    },
+    "tls-tcp": {
+        "recvChecksumLen": "enforced",
+        "connPriority": "advisory",
+        "connTimeout": "platform-dependent",
+        "keepAliveTimeout": "platform-dependent",
+        "connScheduler": "not-implemented",
+        "connCapacityProfile": "advisory:dscp",
+        "multipathPolicy": "no-op",
+        "minSendRate": "advisory",
+        "minRecvRate": "advisory",
+        "maxSendRate": "not-implemented",
+        "maxRecvRate": "not-implemented",
+        "groupConnLimit": "enforced",
+        "isolateSession": "enforced",
+        "tcp.userTimeoutValue": "unsupported",
+        "tcp.userTimeoutEnabled": "unsupported",
+        "tcp.userTimeoutChangeable": "unsupported",
+    },
+    "udp": {
+        "recvChecksumLen": "platform-dependent",
+        "connPriority": "advisory",
+        "connTimeout": "no-op",
+        "keepAliveTimeout": "no-op",
+        "connScheduler": "not-implemented",
+        "connCapacityProfile": "advisory:dscp",
+        "multipathPolicy": "no-op",
+        "minSendRate": "advisory",
+        "minRecvRate": "advisory",
+        "maxSendRate": "not-implemented",
+        "maxRecvRate": "not-implemented",
+        "groupConnLimit": "enforced",
+        "isolateSession": "enforced",
+        "tcp.userTimeoutValue": "not-applicable",
+        "tcp.userTimeoutEnabled": "not-applicable",
+        "tcp.userTimeoutChangeable": "not-applicable",
+    },
+    "quic": {
+        "recvChecksumLen": "enforced",
+        "connPriority": "advisory",
+        "connTimeout": "unsupported-for-stream",
+        "keepAliveTimeout": "no-op",
+        "connScheduler": "not-implemented",
+        "connCapacityProfile": "advisory",
+        "multipathPolicy": "handover-only",
+        "minSendRate": "advisory",
+        "minRecvRate": "advisory",
+        "maxSendRate": "not-implemented",
+        "maxRecvRate": "not-implemented",
+        "groupConnLimit": "enforced",
+        "isolateSession": "enforced",
+        "tcp.userTimeoutValue": "not-applicable",
+        "tcp.userTimeoutEnabled": "not-applicable",
+        "tcp.userTimeoutChangeable": "not-applicable",
+    },
+}
+
+
+MESSAGE_PROPERTY_SUPPORT = {
+    "msgLifetime": "enforced",
+    "msgPriority": "advisory",
+    "msgOrdered": "capability-dependent",
+    "msgReliable": "capability-dependent",
+    "safelyReplayable": "metadata-only",
+    "final": "enforced",
+    "msgChecksumLen": "advisory",
+    "msgCapacityProfile": "advisory",
+    "noFragmentation": "capability-dependent",
+    "noSegmentation": "capability-dependent",
+}
+
+
+_PROPERTY_NAME_LOOKUP = {
+    **{
+        name.casefold(): name
+        for name in (
+            set(SELECTION_PROPERTY_DEFAULTS)
+            | set(CONNECTION_PROPERTY_DEFAULTS)
+            | set(PROTOCOL_PROPERTY_DEFAULTS)
+        )
+    },
+    **{
+        alias.casefold(): canonical
+        for alias, canonical in PROPERTY_ALIASES.items()
+    },
+}
+
+
 def canonicalize_property_name(prop):
     if not isinstance(prop, str):
         raise TypeError("Transport Property names must be strings")
-    return PROPERTY_ALIASES.get(prop, prop)
+    return _PROPERTY_NAME_LOOKUP.get(prop.casefold(), prop)
 
 
 def normalize_direction(value):
@@ -278,17 +406,76 @@ def _normalize_multipath(value):
     return values[normalized]
 
 
-def get_protocols():
-    return [protocol.copy() for protocol in PROTOCOLS]
+def get_protocol_capabilities(protocol_name, transport_properties=None):
+    for protocol in PROTOCOLS:
+        if protocol["name"] != protocol_name:
+            continue
+        capabilities = protocol.copy()
+        if (
+            protocol_name == "quic"
+            and transport_properties is not None
+            and transport_properties.get("_pytaps.quicTransportMode")
+            == "Datagram"
+        ):
+            capabilities.update(
+                {
+                    "reliability": False,
+                    "preserveMsgBoundaries": True,
+                    "perMsgReliability": False,
+                    "preserveOrder": False,
+                }
+            )
+        return capabilities
+    raise KeyError(f"Unknown protocol: {protocol_name}")
+
+
+def get_protocols(transport_properties=None):
+    return [
+        get_protocol_capabilities(protocol["name"], transport_properties)
+        for protocol in PROTOCOLS
+    ]
+
+
+def get_backend_property_support(protocol_name, transport_properties=None):
+    message_support = MESSAGE_PROPERTY_SUPPORT.copy()
+    connection_support = CONNECTION_PROPERTY_SUPPORT.get(
+        protocol_name,
+        {},
+    ).copy()
+    if protocol_name == "udp":
+        message_support["safelyReplayable"] = "required-for-send"
+    elif protocol_name == "quic":
+        message_support["safelyReplayable"] = "enforced-for-0rtt"
+        if (
+            transport_properties is not None
+            and transport_properties.get("_pytaps.quicTransportMode")
+            == "Datagram"
+        ):
+            connection_support["connTimeout"] = "not-applicable"
+    return {
+        "connection": connection_support,
+        "message": message_support,
+    }
 
 
 class TransportProperties:
-    """Handle RFC 9622 Selection and Connection Properties."""
+    """Handle RFC 9622 Selection and Connection Properties.
+
+    PyTAPS also accepts two protocol-specific QUIC creation properties:
+    ``_pytaps.quicStreamType`` (``Auto``, ``Bidirectional``, or
+    ``Unidirectional``) and ``_pytaps.quicTransportMode`` (``Stream`` or
+    ``Datagram``). They use the RFC 9622 implementation-specific namespace
+    because no IETF-stream RFC defines equivalent ``quic.*`` properties.
+    Protocol-specific properties configure QUIC only if QUIC is selected;
+    they do not participate in protocol selection and are fixed once a
+    Connection is established.
+    """
 
     def __init__(
         self,
         selection_properties=None,
         connection_properties=None,
+        protocol_properties=None,
         *,
         action="initiate",
     ):
@@ -300,9 +487,11 @@ class TransportProperties:
             for key, value in SELECTION_PROPERTY_DEFAULTS.items()
         }
         self.connection_properties = CONNECTION_PROPERTY_DEFAULTS.copy()
+        self.protocol_properties = PROTOCOL_PROPERTY_DEFAULTS.copy()
         self.profile_message_properties = {}
         self.explicit_selection_properties = set()
         self.explicit_connection_properties = set()
+        self.explicit_protocol_properties = set()
         self._apply_action_defaults(action)
 
         if selection_properties:
@@ -310,6 +499,9 @@ class TransportProperties:
                 self.set_property(prop, value)
         if connection_properties:
             for prop, value in connection_properties.items():
+                self.set_property(prop, value)
+        if protocol_properties:
+            for prop, value in protocol_properties.items():
                 self.set_property(prop, value)
 
     @property
@@ -339,9 +531,11 @@ class TransportProperties:
             for key, value in self.selection_properties.items()
         }
         cloned.connection_properties = self.connection_properties.copy()
+        cloned.protocol_properties = self.protocol_properties.copy()
         cloned.profile_message_properties = self.profile_message_properties.copy()
         cloned.explicit_selection_properties = set(self.explicit_selection_properties)
         cloned.explicit_connection_properties = set(self.explicit_connection_properties)
+        cloned.explicit_protocol_properties = set(self.explicit_protocol_properties)
         return cloned
 
     def _normalize_selection_value(self, prop, value):
@@ -422,6 +616,18 @@ class TransportProperties:
             raise ValueError(f"Invalid {prop} value: {value}")
         return value
 
+    @staticmethod
+    def _validate_protocol_value(prop, value):
+        if not isinstance(value, str):
+            raise ValueError(f"{prop} must be an Enumeration")
+        normalized = {
+            candidate.lower(): candidate
+            for candidate in PROTOCOL_ENUM_VALUES[prop]
+        }.get(value.lower())
+        if normalized is None:
+            raise ValueError(f"Invalid {prop} value: {value}")
+        return normalized
+
     def set_property(self, prop, value):
         canonical = canonicalize_property_name(prop)
         if canonical in SELECTION_PROPERTY_DEFAULTS:
@@ -437,6 +643,13 @@ class TransportProperties:
                 value,
             )
             self.explicit_connection_properties.add(canonical)
+            return self
+        if canonical in PROTOCOL_PROPERTY_DEFAULTS:
+            self.protocol_properties[canonical] = self._validate_protocol_value(
+                canonical,
+                value,
+            )
+            self.explicit_protocol_properties.add(canonical)
             return self
         raise KeyError(f"Unknown Transport Property: {prop}")
 
@@ -491,6 +704,12 @@ class TransportProperties:
             ]
             self.explicit_connection_properties.discard(canonical)
             return self
+        if canonical in PROTOCOL_PROPERTY_DEFAULTS:
+            self.protocol_properties[canonical] = PROTOCOL_PROPERTY_DEFAULTS[
+                canonical
+            ]
+            self.explicit_protocol_properties.discard(canonical)
+            return self
         raise KeyError(f"Unknown Transport Property: {prop}")
 
     def get(self, prop, default=None):
@@ -499,6 +718,8 @@ class TransportProperties:
             return self.selection_properties[canonical]
         if canonical in self.connection_properties:
             return self.connection_properties[canonical]
+        if canonical in self.protocol_properties:
+            return self.protocol_properties[canonical]
         return default
 
     def get_selection_properties(self):
@@ -516,6 +737,12 @@ class TransportProperties:
     def get_explicit_connection_properties(self):
         return set(self.explicit_connection_properties)
 
+    def get_protocol_properties(self):
+        return self.protocol_properties.copy()
+
+    def get_explicit_protocol_properties(self):
+        return set(self.explicit_protocol_properties)
+
     def get_profile_message_properties(self):
         return self.profile_message_properties.copy()
 
@@ -523,9 +750,13 @@ class TransportProperties:
         return {
             "selection": self.get_selection_properties(),
             "connection": self.get_connection_properties(),
+            "protocolSpecific": self.get_protocol_properties(),
             "profileMessage": self.get_profile_message_properties(),
             "explicitSelection": self.get_explicit_selection_properties(),
             "explicitConnection": self.get_explicit_connection_properties(),
+            "explicitProtocolSpecific": (
+                self.get_explicit_protocol_properties()
+            ),
         }
 
     def add_interface_preference(self, interface_id, preference):

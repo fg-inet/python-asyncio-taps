@@ -13,8 +13,52 @@ Connection Context
 		.. automethod:: set_interface_policy
 		.. automethod:: set_pvd_policy
 		.. automethod:: set_address_family_policy
+		.. automethod:: apply_system_policy
+		.. automethod:: get_system_local_endpoints
 		.. automethod:: note_alternate_remote
+		.. automethod:: record_performance_observation
+		.. automethod:: get_performance_metrics
+		.. automethod:: get_performance_score
+		.. automethod:: get_performance_cache_snapshot
 		.. automethod:: get_snapshot
+
+System Policy
+-------------
+	.. autoclass:: SystemPolicySnapshot
+
+	.. autoclass:: SystemPolicyProvider
+
+		.. automethod:: snapshot
+
+	.. autoclass:: PortableInterfacePolicyProvider
+
+		.. automethod:: snapshot
+
+	.. autoclass:: NativeSystemPolicyProvider
+
+		.. automethod:: snapshot
+
+	.. autoclass:: InterfacePolicyResolver
+
+		.. automethod:: snapshot
+
+		.. automethod:: create_event_source
+
+	.. autoclass:: DarwinNetworkPolicyResolver
+
+		.. automethod:: snapshot
+
+	.. autoclass:: DarwinNetworkPathEventSource
+
+	.. autoclass:: NetworkManagerPolicyResolver
+
+		.. automethod:: snapshot
+
+	.. autoclass:: SystemPolicyMonitor
+
+		.. automethod:: refresh
+		.. automethod:: start
+		.. automethod:: stop
 
 Local Endpoint
 --------------
@@ -108,6 +152,7 @@ Preconnection
 		.. automethod:: note_alternate_remote
 		.. automethod:: separate_connection_context
 		.. automethod:: get_monitoring_snapshot
+		.. automethod:: set_property
 		.. automethod:: get_property
 		.. automethod:: default_property
 		.. automethod:: on_ready
@@ -130,6 +175,7 @@ Connection
 		.. automethod:: set_address_family_policy
 		.. automethod:: note_alternate_remote
 		.. automethod:: get_monitoring_snapshot
+		.. automethod:: set_property
 		.. automethod:: get_property
 		.. automethod:: get_message_properties
 		.. automethod:: default_property
@@ -194,6 +240,7 @@ Connection Group
 ----------------
 	.. autoclass:: ConnectionGroup
 
+		.. automethod:: set_property
 		.. automethod:: close
 		.. automethod:: abort
 
@@ -219,8 +266,16 @@ Framer
 	.. autoclass:: Framer
 
 		.. automethod:: start
+		.. automethod:: stop
 		.. automethod:: new_sent_message
 		.. automethod:: handle_received_data
+		.. automethod:: defer_connection_ready
+		.. automethod:: make_connection_ready
+		.. automethod:: defer_connection_closed
+		.. automethod:: make_connection_closed
+		.. automethod:: fail_connection
+		.. automethod:: prepend_framer
+		.. automethod:: start_passthrough
 		.. automethod:: send
 		.. automethod:: parse
 		.. automethod:: advance_receive_cursor

@@ -7,6 +7,7 @@ from xml.etree.ElementTree import fromstring
 from .connection import Connection
 from .connection_context import ConnectionContext
 from .endpoint import LocalEndpoint, RemoteEndpoint
+from .framer import Framer
 from .listener import Listener
 from .message import (
     MESSAGE_PROPERTY_DEFAULTS,
@@ -123,8 +124,8 @@ class Preconnection:
         self.establishment_error = None
         self.rendezvous_done = None
 
-        # Framer object
-        self.framer = None
+        self.framers = []
+        self._framer_configuration_locked = False
 
         if self.security_parameters:
             self._apply_security_defaults()
@@ -485,7 +486,7 @@ class Preconnection:
         cloned.ready = self.ready
         cloned.establishment_error = self.establishment_error
         cloned.rendezvous_done = self.rendezvous_done
-        cloned.framer = self.framer
+        cloned.framers = list(self.framers)
         cloned._rendezvous_mode = self._rendezvous_mode
         cloned._reuse_isolated_context = self._reuse_isolated_context
         for attribute in (
@@ -501,11 +502,14 @@ class Preconnection:
         return self._copy_configuration()
 
     def _snapshot(self, action):
+        self._framer_configuration_locked = True
         security_role = "listener" if action == "listen" else "client"
-        return self._copy_configuration(
+        snapshot = self._copy_configuration(
             action=action,
             security_role=security_role,
         )
+        snapshot._framer_configuration_locked = True
+        return snapshot
 
     def add_local_endpoint(self, endpoint):
         if not isinstance(endpoint, LocalEndpoint):
@@ -526,12 +530,23 @@ class Preconnection:
         return self.add_remote_endpoint(RemoteEndpoint().with_address(address))
 
     def add_framer(self, framer):
-        self.framer = framer
+        if self._framer_configuration_locked:
+            raise RuntimeError(
+                "Framers must be added before creating a Connection or Listener"
+            )
+        if not isinstance(framer, Framer):
+            raise TypeError("Framers must be Framer objects")
+        self.framers.append(framer)
         return self
 
     def set_property(self, prop, value):
         if is_message_property(prop):
             self.message_properties.set_property(prop, value)
+            canonical = canonicalize_message_property_name(prop)
+            if canonical == "safely_replayable":
+                self.transport_properties.profile_message_properties[
+                    "safelyReplayable"
+                ] = self.message_properties.safely_replayable
         else:
             self.transport_properties.set_property(prop, value)
         return self
@@ -546,6 +561,11 @@ class Preconnection:
             canonical = canonicalize_message_property_name(prop)
             setattr(self.message_properties, canonical, MESSAGE_PROPERTY_DEFAULTS[canonical])
             self.message_properties.explicit_properties.discard(canonical)
+            if canonical == "safely_replayable":
+                self.transport_properties.profile_message_properties.pop(
+                    "safelyReplayable",
+                    None,
+                )
             return self
         self.transport_properties.default_property(prop)
         return self
@@ -673,6 +693,10 @@ class Preconnection:
             except BaseException:
                 if new_connection.race_task is not None and not new_connection.race_task.done():
                     new_connection.race_task.cancel()
+                    await asyncio.gather(
+                        new_connection.race_task,
+                        return_exceptions=True,
+                    )
                 new_connection.abort(reason="Initiate timed out")
                 raise
         return new_connection
@@ -703,6 +727,7 @@ class Preconnection:
         if not self.local_endpoints:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
+        self._framer_configuration_locked = True
         action = "rendezvous" if self._rendezvous_mode else "listen"
         listener = Listener(self, action=action)
         # Create start_listener task so we can return right away
@@ -723,6 +748,7 @@ class Preconnection:
         if not self.remote_endpoints:
             raise Exception("A remote endpoint needs to be specified to rendezvous")
 
+        self._framer_configuration_locked = True
         listener_preconnection = self.clone()
         connection_preconnection = self.clone()
         listener_preconnection._rendezvous_mode = True
@@ -855,13 +881,36 @@ class Preconnection:
                 accept_task,
                 return_exceptions=True,
             )
+            rendezvous_connections = list(active_attempts)
+            for task in (active_task, accept_task):
+                if task.cancelled():
+                    continue
+                try:
+                    connection = task.result()
+                except BaseException:
+                    continue
+                if connection not in rendezvous_connections:
+                    rendezvous_connections.append(connection)
+            for connection in getattr(listener, "_accepted_connections", ()):
+                if connection not in rendezvous_connections:
+                    rendezvous_connections.append(connection)
+
             for connection in active_attempts:
                 if connection is winner:
                     continue
-                if ambiguous_direction and winner is not None:
-                    continue
                 if connection.state is not ConnectionState.CLOSED:
-                    connection.abort("Rendezvous candidate was not selected")
+                    if ambiguous_direction and winner is not None:
+                        winner._rendezvous_companions.append(connection)
+                    else:
+                        connection.abort("Rendezvous candidate was not selected")
+            if ambiguous_direction and winner is not None:
+                for connection in rendezvous_connections:
+                    if (
+                        connection is not winner
+                        and connection not in winner._rendezvous_companions
+                        and connection.state is not ConnectionState.CLOSED
+                    ):
+                        winner._rendezvous_companions.append(connection)
             await listener.stop()
 
     @staticmethod
@@ -975,11 +1024,8 @@ class Preconnection:
     def on_rendezvous_done(self, callback):
         self.rendezvous_done = callback
 
-    # TODO: Refactor this probably
     def got_mc(self, listener, data, port, source_address=None):
-        """ Method that redirects incoming multicast
-            data to the relevant connection object
-        """
+        """Route a multicast datagram to its source-specific Connection."""
         try:
             cb_data = data
             source_address = (
@@ -993,9 +1039,14 @@ class Preconnection:
             )
             if source_address is None:
                 raise ValueError("Multicast packet did not include a source address")
-            if port in listener.active_ports:
-                listener.active_ports[port].transports[0].datagram_received(
-                    cb_data, (source_address, port))
+            remote_key = (source_address, port)
+            if remote_key in listener.active_ports:
+                listener.active_ports[remote_key].transports[
+                    0
+                ].datagram_received(
+                    cb_data,
+                    (source_address, port),
+                )
             else:
                 rp = RemoteEndpoint()
                 rp.with_address(source_address)
@@ -1007,13 +1058,13 @@ class Preconnection:
                     security_parameters=listener.security_parameters,
                     event_loop=listener.loop,
                 )
-                if listener.framer:
-                    precon.add_framer(listener.framer)
+                for framer in getattr(listener, "framers", ()):
+                    precon.add_framer(framer)
                 conn = Connection(precon)
                 new_udp = UdpTransport(conn,
                                        conn.local_endpoint,
                                        conn.remote_endpoint)
-                listener.active_ports[port] = conn
+                listener.active_ports[remote_key] = conn
 
                 async def open_and_deliver():
                     await new_udp.active_open(None)

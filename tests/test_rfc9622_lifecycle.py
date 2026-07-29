@@ -258,6 +258,37 @@ def test_sections_10_and_11_close_waits_for_accepted_send():
     ]
 
 
+def test_section_10_close_waits_for_os_transport_shutdown():
+    loop, connection, remote = _connection()
+    connection.state = taps.ConnectionState.ESTABLISHED
+    transport = TcpTransport(connection=connection, remote_endpoint=remote)
+
+    class DeferredCloseTransport(asyncio.Transport):
+        def __init__(self):
+            super().__init__()
+            self.close_called = False
+
+        def close(self):
+            self.close_called = True
+            loop.call_later(0.01, transport.connection_lost, None)
+
+    raw_transport = DeferredCloseTransport()
+    transport.transport = raw_transport
+
+    close_task = connection.close()
+    loop.run_until_complete(asyncio.sleep(0))
+
+    assert raw_transport.close_called is True
+    assert close_task.done() is False
+    assert connection.state is taps.ConnectionState.CLOSING
+
+    loop.run_until_complete(close_task)
+    loop.close()
+
+    assert connection.state is taps.ConnectionState.CLOSED
+    assert connection.get_event_history()[-1]["name"] == "closed"
+
+
 def test_section_10_abort_completes_pending_send_before_connection_error():
     loop, connection, _remote = _connection()
     connection.state = taps.ConnectionState.ESTABLISHED

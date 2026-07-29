@@ -182,10 +182,26 @@ class SecurityParameters:
         logger.info("Configured cipher suites.")
 
     def set_session_cache_capacity(self, capacity):
+        if (
+            not isinstance(capacity, int)
+            or isinstance(capacity, bool)
+            or capacity < 0
+        ):
+            raise ValueError(
+                "Session cache capacity must be a non-negative Integer"
+            )
         self.session_cache_capacity = capacity
         logger.info("Configured session cache capacity: " + str(capacity))
 
     def set_session_cache_lifetime(self, lifetime):
+        if (
+            not isinstance(lifetime, (int, float))
+            or isinstance(lifetime, bool)
+            or lifetime < 0
+        ):
+            raise ValueError(
+                "Session cache lifetime must be a non-negative duration"
+            )
         self.session_cache_lifetime = lifetime
         logger.info("Configured session cache lifetime: " + str(lifetime))
 

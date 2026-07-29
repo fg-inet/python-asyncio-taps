@@ -91,11 +91,47 @@ python -m pip install -e '.[quic]'
 
 The current QUIC integration follows the RFC direction of mapping a TAPS
 `Connection` to a QUIC stream, with shared association state underneath.
+Clones can mix bidirectional streams, unidirectional streams, and one
+association-wide RFC 9221 QUIC DATAGRAM Connection. Policy-bound session
+tickets are cached in the shared `ConnectionContext`, and replay-safe
+`InitiateWithSend` Messages can use genuine QUIC 0-RTT over streams or
+DATAGRAMs with transparent rejection fallback. Active QUIC associations can
+also validate and hand over to a new local UDP path under
+`multipathPolicy=Handover`; the resulting `PathChange` is shared across the
+Connection Group and failed validation rolls back to the old socket. Live
+QUIC RTT plus fresh-association latency and success history feed a bounded,
+expiring `ConnectionContext` performance cache for future candidate ordering.
+See [`examples/quic_example`](examples/quic_example/README.md) for a runnable
+two-host demo.
+
+PyTAPS also provides a pluggable dynamic System Policy extension.
+`NativeSystemPolicyProvider` refreshes interfaces, addresses, default routes,
+link state where the platform exposes it, and a route-scoped network identity
+through `SystemPolicyMonitor`. Linux netlink and BSD/macOS routing-socket
+notifications trigger immediate, coalesced refreshes, with periodic polling
+as a safety net and fallback; `PortableInterfacePolicyProvider` remains the
+address-only fallback. On macOS, the optional `system-policy` extra adds
+Network.framework path status, interface type, expensive-path metering, and
+Low Data Mode constraints. On NetworkManager-based Linux systems, `nmcli`
+supplies configured or inferred metering state. Future Connections use those
+paths and costs, interface-following
+Listeners reconcile TCP, UDP, TLS/TCP, and QUIC bindings make-before-break
+with bounded retries, and active Connections receive a non-destructive path
+advisory if their selected path becomes invalid. Retired QUIC accept sockets
+drain existing associations while refusing new ones. QUIC associations
+configured with `multipath=Active` and `multipathPolicy=Handover`
+automatically validate a suitable replacement path when the selected
+interface, address, or route-scoped network identity changes, while honoring
+the application's Local Endpoint constraints. Named-interface multicast
+Listeners also rejoin make-before-break when their interface address or
+network identity changes; explicit multicast interface addresses remain
+fixed. Custom platform and administrative policy can enrich the same
+`SystemPolicyProvider` contract and event-source interface.
 
 For local development with tests:
 
 ~~~
-python -m pip install -e '.[test,dev]'
+python -m pip install -e '.[test,dev,quic,system-policy]'
 ~~~
 
 ### Use

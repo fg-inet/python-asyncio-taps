@@ -13,6 +13,15 @@ class ConnectionGroup:
         self.shared_connection_properties = {}
         self.connection_context = None
         self._peer_connections = set()
+        self.current_path = {
+            "local": None,
+            "remote": None,
+        }
+        self.previous_path = {
+            "local": None,
+            "remote": None,
+        }
+        self.path_change_count = 0
         if initial_connection is not None:
             self.add_connection(initial_connection)
 
@@ -50,6 +59,12 @@ class ConnectionGroup:
         self._transfer_connection_context(connection)
         connection.connection_context = self.connection_context
         self._apply_shared_properties(connection)
+        if (
+            self.current_path["local"] is not None
+            or self.current_path["remote"] is not None
+        ):
+            connection._current_path = self.current_path.copy()
+            connection._previous_path = self.previous_path.copy()
         return connection
 
     def remove_connection(self, connection):
@@ -62,12 +77,81 @@ class ConnectionGroup:
             self.connection_context.detach_group()
             self.connection_context = None
 
-    def set_property(self, prop, value):
+    def set_property(self, prop, value, *, explicit=True):
+        if prop not in self.ENTANGLED_PROPERTIES:
+            return
+        proposals = []
+        for connection in self.connections:
+            proposed = connection._propose_connection_property(
+                prop,
+                value,
+                explicit=explicit,
+            )
+            normalized = proposed.get(prop)
+            connection._validate_connection_property(
+                prop,
+                normalized,
+                transport_properties=proposed,
+            )
+            proposals.append((connection, proposed))
+
+        previous_shared = self.shared_connection_properties.copy()
+        previous_state = [
+            (
+                connection,
+                connection.transport_properties,
+                connection._backend_property_effects.copy(),
+            )
+            for connection, _proposed in proposals
+        ]
+        normalized = (
+            proposals[0][1].get(prop)
+            if proposals
+            else value
+        )
+        try:
+            self.shared_connection_properties[prop] = normalized
+            for connection, proposed in proposals:
+                connection.transport_properties = proposed
+            for connection, _proposed in proposals:
+                connection._apply_connection_properties(
+                    strict_property=prop,
+                )
+        except Exception:
+            self.shared_connection_properties = previous_shared
+            for connection, properties, effects in previous_state:
+                connection.transport_properties = properties
+                connection._backend_property_effects = effects
+            for connection, _properties, _effects in previous_state:
+                try:
+                    connection._apply_connection_properties(
+                        strict_property=prop,
+                    )
+                except Exception:
+                    pass
+            raise
+
+    def set_derived_property(self, prop, value):
         if prop not in self.ENTANGLED_PROPERTIES:
             return
         self.shared_connection_properties[prop] = value
         for connection in self.connections:
             connection.transport_properties.connection_properties[prop] = value
+
+    def note_path_change(
+        self,
+        previous_path,
+        current_path,
+        *,
+        initial=False,
+    ):
+        if current_path == self.current_path:
+            return self.current_path.copy()
+        self.previous_path = previous_path.copy()
+        self.current_path = current_path.copy()
+        if not initial:
+            self.path_change_count += 1
+        return self.current_path.copy()
 
     async def close(self):
         connections = list(self.connections)
@@ -89,6 +173,13 @@ class ConnectionGroup:
         connections = list(self.connections)
         for connection in connections:
             connection.abort(reason="Connection group aborted")
+        close_tasks = [
+            connection._close_task
+            for connection in connections
+            if connection._close_task is not None
+        ]
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
         if connections:
             await asyncio.gather(
                 *(connection.wait_closed() for connection in connections),
@@ -101,6 +192,9 @@ class ConnectionGroup:
             "size": len(self.connections),
             "connections": list(self.connections),
             "sharedConnectionProperties": dict(self.shared_connection_properties),
+            "currentPath": self.current_path.copy(),
+            "previousPath": self.previous_path.copy(),
+            "pathChangeCount": self.path_change_count,
             "connectionContext": (
                 self.connection_context.get_snapshot()
                 if self.connection_context is not None else None
@@ -116,8 +210,9 @@ class ConnectionGroup:
         if previous_context is self.connection_context:
             return
         previous_context.detach_connection_for_transfer(
+            connection,
             was_ready=connection._context_ready_recorded,
         )
-        self.connection_context.attach_connection()
+        self.connection_context.attach_connection(connection)
         if connection._context_ready_recorded:
             self.connection_context.mark_connection_ready()
