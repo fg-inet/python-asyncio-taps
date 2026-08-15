@@ -318,6 +318,24 @@ peer presents it; returning a falsy value or raising rejects that candidate. It
 runs for both TLS and QUIC. The identity challenge callback is invoked when a
 private key operation is needed to unlock a protected local identity.
 
+## Live Video Example
+
+`examples/video_example` streams live H.264 over QUIC with one TAPS Message per
+encoded picture, and plays it with `ffplay`:
+
+~~~
+python examples/video_example/videoServer.py --port 4460
+python examples/video_example/videoClient.py --port 4460
+~~~
+
+It puts the media-facing Transport Properties to work: the Low
+Latency/Interactive capacity profile, `msgPriority` so keyframes never queue
+behind their own delta frames, `connPriority` so a telemetry Connection in the
+same group yields to video, `msgLifetime` so frames that would arrive late are
+dropped and reported as Expired, and a Message Framer that restores picture
+boundaries on the QUIC byte stream. See
+[examples/video_example/README.md](examples/video_example/README.md).
+
 ## Running Tests
 
 ### Requirements:
