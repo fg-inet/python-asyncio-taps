@@ -546,6 +546,78 @@ def test_dynamic_address_family_policy_reorders_remote_addresses():
     assert ordered[1][0] == socket.AddressFamily.AF_INET6
 
 
+def _families(ordered):
+    return [
+        "v6" if family == socket.AddressFamily.AF_INET6 else "v4"
+        for family, _address in ordered
+    ]
+
+
+def test_rfc8305_section_4_interleaves_address_families():
+    """RFC 9623 Section 4.3.2 points at the Happy Eyeballs ordering.
+
+    Section 4 of RFC 8305 interleaves the families so a broken family cannot
+    stall establishment behind a long run of its addresses.
+    """
+    ordered = order_remote_addresses(
+        [
+            (socket.AddressFamily.AF_INET6, "2001:db8::1"),
+            (socket.AddressFamily.AF_INET6, "2001:db8::2"),
+            (socket.AddressFamily.AF_INET6, "2001:db8::3"),
+            (socket.AddressFamily.AF_INET, "192.0.2.1"),
+            (socket.AddressFamily.AF_INET, "192.0.2.2"),
+        ]
+    )
+
+    assert _families(ordered) == ["v6", "v4", "v6", "v4", "v6"]
+    # Every resolved address is still attempted exactly once.
+    assert len(ordered) == 5
+    assert len(set(ordered)) == 5
+
+
+def test_rfc8305_section_4_first_address_family_count_is_configurable():
+    addresses = [
+        (socket.AddressFamily.AF_INET6, "2001:db8::1"),
+        (socket.AddressFamily.AF_INET6, "2001:db8::2"),
+        (socket.AddressFamily.AF_INET6, "2001:db8::3"),
+        (socket.AddressFamily.AF_INET, "192.0.2.1"),
+        (socket.AddressFamily.AF_INET, "192.0.2.2"),
+    ]
+
+    ordered = order_remote_addresses(addresses, first_address_family_count=2)
+
+    assert _families(ordered) == ["v6", "v6", "v4", "v6", "v4"]
+
+
+def test_rfc8305_section_4_interleaving_follows_the_family_policy():
+    """Policy chooses which family leads; interleaving still applies."""
+    context = taps.ConnectionContext()
+    context.set_address_family_policy("ipv4", preference_adjustment=3)
+
+    ordered = order_remote_addresses(
+        [
+            (socket.AddressFamily.AF_INET6, "2001:db8::1"),
+            (socket.AddressFamily.AF_INET6, "2001:db8::2"),
+            (socket.AddressFamily.AF_INET, "192.0.2.1"),
+            (socket.AddressFamily.AF_INET, "192.0.2.2"),
+        ],
+        connection_context=context,
+    )
+
+    assert _families(ordered) == ["v4", "v6", "v4", "v6"]
+
+
+def test_rfc8305_section_4_single_family_is_left_untouched():
+    addresses = [
+        (socket.AddressFamily.AF_INET, "192.0.2.1"),
+        (socket.AddressFamily.AF_INET, "192.0.2.2"),
+        (socket.AddressFamily.AF_INET, "192.0.2.3"),
+    ]
+
+    assert order_remote_addresses(addresses) == addresses
+    assert order_remote_addresses([]) == []
+
+
 def test_alternate_remote_hints_expand_quic_candidates_only():
     remote = taps.RemoteEndpoint().with_address("203.0.113.10").with_port(443)
     preconnection = taps.Preconnection(
@@ -1974,8 +2046,8 @@ def test_quic_clone_uses_shared_association_stream_mapping(monkeypatch):
 
     monkeypatch.setattr(transport_impl, "QuicConfiguration", FakeQuicConfiguration)
     monkeypatch.setattr(
-        transport_impl,
-        "aioquic_connect",
+        transport_impl.QuicAssociationManager,
+        "_connect_client_protocol",
         lambda *args, **kwargs: FakeConnectContext(),
     )
     monkeypatch.setattr(transport_impl, "aioquic_serve", object())

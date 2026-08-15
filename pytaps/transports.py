@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import socket
 import ssl
+from contextlib import asynccontextmanager
 from copy import deepcopy
 
 from .endpoint import LocalEndpoint, RemoteEndpoint
@@ -11,7 +12,7 @@ from .transportProperties import (
     PreferenceLevel,
     get_protocol_capabilities,
 )
-from .utility import ConnectionState, setup_logger
+from .utility import ConnectionState, current_task_or_none, setup_logger
 
 try:
     import mctx_core
@@ -23,6 +24,7 @@ try:
     from aioquic.asyncio import serve as aioquic_serve
     from aioquic.asyncio.client import connect as aioquic_connect
     from aioquic.asyncio.protocol import QuicConnectionProtocol
+    from aioquic.quic.connection import QuicConnection
     from aioquic.quic.configuration import QuicConfiguration
     from aioquic.quic.events import (
         ConnectionTerminated,
@@ -36,6 +38,7 @@ except ImportError:
     Buffer = None
     aioquic_serve = None
     aioquic_connect = None
+    QuicConnection = None
     QuicConnectionProtocol = None
     QuicConfiguration = None
     ConnectionTerminated = None
@@ -487,7 +490,7 @@ class QuicAssociationManager:
             )
 
     async def _cancel_background_tasks(self):
-        current = asyncio.current_task()
+        current = current_task_or_none()
         tasks = [
             task
             for task in self._background_tasks
@@ -499,7 +502,7 @@ class QuicAssociationManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def wait_idle(self):
-        current = asyncio.current_task()
+        current = current_task_or_none()
         while True:
             tasks = [
                 task
@@ -941,6 +944,71 @@ class QuicAssociationManager:
         )
 
     @staticmethod
+    def _client_socket(local_endpoint, remote_host):
+        """Bind the client socket for a QUIC association.
+
+        aioquic always binds its client to the IPv6 wildcard as a dual-stack
+        socket. A dual-stack wildcard binding can share a port number with a
+        socket bound to a specific IPv4 address, and the host then delivers
+        datagrams to the more specific binding, so a local Listener would
+        silently receive this Connection's packets and the handshake would
+        never complete. Binding a socket of the Remote Endpoint's own address
+        family makes the port allocation conflict visible to the host, and
+        lets the Local Endpoint constraints of RFC 9622 Section 6.1.2 apply to
+        QUIC as they do to every other protocol.
+        """
+        requested_address = (
+            local_endpoint.socket_address()
+            if local_endpoint is not None
+            else None
+        )
+        requested_port = (
+            local_endpoint.port
+            if local_endpoint is not None and local_endpoint.port
+            else 0
+        )
+        if (
+            local_endpoint is not None
+            and local_endpoint.interface is not None
+            and requested_address is None
+        ):
+            raise ValueError(
+                "A QUIC interface constraint also requires a local IP address"
+            )
+
+        if requested_address is not None:
+            parsed = ipaddress.ip_address(requested_address.split("%", 1)[0])
+            family = (
+                socket.AF_INET if parsed.version == 4 else socket.AF_INET6
+            )
+            bind_address = requested_address
+        else:
+            try:
+                remote_ip = ipaddress.ip_address(
+                    str(remote_host).split("%", 1)[0]
+                )
+            except (TypeError, ValueError):
+                remote_ip = None
+            family = (
+                socket.AF_INET
+                if remote_ip is not None and remote_ip.version == 4
+                else socket.AF_INET6
+            )
+            bind_address = "0.0.0.0" if family == socket.AF_INET else "::"
+
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+        completed = False
+        try:
+            if family == socket.AF_INET6:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind((bind_address, requested_port))
+            completed = True
+            return sock, family
+        finally:
+            if not completed:
+                sock.close()
+
+    @staticmethod
     def _migration_socket(local_endpoint, remote_path):
         requested_address = local_endpoint.socket_address()
         requested_port = local_endpoint.port or 0
@@ -1289,9 +1357,9 @@ class QuicAssociationManager:
         if self._peer_certificate_verified:
             return
         security_parameters = connection.security_parameters
-        if (
-            security_parameters is not None
-            and security_parameters.pinned_server_certificates
+        if security_parameters is not None and (
+            security_parameters.pinned_server_certificates
+            or security_parameters.trust_verification_callback is not None
         ):
             # A resumed PSK authenticates the server represented by the
             # previously verified, policy-bound ticket cache entry.
@@ -1321,9 +1389,13 @@ class QuicAssociationManager:
                         )
                         or []
                     )
-                security_parameters.verify_pinned_server_certificates(
-                    peer_chain
-                )
+                if security_parameters.pinned_server_certificates:
+                    security_parameters.verify_pinned_server_certificates(
+                        peer_chain
+                    )
+                # RFC 9622 Section 6.3.8: blocks establishment until the
+                # application has decided whether it trusts the peer.
+                security_parameters.run_trust_verification(peer_chain)
         self._peer_certificate_verified = True
         self._flush_pending_client_session_tickets()
 
@@ -1650,6 +1722,58 @@ class QuicAssociationManager:
             else []
         )
 
+    @asynccontextmanager
+    async def _connect_client_protocol(
+        self,
+        remote_host,
+        remote_port,
+        *,
+        configuration,
+        local_endpoint=None,
+    ):
+        """Open a QUIC client association over a socket this class owns.
+
+        Mirrors the contract of ``aioquic.asyncio.client.connect`` with
+        ``wait_connected=False``, but binds the socket through
+        :meth:`_client_socket` instead of the dual-stack wildcard.
+        """
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(
+            remote_host,
+            remote_port,
+            type=socket.SOCK_DGRAM,
+        )
+        sock, family = self._client_socket(local_endpoint, remote_host)
+        completed = False
+        try:
+            addr = next(
+                (info[4] for info in infos if info[0] == family),
+                None,
+            )
+            if addr is None:
+                raise ConnectionError(
+                    f"No {family.name} address available for {remote_host}"
+                )
+            quic = QuicConnection(
+                configuration=configuration,
+                session_ticket_handler=self._cache_client_session_ticket,
+            )
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: PytapsQuicProtocol(quic, association=self),
+                sock=sock,
+            )
+            completed = True
+        finally:
+            if not completed:
+                sock.close()
+        try:
+            protocol.connect(addr, transmit=False)
+            yield protocol
+        finally:
+            protocol.close()
+            await protocol.wait_closed()
+            transport.close()
+
     async def connect_client(
         self,
         connection,
@@ -1710,20 +1834,11 @@ class QuicAssociationManager:
                     # Resume the TLS session without offering application
                     # early data when TAPS has no replay-safe Message.
                     configuration.session_ticket.max_early_data_size = None
-            local_port = local_endpoint.port if local_endpoint else 0
-            context_manager = aioquic_connect(
+            context_manager = self._connect_client_protocol(
                 remote_host,
                 remote_endpoint.port,
                 configuration=configuration,
-                create_protocol=(
-                    lambda quic, stream_handler=None: PytapsQuicProtocol(
-                        quic,
-                        association=self,
-                    )
-                ),
-                session_ticket_handler=self._cache_client_session_ticket,
-                wait_connected=False,
-                local_port=local_port or 0,
+                local_endpoint=local_endpoint,
             )
             self.context_manager = context_manager
             try:
@@ -2526,7 +2641,12 @@ class QuicAssociationManager:
         if not self._handshake_complete_event.is_set():
             self._handshake_complete_event.set()
         self.transport_state_changed()
-        current = asyncio.current_task()
+        try:
+            current = current_task_or_none()
+        except RuntimeError:
+            # Termination can also be reached during interpreter or loop
+            # teardown, where there is no running loop to ask for a task.
+            current = None
         for task in list(self._background_tasks):
             if task is not current and not task.done():
                 task.cancel()
@@ -2584,7 +2704,12 @@ class QuicAssociationManager:
                         await wait_closed()
             finally:
                 for client_transport in list(self._client_transports):
-                    client_transport.close()
+                    try:
+                        client_transport.close()
+                    except RuntimeError:
+                        # The loop can already be closed when an association is
+                        # torn down during shutdown. Keep releasing the rest.
+                        pass
                 self._client_transports.clear()
                 self._active_client_transport = None
                 self._active_client_transport_token = None
@@ -3037,7 +3162,7 @@ class TransportLayer(asyncio.Protocol):
             pass
 
     async def _cancel_send_tasks(self):
-        current = asyncio.current_task()
+        current = current_task_or_none()
         tasks = [
             task
             for task in self._send_tasks
@@ -3822,7 +3947,7 @@ class QuicTransport(TransportLayer):
             await self._cancel_send_tasks()
             if self._reader_task is not None:
                 self._reader_task.cancel()
-                if self._reader_task is not asyncio.current_task():
+                if self._reader_task is not current_task_or_none():
                     await asyncio.gather(
                         self._reader_task,
                         return_exceptions=True,
@@ -4333,10 +4458,14 @@ class TcpTransport(TransportLayer):
 
         # Check if its an incoming or outgoing connection
         if self.connection.active:
+            security_parameters = self.connection.security_parameters
             if (
                 self.protocol_name == "tls-tcp"
-                and self.connection.security_parameters is not None
-                and self.connection.security_parameters.pinned_server_certificates
+                and security_parameters is not None
+                and (
+                    security_parameters.pinned_server_certificates
+                    or security_parameters.trust_verification_callback is not None
+                )
             ):
                 try:
                     ssl_object = transport.get_extra_info("ssl_object")
@@ -4345,8 +4474,13 @@ class TcpTransport(TransportLayer):
                             "TLS peer certificate is unavailable"
                         )
                     peer_chain = _presented_tls_certificate_chain(ssl_object)
-                    self.connection.security_parameters. \
-                        verify_pinned_server_certificates(peer_chain)
+                    if security_parameters.pinned_server_certificates:
+                        security_parameters.verify_pinned_server_certificates(
+                            peer_chain
+                        )
+                    # RFC 9622 Section 6.3.8: blocks establishment until the
+                    # application has decided whether it trusts the peer.
+                    security_parameters.run_trust_verification(peer_chain)
                 except (TypeError, ValueError, ssl.SSLError) as exc:
                     transport.close()
                     self._set_open_error(exc)

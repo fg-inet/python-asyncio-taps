@@ -1,9 +1,11 @@
 import asyncio
 import socket
+from types import SimpleNamespace
 
 import pytest
 
 import pytaps as taps
+import pytaps.connection as connection_module
 import pytaps.connection_context as connection_context_module
 import pytaps.transports as transports_module
 from pytaps.transportProperties import get_protocol_capabilities
@@ -764,3 +766,163 @@ async def test_late_transport_cannot_overwrite_candidate_winner():
     assert tcp.transport.closed is True
 
     connection._mark_closed()
+
+
+def test_rfc8305_section_5_racing_delay_stays_within_bounds():
+    """Section 4.3.2 of RFC 9623 points at the RFC 8305 Connection Attempt Delay.
+
+    The delay here is derived from cached path history, which is exactly the
+    case Section 5 of RFC 8305 bounds: a subsequent attempt must never start
+    within 10 ms of the previous one, with a recommended minimum of 100 ms and
+    a recommended maximum of 2 s.
+    """
+    loop = asyncio.new_event_loop()
+    remote = taps.RemoteEndpoint().with_address("192.0.2.10").with_port(443)
+    connection = taps.Connection(
+        taps.Preconnection(remote_endpoint=remote, event_loop=loop)
+    )
+    candidate = SimpleNamespace(
+        protocol="tcp",
+        path="default",
+        local_address=None,
+        local_endpoint=None,
+        remote_address="192.0.2.10",
+        remote_endpoint=remote,
+    )
+
+    observed = []
+    for score in (-5, -3, -1, 0, 1, 3, 5):
+        connection.connection_context.get_path_score = (
+            lambda *args, _score=score, **kwargs: _score
+        )
+        observed.append(connection._candidate_racing_delay(candidate))
+
+    assert min(observed) >= 0.01, "RFC 8305 forbids attempts within 10 ms"
+    assert min(observed) >= connection_module.MINIMUM_RACING_DELAY
+    assert max(observed) <= connection_module.MAXIMUM_RACING_DELAY
+    assert connection_module.MAXIMUM_RACING_DELAY <= 2.0
+
+    # A better path still races sooner than a worse one.
+    assert observed[0] > observed[3] > observed[-1]
+    loop.close()
+
+
+@pytest.mark.asyncio
+async def test_rfc9623_section_4_3_2_failure_starts_the_next_child_immediately(
+    monkeypatch,
+):
+    """A failed child must not make the next one sit out its stagger.
+
+    Section 4.3.2 of RFC 9623: if a child node fails to establish connectivity
+    before the delay time has expired for the next child, the next child should
+    be started immediately.
+    """
+    connection = taps.Connection(
+        taps.Preconnection(remote_endpoint=_remote("192.0.2.40", 443))
+    )
+    candidates = [
+        _candidate("tcp", "192.0.2.40"),
+        _candidate("tcp", "192.0.2.41"),
+        _candidate("tcp", "192.0.2.42"),
+    ]
+    branches = _branches_for(candidates)
+    stagger = 30.0
+    attempts = []
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    async def resolve_branch(branch):
+        index = int(branch.branch_id.rsplit("-", 1)[1])
+        return [candidates[index]]
+
+    async def open_candidate(candidate):
+        attempts.append((candidate.remote_address, loop.time() - started))
+        if len(attempts) < len(candidates):
+            raise ConnectionRefusedError("candidate refused")
+        connection.protocol = candidate.protocol
+        connection.remote_endpoint = candidate.remote_endpoint.clone()
+        connection._protocol_capabilities = get_protocol_capabilities(
+            candidate.protocol,
+            connection.transport_properties,
+        )
+        connection._mark_ready()
+
+    monkeypatch.setattr(
+        connection, "_candidate_branches_for_racing", lambda: branches
+    )
+    monkeypatch.setattr(connection, "_resolve_candidate_branch", resolve_branch)
+    monkeypatch.setattr(
+        connection, "_candidate_racing_delay", lambda candidate: stagger
+    )
+    monkeypatch.setattr(connection, "_open_candidate", open_candidate)
+
+    await connection.race()
+    await asyncio.sleep(0)
+
+    assert [address for address, _at in attempts] == [
+        "192.0.2.40",
+        "192.0.2.41",
+        "192.0.2.42",
+    ]
+    # Without acceleration the last attempt could not start before 2 staggers.
+    assert attempts[-1][1] < stagger, (
+        f"last candidate waited {attempts[-1][1]:.1f}s of a {stagger}s stagger"
+    )
+    assert connection.state is taps.ConnectionState.ESTABLISHED
+
+
+@pytest.mark.asyncio
+async def test_rfc9623_section_4_3_2_one_failure_releases_only_one_child(
+    monkeypatch,
+):
+    """Acceleration must not collapse the race into simultaneous racing.
+
+    Sections 4.3.1 and 4.3.3 of RFC 9623 both rely on the race staying
+    staggered, so a single failure releases exactly one waiting child.
+    """
+    connection = taps.Connection(
+        taps.Preconnection(remote_endpoint=_remote("192.0.2.40", 443))
+    )
+    candidates = [
+        _candidate("tcp", "192.0.2.40"),
+        _candidate("tcp", "192.0.2.41"),
+        _candidate("tcp", "192.0.2.42"),
+    ]
+    branches = _branches_for(candidates)
+    in_flight = []
+    peak = []
+
+    async def resolve_branch(branch):
+        index = int(branch.branch_id.rsplit("-", 1)[1])
+        return [candidates[index]]
+
+    async def open_candidate(candidate):
+        in_flight.append(candidate)
+        peak.append(len(in_flight))
+        try:
+            await asyncio.sleep(0.05)
+            if len(peak) < len(candidates):
+                raise ConnectionRefusedError("candidate refused")
+            connection.protocol = candidate.protocol
+            connection.remote_endpoint = candidate.remote_endpoint.clone()
+            connection._protocol_capabilities = get_protocol_capabilities(
+                candidate.protocol,
+                connection.transport_properties,
+            )
+            connection._mark_ready()
+        finally:
+            in_flight.remove(candidate)
+
+    monkeypatch.setattr(
+        connection, "_candidate_branches_for_racing", lambda: branches
+    )
+    monkeypatch.setattr(connection, "_resolve_candidate_branch", resolve_branch)
+    monkeypatch.setattr(
+        connection, "_candidate_racing_delay", lambda candidate: 10.0
+    )
+    monkeypatch.setattr(connection, "_open_candidate", open_candidate)
+
+    await connection.race()
+    await asyncio.sleep(0)
+
+    assert max(peak) == 1, "a single failure released more than one child"

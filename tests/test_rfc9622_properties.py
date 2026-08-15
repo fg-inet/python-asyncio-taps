@@ -194,6 +194,24 @@ def test_section_9_1_3_infinite_lifetime_and_capacity_profile_values():
     assert context.capacity_profile == "Low Latency/Interactive"
 
 
+def test_appendix_b_1_preference_convenience_actions():
+    properties = taps.TransportProperties()
+
+    assert properties.require("keepAlive").get("keepAlive") is P.REQUIRE
+    assert properties.prefer("keepAlive").get("keepAlive") is P.PREFER
+    assert properties.no_preference("keepAlive").get("keepAlive") is P.IGNORE
+    assert properties.avoid("keepAlive").get("keepAlive") is P.AVOID
+    assert properties.prohibit("keepAlive").get("keepAlive") is P.PROHIBIT
+
+    # Appendix B.1: NoPreference(x) is equivalent to Set(x, "No Preference").
+    equivalent = taps.TransportProperties()
+    equivalent.set_property("keepAlive", "No Preference")
+
+    assert taps.TransportProperties().no_preference("keepAlive").get(
+        "keepAlive"
+    ) == equivalent.get("keepAlive")
+
+
 def test_appendix_b_2_transport_property_profiles():
     stream = taps.TransportProperties().reliable_inorder_stream()
     message = taps.TransportProperties().reliable_message()

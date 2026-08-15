@@ -172,7 +172,6 @@ def test_tcp_may_treat_unordered_message_as_no_op():
 @pytest.mark.parametrize(
     ("property_name", "value", "error_text"),
     [
-        ("connScheduler", "Round Robin", "default Connection Group scheduler"),
         ("maxSendRate", 1000, "application-rate shaping"),
         ("maxRecvRate", 1000, "application-rate shaping"),
         ("tcp.userTimeoutValue", 30, "RFC 5482"),

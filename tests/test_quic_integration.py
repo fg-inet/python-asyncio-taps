@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import ssl
 from pathlib import Path
 from types import SimpleNamespace
@@ -1937,3 +1938,115 @@ async def test_quic_failed_migration_path_validation_rolls_back(
 
     await _close_connections(client, server)
     await listener.stop()
+
+
+@pytest.mark.asyncio
+async def test_quic_client_socket_matches_the_remote_address_family():
+    """A QUIC client must not bind the dual-stack wildcard.
+
+    aioquic binds its client socket to the IPv6 wildcard as a dual-stack
+    socket. Such a binding can share a port number with a socket bound to a
+    specific IPv4 address, and the host then delivers datagrams to the more
+    specific binding, so a local Listener silently receives the client's
+    packets and the handshake never completes.
+    """
+    pytest.importorskip("aioquic")
+    manager = QuicAssociationManager
+
+    sock, family = manager._client_socket(None, "127.0.0.1")
+    try:
+        assert family is socket.AF_INET
+        assert sock.getsockname()[0] == "0.0.0.0"
+    finally:
+        sock.close()
+
+    sock, family = manager._client_socket(None, "::1")
+    try:
+        assert family is socket.AF_INET6
+        assert sock.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 1
+    finally:
+        sock.close()
+
+
+@pytest.mark.asyncio
+async def test_quic_client_port_cannot_collide_with_a_local_listener():
+    """The client binding must conflict with a Listener on the same port.
+
+    This is the property that was violated: a dual-stack wildcard client could
+    be assigned a port already bound by an IPv4 Listener, and the Listener then
+    stole the server's replies.
+    """
+    pytest.importorskip("aioquic")
+    listener = await _start_quic_listener()
+    try:
+        taken = listener.quic_association.bound_port()
+        local = taps.LocalEndpoint().with_address("127.0.0.1").with_port(taken)
+
+        with pytest.raises(OSError):
+            sock, _family = (
+                QuicAssociationManager._client_socket(
+                    local,
+                    "127.0.0.1",
+                )
+            )
+            sock.close()
+    finally:
+        await listener.stop()
+
+
+def test_quic_client_socket_honors_a_local_address_constraint():
+    """RFC 9622 Section 6.1.2 constraints must reach the QUIC client socket.
+
+    aioquic's own client only accepts a local port, so an address or interface
+    constraint used to be dropped for QUIC alone.
+    """
+    pytest.importorskip("aioquic")
+    local = taps.LocalEndpoint().with_address("127.0.0.1")
+
+    sock, family = QuicAssociationManager._client_socket(local, "127.0.0.1")
+    try:
+        assert family is socket.AF_INET
+        assert sock.getsockname()[0] == "127.0.0.1"
+    finally:
+        sock.close()
+
+    with pytest.raises(ValueError, match="interface constraint"):
+        QuicAssociationManager._client_socket(
+            taps.LocalEndpoint().with_interface("lo0"),
+            "127.0.0.1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_quic_client_establishes_with_a_local_address_constraint():
+    """The constrained socket still completes a real handshake."""
+    pytest.importorskip("aioquic")
+    listener = await _start_quic_listener()
+    try:
+        port = listener.quic_association.bound_port()
+        preconnection = taps.Preconnection(
+            local_endpoint=taps.LocalEndpoint().with_address("127.0.0.1"),
+            remote_endpoint=(
+                taps.RemoteEndpoint()
+                .with_hostname("localhost")
+                .with_address("127.0.0.1")
+                .with_port(port)
+            ),
+            transport_properties=_quic_properties(),
+            security_parameters=_quic_security(server=False),
+        )
+        connection = await preconnection.initiate(timeout=3)
+        await connection.send(b"constrained")
+        server_connection = await listener.accept(timeout=3)
+        message = await server_connection.receive(
+            min_incomplete_length=1,
+            timeout=3,
+        )
+
+        assert message.data == b"constrained"
+        path = connection.get_properties()["readOnly"]["currentPath"]
+        assert path["local"][0] == "127.0.0.1"
+
+        await _close_connections(connection, server_connection)
+    finally:
+        await listener.stop()

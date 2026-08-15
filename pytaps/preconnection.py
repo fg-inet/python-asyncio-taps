@@ -16,9 +16,16 @@ from .message import (
     is_message_property,
 )
 from .securityParameters import SecurityParameters
+from .stun import StunError, discover_reflexive_address
 from .transportProperties import PreferenceLevel, TransportProperties, normalize_direction
+from . import transports as transport_impl
 from .transports import UdpTransport
-from .utility import ConnectionState, schedule_callback, setup_logger
+from .utility import (
+    ConnectionState,
+    describe_unsatisfiable_properties,
+    schedule_callback,
+    setup_logger,
+)
 from .yang_validate import (
     YANG_FMT_JSON,
     YANG_FMT_XML,
@@ -28,6 +35,13 @@ from .yang_validate import (
 )
 
 logger = setup_logger(__name__, "green")
+
+
+class UnsatisfiableTransportProperties(ValueError):
+    """No available protocol satisfies the configured Transport Properties.
+
+    Raised during preestablishment, per Section 3.1 of RFC 9623.
+    """
 
 
 class Preconnection:
@@ -224,14 +238,21 @@ class Preconnection:
             security_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         else:
             security_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        # RFC 9622 Section 6.3.8: a protected local identity needs a private key
+        # operation, which is where the identity challenge callback is invoked.
+        identity_challenge = self.security_parameters.identity_challenge_callback
         if self.security_parameters.identity:
             logger.info("Identity: " + str(self.security_parameters.identity))
-            security_context.load_cert_chain(self.security_parameters.identity)
+            security_context.load_cert_chain(
+                self.security_parameters.identity,
+                password=identity_challenge,
+            )
         elif self.security_parameters.public_key:
             logger.info("Public key certificate: " + str(self.security_parameters.public_key))
             security_context.load_cert_chain(
                 self.security_parameters.public_key,
                 keyfile=self.security_parameters.private_key,
+                password=identity_challenge,
             )
         trust_anchors = list(self.security_parameters.trustedCA)
         if not trust_anchors and self.security_parameters.pinned_server_certificates:
@@ -461,6 +482,33 @@ class Preconnection:
         self.security_context = self._build_security_context()
         return self
 
+    def _available_protocols(self):
+        available = {"tcp", "udp"}
+        if self.security_context is not None:
+            available.add("tls-tcp")
+        if transport_impl.aioquic_connect is not None:
+            available.add("quic")
+        return available
+
+    def _check_configuration(self, action):
+        """Reject a Property set no available protocol can satisfy.
+
+        Section 3.1 of RFC 9623 asks for configuration-time errors to fail as
+        early as possible, before resources are allocated. Appendix A.2 of
+        RFC 9622 sanctions reporting them synchronously, as an exception raised
+        when the application tries to establish a Connection.
+        """
+        reason = describe_unsatisfiable_properties(
+            self.transport_properties.for_action(action),
+            connection_context=self.connection_context,
+            available_protocols=self._available_protocols(),
+        )
+        if reason is not None:
+            raise UnsatisfiableTransportProperties(
+                f"No available protocol satisfies the Transport Properties "
+                f"for {action}: {reason}"
+            )
+
     def _copy_configuration(self, *, action=None, security_role=None):
         transport_properties = (
             self.transport_properties.for_action(action)
@@ -676,6 +724,7 @@ class Preconnection:
         logger.info("Initiating connection.")
 
         action = "rendezvous" if self._rendezvous_mode else "initiate"
+        self._check_configuration(action)
         snapshot = self._snapshot(action)
         if (
             snapshot.transport_properties.get("isolateSession")
@@ -727,8 +776,9 @@ class Preconnection:
         if not self.local_endpoints:
             raise Exception("A local endpoint needs "
                             "to be specified to listen")
-        self._framer_configuration_locked = True
         action = "rendezvous" if self._rendezvous_mode else "listen"
+        self._check_configuration(action)
+        self._framer_configuration_locked = True
         listener = Listener(self, action=action)
         # Create start_listener task so we can return right away
         listener.listen_task = self.loop.create_task(listener.start_listener())
@@ -748,6 +798,7 @@ class Preconnection:
         if not self.remote_endpoints:
             raise Exception("A remote endpoint needs to be specified to rendezvous")
 
+        self._check_configuration("rendezvous")
         self._framer_configuration_locked = True
         listener_preconnection = self.clone()
         connection_preconnection = self.clone()
@@ -960,9 +1011,71 @@ class Preconnection:
                     resolved.append(endpoint_copy)
             return resolved
 
-        resolved_locals = await resolve_endpoints(self.local_endpoints)
+        resolved_locals = await resolve_endpoints(
+            [
+                endpoint
+                for endpoint in self.local_endpoints
+                if not self._is_pure_stun_candidate(endpoint)
+            ]
+        )
+        resolved_locals.extend(
+            await self._resolve_server_reflexive_endpoints()
+        )
         resolved_remotes = await resolve_endpoints(self.remote_endpoints)
         return resolved_locals, resolved_remotes
+
+    @staticmethod
+    def _is_pure_stun_candidate(endpoint):
+        """True for a Local Endpoint whose only identifier is a STUN server.
+
+        Section 7.3 of RFC 9622 has Resolve return concrete addresses. Such an
+        endpoint has no concrete local address of its own; the binding it
+        discovers is its concrete form.
+        """
+        return (
+            endpoint.stun_server is not None
+            and endpoint.address is None
+            and endpoint.host_name is None
+        )
+
+    async def _resolve_server_reflexive_endpoints(self):
+        """Discover NAT bindings for Local Endpoints that name a STUN server.
+
+        Section 7.3 of RFC 9622: when the endpoints are suspected to be behind
+        a NAT, Resolve discovers the bindings, and the resulting server
+        reflexive candidates are what the application signals to its peer.
+        """
+        reflexive = []
+        for endpoint in self.local_endpoints:
+            stun_server = endpoint.stun_server
+            if stun_server is None:
+                continue
+            try:
+                address, port, local_port = await discover_reflexive_address(
+                    stun_server,
+                    local_address=endpoint.address,
+                    local_port=endpoint.port or 0,
+                    loop=self.loop,
+                )
+            except (StunError, OSError) as error:
+                # A candidate that cannot be discovered is dropped rather than
+                # failing Resolve: the host candidates remain usable.
+                logger.warning(
+                    "STUN binding discovery via %s:%s failed: %s",
+                    stun_server.address,
+                    stun_server.port,
+                    error,
+                )
+                continue
+            candidate = endpoint.clone()
+            candidate.address = address
+            candidate.port = port
+            candidate.stun_server = None
+            # The mapping only describes the local port it was learned on, so
+            # record it for the Rendezvous that will bind that port.
+            candidate.reflexive_local_port = local_port
+            reflexive.append(candidate)
+        return reflexive
 
     # Events for active open
     def on_ready(self, callback):

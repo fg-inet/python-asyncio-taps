@@ -19,6 +19,23 @@ _CURRENT_CANDIDATE_VIEW = contextvars.ContextVar(
     default=None,
 )
 
+
+def current_task_or_none():
+    """Return the running Task, or None when there is no running loop.
+
+    Cleanup paths use the current Task only to avoid cancelling themselves.
+    They can also run while a loop is being torn down, where asking for the
+    current Task raises instead of answering.
+    """
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+# Contiguous addresses of the leading family to try before alternating, the
+# "First Address Family Count" of Section 4 of RFC 8305.
+FIRST_ADDRESS_FAMILY_COUNT = 1
+
 colors = {
     "red": "\x1b[31;1m",
     "green": "\x1b[32;1m",
@@ -248,6 +265,84 @@ def rank_protocol_candidates(
     return ranked_protocols
 
 
+def describe_unsatisfiable_properties(
+    transport_properties,
+    connection_context=None,
+    available_protocols=None,
+):
+    """Explain why no protocol matches, or return None when one does.
+
+    Section 3.1 of RFC 9623 asks for a Property set that no available protocol
+    can satisfy to be reported during preestablishment, as early as possible,
+    rather than after resources have been allocated for an attempt that cannot
+    succeed.
+    """
+    if rank_protocol_candidates(
+        transport_properties,
+        connection_context=connection_context,
+        available_protocols=available_protocols,
+    ):
+        return None
+
+    protocols = [
+        protocol
+        for protocol in get_protocols(transport_properties)
+        if available_protocols is None
+        or protocol["name"] in available_protocols
+    ]
+    if not protocols:
+        return "no transport protocol is available"
+
+    unmet_requirements = []
+    unavoidable_prohibitions = []
+    for name, value in transport_properties.selection_properties.items():
+        canonical = canonicalize_property_name(name)
+        if canonical in {"direction", "interface", "pvd"}:
+            continue
+        if value is PreferenceLevel.REQUIRE:
+            if not any(
+                _supports_selection_property(protocol, canonical, value)
+                for protocol in protocols
+            ):
+                unmet_requirements.append(canonical)
+        elif value is PreferenceLevel.PROHIBIT:
+            if all(
+                _supports_selection_property(protocol, canonical, value)
+                for protocol in protocols
+            ):
+                unavoidable_prohibitions.append(canonical)
+
+    reasons = []
+    if unmet_requirements:
+        reasons.append(
+            "no available protocol provides required "
+            + ", ".join(sorted(unmet_requirements))
+        )
+    if unavoidable_prohibitions:
+        reasons.append(
+            "every available protocol provides prohibited "
+            + ", ".join(sorted(unavoidable_prohibitions))
+        )
+    if not reasons:
+        # Each constraint is individually satisfiable, so the combination the
+        # application asked for is what no single protocol offers.
+        explicit = transport_properties.get_explicit_selection_properties()
+        constraints = []
+        for name in sorted(explicit):
+            value = transport_properties.selection_properties.get(name)
+            if value is PreferenceLevel.REQUIRE:
+                constraints.append(f"require {name}")
+            elif value is PreferenceLevel.PROHIBIT:
+                constraints.append(f"prohibit {name}")
+        reasons.append(
+            "no single available protocol satisfies "
+            + ", ".join(constraints)
+            if constraints
+            else "no available protocol satisfies the Transport Properties"
+        )
+    return "; ".join(reasons)
+
+
 def _rank_path_candidate(
     local_endpoint,
     transport_properties,
@@ -436,7 +531,47 @@ def rank_path_candidates(local_endpoint, transport_properties, connection_contex
     ]
 
 
-def order_remote_addresses(remote_addrs, connection_context=None):
+def _interleave_address_families(ordered, first_address_family_count):
+    """Interleave the two address families of an ordered address list.
+
+    Section 4 of RFC 8305 asks the first address family to be followed by an
+    address of the other family, so that a long run of one family cannot stall
+    establishment when connectivity over that family is impaired.
+    ``first_address_family_count`` is the number of contiguous addresses of the
+    leading family to attempt before alternating.
+    """
+    if len(ordered) < 2:
+        return list(ordered)
+    leading_family = ordered[0][0]
+    primary = [entry for entry in ordered if entry[0] == leading_family]
+    secondary = [entry for entry in ordered if entry[0] != leading_family]
+    if not secondary:
+        return list(ordered)
+
+    interleaved = []
+    take = max(1, first_address_family_count)
+    while primary or secondary:
+        for _ in range(take):
+            if primary:
+                interleaved.append(primary.pop(0))
+        take = 1
+        if secondary:
+            interleaved.append(secondary.pop(0))
+    return interleaved
+
+
+def order_remote_addresses(
+    remote_addrs,
+    connection_context=None,
+    *,
+    first_address_family_count=None,
+):
+    """Order resolved Remote Endpoint addresses for staggered racing.
+
+    Addresses are ranked by System Policy and address family preference, then
+    the two families are interleaved following Section 4 of RFC 8305, which
+    Section 4.3.2 of RFC 9623 points at for racing between IP addresses.
+    """
     def sort_key(entry):
         family, address = entry
         family_name = "ipv6" if family == socket.AddressFamily.AF_INET6 else "ipv4"
@@ -447,7 +582,10 @@ def order_remote_addresses(remote_addrs, connection_context=None):
         )
         return (-policy_adjustment, -family_rank, address)
 
-    return sorted(remote_addrs, key=sort_key)
+    ordered = sorted(remote_addrs, key=sort_key)
+    if first_address_family_count is None:
+        first_address_family_count = FIRST_ADDRESS_FAMILY_COUNT
+    return _interleave_address_families(ordered, first_address_family_count)
 
 
 def build_protocol_candidates(

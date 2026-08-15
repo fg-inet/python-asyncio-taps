@@ -10,7 +10,10 @@ from .framer import (
 from .listener import Listener as Listener
 from .message import MessageContext as MessageContext, ReceivedMessage as ReceivedMessage
 from .multicast import do_join as do_join
-from .preconnection import Preconnection as Preconnection
+from .preconnection import (
+    Preconnection as Preconnection,
+    UnsatisfiableTransportProperties as UnsatisfiableTransportProperties,
+)
 from .securityParameters import SecurityParameters as SecurityParameters
 from .system_policy import (
     DarwinNetworkPathEventSource as DarwinNetworkPathEventSource,
@@ -62,6 +65,7 @@ __all__ = [
     "SystemPolicyProvider",
     "SystemPolicySnapshot",
     "TransportProperties",
+    "UnsatisfiableTransportProperties",
     "do_join",
     "print_time",
     "setup_logger",

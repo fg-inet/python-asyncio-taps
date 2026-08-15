@@ -35,14 +35,20 @@ from .utility import (
     build_candidate_branches,
     build_protocol_candidates,
     create_candidates,
+    current_task_or_none,
     order_candidates_for_racing,
     order_remote_addresses,
     schedule_callback,
     setup_logger,
 )
 logger = setup_logger(__name__)
-# Wait for 100 ms between connection attempts when racing
-RACING_DELAY = 0.1
+# Staggered racing delays, following the Connection Attempt Delay of Section 5
+# of RFC 8305, which Section 4.3.2 of RFC 9623 points at. The delay is derived
+# from cached path history, so it needs the bounds that section requires: a
+# subsequent attempt must never start within 10 ms of the previous one.
+RACING_DELAY = 0.25
+MINIMUM_RACING_DELAY = 0.1
+MAXIMUM_RACING_DELAY = 2.0
 
 
 async def _open_asyncio_candidate(open_awaitable, transport):
@@ -79,6 +85,10 @@ class Connection:
                 Preconnection object from which this Connection
                 object was created.
     """
+
+    # Process-wide arrival order for queued Messages. A Connection Group needs a
+    # total order over Messages that were enqueued on different Connections.
+    _enqueue_order = 0
 
     def __getattribute__(self, name):
         if name in {
@@ -144,6 +154,8 @@ class Connection:
         self.connection_group = ConnectionGroup(self)
         self.race_task = None
         self._batch_counter = 0
+        self._batch_depth = 0
+        self._active_batch_id = None
         self._send_sequence = 0
         self._send_call_sequence = 0
         self._message_sequence = 0
@@ -156,6 +168,7 @@ class Connection:
         self._partial_send_contexts = {}
         self._receive_sequence = 0
         self._queued_messages = []
+        self._race_gates = []
         self._sent_final_message = False
         self._received_final_message = False
         self._close_requested = False
@@ -315,10 +328,7 @@ class Connection:
             return
         adaptation_task = self._system_policy_adaptation_task
         if adaptation_task is not None and not adaptation_task.done():
-            try:
-                current_task = asyncio.current_task()
-            except RuntimeError:
-                current_task = None
+            current_task = current_task_or_none()
             if adaptation_task is not current_task:
                 adaptation_task.cancel()
         self.connection_context.detach_connection(
@@ -892,6 +902,9 @@ class Connection:
             )
         if self.state is ConnectionState.ESTABLISHING:
             self.last_error = exc
+            # RFC 9623 Section 4.3.2: do not make the next candidate sit out
+            # the rest of its stagger once this one has failed.
+            self._open_next_race_gate()
         logger.warning("Connection attempt failed: %s", exc)
 
     def _candidate_racing_delay(self, candidate):
@@ -912,9 +925,15 @@ class Connection:
             network_id=self._candidate_network_id(candidate),
         )
         if score > 0:
-            return max(0.02, RACING_DELAY / (1 + min(score, 3)))
+            return max(
+                MINIMUM_RACING_DELAY,
+                RACING_DELAY / (1 + min(score, 3)),
+            )
         if score < 0:
-            return RACING_DELAY * (1 + min(abs(score), 3))
+            return min(
+                MAXIMUM_RACING_DELAY,
+                RACING_DELAY * (1 + min(abs(score), 3)),
+            )
         return RACING_DELAY
 
     def _candidate_network_id(self, candidate):
@@ -1165,13 +1184,6 @@ class Connection:
             raise NotImplementedError(
                 f"{canonical} requires application-rate shaping, which is "
                 "not implemented"
-            )
-        if (
-            canonical == "connScheduler"
-            and value != CONNECTION_PROPERTY_DEFAULTS["connScheduler"]
-        ):
-            raise NotImplementedError(
-                "Only the default Connection Group scheduler is available"
             )
         if canonical.startswith("tcp."):
             if selected_protocol not in {None, "tcp", "tls-tcp"}:
@@ -1424,7 +1436,7 @@ class Connection:
             race_task = self.race_task
             if (
                 race_task is not None
-                and race_task is not asyncio.current_task()
+                and race_task is not current_task_or_none()
                 and not race_task.done()
             ):
                 await asyncio.shield(race_task)
@@ -1673,15 +1685,21 @@ class Connection:
         if context.final:
             self._sent_final_message = True
 
+        Connection._enqueue_order += 1
         entry = {
             "sequence": send_call_id,
+            # Monotonic across every Connection, so a Connection Group can order
+            # Messages of different members by arrival (RFC 9622 Section 8.1.5).
+            "enqueueOrder": Connection._enqueue_order,
             "data": data,
             "context": context,
             "end_of_message": end_of_message,
             "send_call_id": send_call_id,
             "initiateWithSend": initiate_with_send,
         }
-        if defer:
+        if defer or (self._batch_depth and not initiate_with_send):
+            if self._active_batch_id is not None and context.batch_id is None:
+                context.batch_id = self._active_batch_id
             self._queued_messages.append(entry)
         elif self.state is ConnectionState.ESTABLISHING:
             self._pre_ready_sends.append(entry)
@@ -1782,8 +1800,7 @@ class Connection:
         )
 
     async def send_batch(self, messages):
-        self._batch_counter += 1
-        batch_id = self._batch_counter
+        batch_id = self.start_batch()
         queued_ids = []
 
         for entry in messages:
@@ -1803,7 +1820,7 @@ class Connection:
             queued_ids.append(
                 self.enqueue_message(data, context, end_of_message)
             )
-        await self.flush_messages()
+        await self.end_batch()
         return queued_ids
 
     def enqueue_message(self, data, message_context=None, end_of_message=True):
@@ -1814,26 +1831,69 @@ class Connection:
             defer=True,
         )
 
-    async def flush_messages(self):
+    def _sorted_queued_messages(self):
+        """Return this Connection's queued Messages in its own send order.
+
+        A Final Message is always sorted to the end (RFC 9622 Section 9.1.3.5),
+        then msgPriority applies, with FIFO among equal priorities.
+        """
         def sort_key(entry):
             context = entry["context"]
             final_rank = 1 if context.final else 0
             ordered_rank = 0 if context.ordered else 1
             return (final_rank, context.priority, ordered_rank, entry["sequence"])
 
-        self._queued_messages.sort(key=sort_key)
-        queued_messages = self._queued_messages
+        return sorted(self._queued_messages, key=sort_key)
+
+    def _dispatch_queued_entry(self, entry):
+        if self.state is ConnectionState.ESTABLISHING:
+            self._pre_ready_sends.append(entry)
+        else:
+            self._dispatch_send(entry)
+
+    async def flush_messages(self):
+        queued_messages = self._sorted_queued_messages()
         self._queued_messages = []
 
         message_ids = []
         for entry in queued_messages:
-            context = entry["context"]
-            message_ids.append(context.message_id)
-            if self.state is ConnectionState.ESTABLISHING:
-                self._pre_ready_sends.append(entry)
-            else:
-                self._dispatch_send(entry)
+            message_ids.append(entry["context"].message_id)
+            self._dispatch_queued_entry(entry)
         return message_ids
+
+    async def flush_group_messages(self):
+        """Flush every Connection of this Connection Group through its scheduler.
+
+        Applies the connScheduler Connection Property (RFC 9622 Section 8.1.5)
+        across the group so that connPriority is ordered over msgPriority
+        (Section 9.2.6). Falls back to a plain flush when this Connection is not
+        grouped.
+        """
+        if self.connection_group is None:
+            return await self.flush_messages()
+        return await self.connection_group.flush_messages()
+
+    def start_batch(self):
+        """Begin a send batch (RFC 9622 Section 9.2.4).
+
+        Messages sent between StartBatch and EndBatch are queued and handed to
+        the Protocol Stack together when the batch ends.
+        """
+        self._batch_depth += 1
+        if self._batch_depth == 1:
+            self._batch_counter += 1
+            self._active_batch_id = self._batch_counter
+        return self._active_batch_id
+
+    async def end_batch(self):
+        """End a send batch and flush it (RFC 9622 Section 9.2.4)."""
+        if self._batch_depth == 0:
+            raise RuntimeError("EndBatch called without a matching StartBatch")
+        self._batch_depth -= 1
+        if self._batch_depth:
+            return []
+        self._active_batch_id = None
+        return await self.flush_group_messages()
 
     async def initiate_with_send(self, data, message_context=None, end_of_message=True):
         if not end_of_message:
@@ -2281,9 +2341,34 @@ class Connection:
             f"No backend is registered for protocol {candidate.protocol}"
         )
 
-    async def _attempt_candidate_after_delay(self, candidate, delay):
+    def _open_next_race_gate(self):
+        """Release the next scheduled candidate without waiting out its delay.
+
+        Section 4.3.2 of RFC 9623: if a child node fails to establish
+        connectivity before the delay for the next child has expired, the next
+        child is started immediately. Exactly one gate is opened per failure,
+        so the race stays staggered rather than becoming simultaneous.
+        """
+        while self._race_gates:
+            gate = self._race_gates.pop(0)
+            if not gate.done():
+                gate.set_result(None)
+                return True
+        return False
+
+    async def _attempt_candidate_after_delay(self, candidate, delay, gate=None):
         if delay > 0:
-            await asyncio.sleep(delay)
+            if gate is None:
+                await asyncio.sleep(delay)
+            else:
+                # Start when the stagger elapses, or as soon as an earlier
+                # candidate has failed, whichever happens first.
+                try:
+                    await asyncio.wait_for(asyncio.shield(gate), delay)
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
+        if gate is not None and not gate.done():
+            gate.set_result(None)
         if self.state is not ConnectionState.ESTABLISHING:
             return None
         return await self._open_candidate(candidate)
@@ -2370,10 +2455,13 @@ class Connection:
                                 + target_offset
                                 - self.loop.time(),
                             )
+                            gate = self.loop.create_future()
+                            self._race_gates.append(gate)
                             attempt = self.loop.create_task(
                                 self._attempt_candidate_after_delay(
                                     candidate,
                                     delay,
+                                    gate,
                                 )
                             )
                             attempt._pytaps_candidate = candidate

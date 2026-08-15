@@ -147,6 +147,74 @@ CONNECTION_ENUM_VALUES = {
     },
 }
 
+
+# RFC 9622 Section 8.1.5 types connScheduler as an Enumeration and points at the
+# scheduler set of RFC 8260 Section 3. The canonical names below are the RFC 8260
+# section titles; the aliases accept the SCTP socket-API spellings and the usual
+# abbreviations.
+CONNECTION_SCHEDULERS = (
+    "First-Come, First-Served",
+    "Round-Robin",
+    "Round-Robin per Packet",
+    "Priority-Based",
+    "Fair Capacity",
+    "Weighted Fair Queueing",
+)
+
+CONNECTION_SCHEDULER_ALIASES = {
+    "sctp_ss_fcfs": "First-Come, First-Served",
+    "fcfs": "First-Come, First-Served",
+    "first come first served": "First-Come, First-Served",
+    "sctp_ss_rr": "Round-Robin",
+    "rr": "Round-Robin",
+    "round robin": "Round-Robin",
+    "sctp_ss_rr_pkt": "Round-Robin per Packet",
+    "rr-p": "Round-Robin per Packet",
+    "rr_pkt": "Round-Robin per Packet",
+    "round robin per packet": "Round-Robin per Packet",
+    "sctp_ss_prio": "Priority-Based",
+    "pb": "Priority-Based",
+    "prio": "Priority-Based",
+    "priority based": "Priority-Based",
+    "sctp_ss_fc": "Fair Capacity",
+    "fc": "Fair Capacity",
+    "fair capacity": "Fair Capacity",
+    "fair bandwidth": "Fair Capacity",
+    "sctp_ss_wfq": "Weighted Fair Queueing",
+    "wfq": "Weighted Fair Queueing",
+    "weighted fair queueing": "Weighted Fair Queueing",
+    "weighted fair queuing": "Weighted Fair Queueing",
+}
+
+# Schedulers that apportion capacity according to Connection priority. RFC 9622
+# Section 9.2.6 requires connPriority to be ordered over msgPriority, which only
+# the priority-aware schedulers can honour.
+PRIORITY_AWARE_SCHEDULERS = frozenset(
+    {
+        "Priority-Based",
+        "Weighted Fair Queueing",
+    }
+)
+
+
+def normalize_conn_scheduler(value):
+    """Map an RFC 8260 scheduler spelling onto its canonical RFC 9622 name."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("connScheduler must be a non-empty Enumeration")
+    candidate = value.strip()
+    for scheduler in CONNECTION_SCHEDULERS:
+        if candidate.casefold() == scheduler.casefold():
+            return scheduler
+    lookup = candidate.casefold().replace(",", "").replace("-", " ")
+    lookup = " ".join(lookup.split())
+    normalized = CONNECTION_SCHEDULER_ALIASES.get(
+        candidate.casefold()
+    ) or CONNECTION_SCHEDULER_ALIASES.get(lookup)
+    if normalized is None:
+        raise ValueError(f"Invalid connScheduler value: {value}")
+    return normalized
+
+
 PROTOCOLS = [
     {
         "name": "tcp",
@@ -244,7 +312,7 @@ CONNECTION_PROPERTY_SUPPORT = {
         "connPriority": "advisory",
         "connTimeout": "platform-dependent",
         "keepAliveTimeout": "platform-dependent",
-        "connScheduler": "not-implemented",
+        "connScheduler": "sender-side",
         "connCapacityProfile": "advisory:dscp",
         "multipathPolicy": "no-op",
         "minSendRate": "advisory",
@@ -262,7 +330,7 @@ CONNECTION_PROPERTY_SUPPORT = {
         "connPriority": "advisory",
         "connTimeout": "platform-dependent",
         "keepAliveTimeout": "platform-dependent",
-        "connScheduler": "not-implemented",
+        "connScheduler": "sender-side",
         "connCapacityProfile": "advisory:dscp",
         "multipathPolicy": "no-op",
         "minSendRate": "advisory",
@@ -280,7 +348,7 @@ CONNECTION_PROPERTY_SUPPORT = {
         "connPriority": "advisory",
         "connTimeout": "no-op",
         "keepAliveTimeout": "no-op",
-        "connScheduler": "not-implemented",
+        "connScheduler": "sender-side",
         "connCapacityProfile": "advisory:dscp",
         "multipathPolicy": "no-op",
         "minSendRate": "advisory",
@@ -298,7 +366,7 @@ CONNECTION_PROPERTY_SUPPORT = {
         "connPriority": "advisory",
         "connTimeout": "unsupported-for-stream",
         "keepAliveTimeout": "no-op",
-        "connScheduler": "not-implemented",
+        "connScheduler": "sender-side",
         "connCapacityProfile": "advisory",
         "multipathPolicy": "handover-only",
         "minSendRate": "advisory",
@@ -605,10 +673,8 @@ class TransportProperties:
             raise ValueError(
                 "tcp.userTimeoutValue must be a positive Integer or None"
             )
-        elif prop == "connScheduler" and (
-            not isinstance(value, str) or not value.strip()
-        ):
-            raise ValueError("connScheduler must be a non-empty Enumeration")
+        elif prop == "connScheduler":
+            return normalize_conn_scheduler(value)
         elif (
             prop in CONNECTION_ENUM_VALUES
             and value not in CONNECTION_ENUM_VALUES[prop]
@@ -680,6 +746,10 @@ class TransportProperties:
         return self._set_preference(prop, PreferenceLevel.PREFER)
 
     def ignore(self, prop):
+        return self._set_preference(prop, PreferenceLevel.IGNORE)
+
+    def no_preference(self, prop):
+        """RFC 9622 Appendix B.1 spelling of :meth:`ignore`."""
         return self._set_preference(prop, PreferenceLevel.IGNORE)
 
     def avoid(self, prop):

@@ -91,6 +91,8 @@ class SecurityParameters:
         self.cipher_suites = None
         self.session_cache_capacity = None
         self.session_cache_lifetime = None
+        self.trust_verification_callback = None
+        self.identity_challenge_callback = None
 
     def add_identity(self, identity):
         """ Adds a local identity with which to
@@ -177,6 +179,65 @@ class SecurityParameters:
         self.require_peer_authentication = True
         logger.info("Peer authentication enabled.")
 
+    def set_trust_verification_callback(self, callback):
+        """Set the RFC 9622 Section 6.3.8 trust verification callback.
+
+        The callback is invoked with the peer certificate chain (a list of DER
+        encoded certificates) once the peer has presented it and before
+        establishment is allowed to continue. Returning a falsy value or
+        raising rejects the peer, which fails that candidate.
+
+        Args:
+            callback (callable or None, required): Called as
+                ``callback(peer_certificate_chain)``.
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError("Trust verification callback must be callable")
+        self.trust_verification_callback = callback
+        logger.info("Configured trust verification callback.")
+        return self
+
+    def set_identity_challenge_callback(self, callback):
+        """Set the RFC 9622 Section 6.3.8 identity challenge callback.
+
+        The callback is invoked when a private key operation is required for
+        local authentication, i.e. when the configured local identity is
+        protected and has to be unlocked. It returns the passphrase, as bytes
+        or a string.
+
+        Args:
+            callback (callable or None, required): Called as ``callback()``.
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError("Identity challenge callback must be callable")
+        self.identity_challenge_callback = callback
+        logger.info("Configured identity challenge callback.")
+        return self
+
+    def run_trust_verification(self, peer_certificate_chain):
+        """Run the trust verification callback, blocking establishment.
+
+        Raises:
+            ssl.SSLCertVerificationError: If the application rejected the peer.
+        """
+        callback = self.trust_verification_callback
+        if callback is None:
+            return True
+        chain = list(peer_certificate_chain or [])
+        try:
+            accepted = callback(chain)
+        except Exception as exc:
+            logger.warning("Trust verification callback rejected the peer.")
+            raise ssl.SSLCertVerificationError(
+                f"Trust verification callback rejected the peer: {exc}"
+            ) from exc
+        if not accepted:
+            logger.warning("Trust verification callback rejected the peer.")
+            raise ssl.SSLCertVerificationError(
+                "Trust verification callback rejected the peer"
+            )
+        return True
+
     def set_cipher_suites(self, cipher_suites):
         self.cipher_suites = cipher_suites
         logger.info("Configured cipher suites.")
@@ -254,4 +315,6 @@ class SecurityParameters:
             "cipherSuites": self.cipher_suites,
             "sessionCacheCapacity": self.session_cache_capacity,
             "sessionCacheLifetime": self.session_cache_lifetime,
+            "trustVerificationCallback": self.trust_verification_callback,
+            "identityChallengeCallback": self.identity_challenge_callback,
         }

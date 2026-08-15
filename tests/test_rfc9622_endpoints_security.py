@@ -355,8 +355,8 @@ async def test_section_6_3_3_quic_pin_failure_closes_the_association(
     context = FakeConnectContext()
     monkeypatch.setattr(transport_module, "QuicConfiguration", FakeQuicConfiguration)
     monkeypatch.setattr(
-        transport_module,
-        "aioquic_connect",
+        transport_module.QuicAssociationManager,
+        "_connect_client_protocol",
         lambda *_args, **_kwargs: context,
     )
     monkeypatch.setattr(transport_module, "aioquic_serve", object())

@@ -21,6 +21,7 @@ from .transports import QuicAssociationManager, TcpTransport, UdpTransport
 from .utility import (
     ConnectionState,
     build_protocol_candidates,
+    current_task_or_none,
     schedule_callback,
     setup_logger,
 )
@@ -490,7 +491,7 @@ class Listener:
         ):
             return self
 
-        current_task = asyncio.current_task()
+        current_task = current_task_or_none()
         if (
             self.listen_task is not None
             and self.listen_task is not current_task

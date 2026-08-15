@@ -148,6 +148,176 @@ For a client with a model specified in `examples/yang_example/test-client2.json`
 
 	python examples/yang_example/yangClient.py -f examples/yang_example/test-client2.json
 
+## Connection Group Send Scheduling
+
+RFC 9622 orders `connPriority` over `msgPriority` (Section 9.2.6): a Message on a
+higher-priority Connection is sent before a higher-priority Message on a
+lower-priority Connection of the same group. `connScheduler` (Section 8.1.5)
+selects which scheduler apportions capacity, using the set from Section 3 of
+[RFC 8260](https://www.rfc-editor.org/rfc/rfc8260.html). All six are
+implemented:
+
+| Scheduler | Behaviour |
+| --- | --- |
+| `First-Come, First-Served` | Application delivery order; priorities ignored. |
+| `Round-Robin` | Cycles Connections once per Message, regardless of length. |
+| `Round-Robin per Packet` | Stays on one Connection until it has filled a packet, so a lost packet affects only that Connection. |
+| `Priority-Based` | Strict: drains a higher-priority Connection before starting a lower-priority one. |
+| `Fair Capacity` | Equal share of *bytes* per Connection, by virtual finish time. |
+| `Weighted Fair Queueing` (default) | Share of bytes proportional to weight, derived from `connPriority`. |
+
+The capacity-aware schedulers account for Message length, not Message count. The
+`connPriority` weight is the reciprocal of the priority value, so a Connection at
+priority 0 receives twice the capacity of one at priority 1, as RFC 8260
+Section 3.6 requires. Weighted Fair Queueing therefore interleaves 2:1 where
+Priority-Based would starve the lower-priority Connection — both still satisfy
+the Section 9.2.6 first-send rule. A Message marked `final` is sorted last under
+every scheduler (Section 9.1.3.5).
+
+The usual abbreviations (`wfq`, `rr-p`, …) and the `SCTP_SS_*` spellings are
+accepted and canonicalized. Per RFC 8260 Section 3, the scheduler is chosen at
+the sender and is never signalled to the peer.
+
+Batch Messages with the Section 9.2.4 calls and flush the whole group through
+its scheduler:
+
+~~~python
+connection.start_batch()
+await connection.send(request)
+await connection.send(follow_up)
+await connection.end_batch()          # flushes the group via connScheduler
+~~~
+
+`Connection.flush_group_messages()` flushes without batching, and
+`Connection.flush_messages()` still flushes just one Connection.
+
+## NAT Binding Discovery (STUN)
+
+Section 7.3 of RFC 9622 uses the Resolve action to discover NAT bindings so a
+Rendezvous can offer server-reflexive candidates to its peer. PyTAPS implements
+the RFC 8489 Binding Request exchange for this, including short-term
+credentials when the application supplies them:
+
+~~~python
+host = taps.LocalEndpoint().with_address("192.0.2.5").with_port(9876)
+reflexive = taps.LocalEndpoint().with_stun_server("stun.example", 3478)
+
+preconnection = taps.Preconnection(local_endpoints=[host, reflexive], remote_endpoints=[])
+local_candidates, _ = await preconnection.resolve()
+# Signal local_candidates to the peer, then add what it returns:
+preconnection.add_remote_endpoint(peer_candidate)
+connection = await preconnection.rendezvous()
+~~~
+
+`Resolve` returns concrete addresses — host candidates and discovered
+server-reflexive ones. A reflexive candidate carries `reflexive_local_port`,
+the local port its mapping was learned on, because a NAT binding only describes
+that port. A Local Endpoint whose only identifier is a STUN server resolves to
+its discovered binding rather than to an address-less placeholder, and a STUN
+server that cannot be reached is skipped rather than failing `Resolve`.
+
+## Interoperability
+
+Section 3.4 of RFC 9621 requires that a peer need not use the same API or
+implementation. `tests/test_rfc9621_interop.py` holds that line by talking to
+peers built without PyTAPS: raw blocking sockets over TCP and UDP, the
+`openssl s_server` and `s_client` tools, and a server written directly against
+aioquic's own API.
+
+`tests/test_interop_network_framework.py` goes further and talks to Apple's
+Network.framework, which Appendix C of RFC 9623 lists as an existing Transport
+Services implementation — so that pairing is two independent TAPS stacks rather
+than a TAPS stack and a socket. The peer lives in `tests/interop/nwpeer.swift`
+and is compiled on demand; the tests skip off Darwin or without a Swift
+toolchain.
+
+One of the four directions, our TLS client against an `NWListener`, is verified
+by hand rather than in the suite. `SecPKCS12Import` puts the listener's private
+key in the login keychain with an ACL bound to the code signature of the binary
+that imported it, and a freshly compiled, ad-hoc signed test peer is a different
+application to the keychain, so the handshake stalls waiting for an
+authorization no non-interactive run can supply. The module docstring carries
+the manual procedure.
+
+## Darwin System Policy
+
+On macOS, PyTAPS reads authoritative path policy from Network.framework via
+`nw_path_monitor`, which supplies interface type, expensive/constrained/metered
+flags, DNS availability, and default-path status.
+`tests/test_darwin_network_framework.py` exercises that binding against the real
+framework rather than a stub, so a renamed symbol or a changed constant is
+caught. Install it with the `system-policy` extra:
+
+~~~
+python -m pip install -e '.[system-policy]'
+~~~
+
+## Configuration-Time Errors
+
+Section 3.1 of RFC 9623 asks for a Property set that no available protocol can
+satisfy to be reported during preestablishment, "as early as possible", and
+Appendix A.2 of RFC 9622 sanctions raising it synchronously. `Initiate`,
+`Listen`, and `Rendezvous` therefore raise
+`UnsatisfiableTransportProperties` before allocating a Connection or Listener,
+naming the constraint that could not be met:
+
+~~~
+No available protocol satisfies the Transport Properties for initiate:
+no single available protocol satisfies prohibit congestionControl, require reliability
+~~~
+
+## Candidate Racing
+
+Section 4.3.2 of RFC 9623 points at the Happy Eyeballs algorithm of
+[RFC 8305](https://www.rfc-editor.org/rfc/rfc8305.html) for racing between IP
+addresses, so PyTAPS follows it in two respects:
+
+- **Interleaved address families** (RFC 8305 Section 4). Resolved addresses are
+  ranked by System Policy and family preference, then the two families are
+  interleaved, so a long run of one family cannot stall establishment when
+  connectivity over that family is impaired. The "First Address Family Count" —
+  how many contiguous addresses of the leading family are attempted before
+  alternating — defaults to 1 and is a parameter of `order_remote_addresses`.
+- **Bounded staggered delays** (RFC 8305 Section 5). Racing is staggered, never
+  simultaneous. The Connection Attempt Delay defaults to 250 ms and is scaled by
+  cached path history, bounded to 100 ms at the low end and 2 s at the high end
+  — the recommended minimum and maximum. Because the delay is computed from
+  history, the bound matters: an attempt must never start within 10 ms of the
+  previous one.
+- **Failure accelerates the next candidate** (RFC 9623 Section 4.3.2). A child
+  that fails before the next child's delay has expired releases that child
+  immediately, so a dead address costs a round trip rather than a full stagger.
+  Exactly one waiting candidate is released per failure, which keeps the race
+  staggered instead of collapsing it into simultaneous racing.
+
+## QUIC Client Socket Binding
+
+PyTAPS binds the QUIC client socket itself rather than delegating to `aioquic`,
+which always binds the IPv6 wildcard as a dual-stack socket. A dual-stack
+wildcard binding can share a port number with a socket bound to a specific IPv4
+address, and the host then delivers datagrams to the more specific binding — so
+a Listener on the same host could silently receive a Connection's packets and
+that handshake would never complete. PyTAPS binds a socket of the Remote
+Endpoint's own address family instead, which makes the conflict visible to the
+host, and lets the Local Endpoint constraints of RFC 9622 Section 6.1.2 (address
+and interface, not just port) apply to QUIC as they do to every other protocol.
+
+## Connection Establishment Callbacks
+
+RFC 9622 Section 6.3.8 security callbacks block establishment until the
+application decides:
+
+~~~python
+security = taps.SecurityParameters()
+security.set_trust_verification_callback(lambda chain: verify(chain))
+security.set_identity_challenge_callback(lambda: passphrase)
+~~~
+
+The trust verification callback receives the peer certificate chain once the
+peer presents it; returning a falsy value or raising rejects that candidate. It
+runs for both TLS and QUIC. The identity challenge callback is invoked when a
+private key operation is needed to unlock a protected local identity.
+
 ## Running Tests
 
 ### Requirements:
