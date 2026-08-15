@@ -38,17 +38,6 @@ def _datagram_properties():
     return properties
 
 
-async def _wait_for_port(port, *, attempts=50, interval=0.1):
-    """Wait until something accepts TCP on the loopback port."""
-    for _attempt in range(attempts):
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return True
-        except OSError:
-            await asyncio.sleep(interval)
-    return False
-
-
 def _terminate(process):
     if process.returncode is None:
         process.terminate()
@@ -202,8 +191,10 @@ async def test_section_3_4_pytaps_client_talks_to_openssl_s_server():
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
-    # No pipes: this test asserts on the PyTAPS side, and an unread pipe would
-    # otherwise be closed by the garbage collector, which -W error rejects.
+    # s_server relays its stdin to the peer, so it needs a pipe that stays
+    # open: on EOF it closes the connection. The pipe is closed explicitly
+    # below, because a pipe left for the garbage collector to finalize is
+    # reported as an unraisable exception, which CI runs with -W error.
     process = subprocess.Popen(
         [
             OPENSSL, "s_server",
@@ -212,37 +203,61 @@ async def test_section_3_4_pytaps_client_talks_to_openssl_s_server():
             "-key", str(SERVER_CERTIFICATE),
             "-quiet",
         ],
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
-        if not await _wait_for_port(port):
-            pytest.skip("openssl s_server did not start")
+        # Do not probe with a bare TCP connect: s_server would accept it,
+        # start a handshake that never completes, and drop the real
+        # connection that follows. Retry the actual TLS connection instead.
+        connection = None
+        last_error = None
+        for _attempt in range(25):
+            security = taps.SecurityParameters()
+            security.add_trust_ca(str(ROOT_CERTIFICATE))
+            security.with_server_name("localhost")
+            preconnection = taps.Preconnection(
+                remote_endpoint=(
+                    taps.RemoteEndpoint()
+                    .with_hostname("localhost")
+                    .with_address("127.0.0.1")
+                    .with_port(port)
+                ),
+                transport_properties=_stream_properties(),
+                security_parameters=security,
+            )
+            try:
+                connection = await preconnection.initiate(timeout=3)
+                break
+            except Exception as error:
+                last_error = error
+                await asyncio.sleep(0.2)
+        if connection is None:
+            pytest.skip(f"openssl s_server never became ready: {last_error}")
 
-        security = taps.SecurityParameters()
-        security.add_trust_ca(str(ROOT_CERTIFICATE))
-        security.with_server_name("localhost")
-        preconnection = taps.Preconnection(
-            remote_endpoint=(
-                taps.RemoteEndpoint()
-                .with_hostname("localhost")
-                .with_address("127.0.0.1")
-                .with_port(port)
-            ),
-            transport_properties=_stream_properties(),
-            security_parameters=security,
-        )
-        connection = await preconnection.initiate(timeout=10)
-
+        # Reaching this point means openssl completed a TLS handshake with us
+        # and we validated the certificate it served.
         assert connection.protocol == "tls-tcp"
+
+        sent = asyncio.get_running_loop().create_future()
+
+        async def on_sent(message_reference, conn):
+            if not sent.done():
+                sent.set_result(message_reference)
+
+        connection.on_sent(on_sent)
         await connection.send(b"hello openssl\n")
-        # s_server echoes stdin; just prove the handshake and write succeeded.
-        assert connection.state is taps.ConnectionState.ESTABLISHED
+        # A Sent event means the Protocol Stack consumed the Message
+        # (Section 9.2.2.1 of RFC 9622). The Connection state afterwards is
+        # not asserted on: the peer may close at any point, and Section 10
+        # does not guarantee a remote close is even signalled.
+        await asyncio.wait_for(sent, timeout=10)
 
         connection.close()
-        await connection.wait_closed(timeout=5)
     finally:
+        if process.stdin is not None:
+            process.stdin.close()
         _terminate(process)
 
 

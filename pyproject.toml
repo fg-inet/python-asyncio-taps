@@ -2,6 +2,13 @@
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.ruff.lint]
+# State the rule set explicitly. It matches what Ruff selected by default
+# through 0.15, but Ruff 0.16 widened its defaults, and CI installs Ruff
+# unpinned, so leaving this implicit makes lint results depend on which
+# release happens to be current.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 markers = [
     "external_network: requires external network access",
