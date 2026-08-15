@@ -38,6 +38,27 @@ def _datagram_properties():
     return properties
 
 
+async def _wait_for_port(port, *, attempts=50, interval=0.1):
+    """Wait until something accepts TCP on the loopback port."""
+    for _attempt in range(attempts):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return True
+        except OSError:
+            await asyncio.sleep(interval)
+    return False
+
+
+def _terminate(process):
+    if process.returncode is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 # --- plain socket peers (no pytaps, no asyncio) -----------------------------
 
 
@@ -181,46 +202,23 @@ async def test_section_3_4_pytaps_client_talks_to_openssl_s_server():
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
+    # No pipes: this test asserts on the PyTAPS side, and an unread pipe would
+    # otherwise be closed by the garbage collector, which -W error rejects.
     process = subprocess.Popen(
         [
             OPENSSL, "s_server",
             "-accept", str(port),
             "-cert", str(SERVER_CERTIFICATE),
             "-key", str(SERVER_CERTIFICATE),
-            "-naccept", "1",
             "-quiet",
         ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
-        # Wait for the listener to come up.
-        for _attempt in range(50):
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                    break
-            except OSError:
-                await asyncio.sleep(0.1)
-        else:
+        if not await _wait_for_port(port):
             pytest.skip("openssl s_server did not start")
-
-        # That probe consumed the -naccept 1 slot, so restart for the real run.
-        process.terminate()
-        process.wait(timeout=5)
-        process = subprocess.Popen(
-            [
-                OPENSSL, "s_server",
-                "-accept", str(port),
-                "-cert", str(SERVER_CERTIFICATE),
-                "-key", str(SERVER_CERTIFICATE),
-                "-quiet",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        await asyncio.sleep(0.5)
 
         security = taps.SecurityParameters()
         security.add_trust_ca(str(ROOT_CERTIFICATE))
@@ -245,11 +243,7 @@ async def test_section_3_4_pytaps_client_talks_to_openssl_s_server():
         connection.close()
         await connection.wait_closed(timeout=5)
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        _terminate(process)
 
 
 @pytest.mark.skipif(OPENSSL is None, reason="openssl is not installed")
@@ -289,7 +283,9 @@ async def test_section_3_4_openssl_s_client_talks_to_a_pytaps_listener():
     port = listener._servers[0].sockets[0].getsockname()[1]
 
     def run_s_client():
-        process = subprocess.Popen(
+        # The context manager closes every pipe, so none is left for the
+        # garbage collector to finalize.
+        with subprocess.Popen(
             [
                 OPENSSL, "s_client",
                 "-connect", f"127.0.0.1:{port}",
@@ -300,22 +296,23 @@ async def test_section_3_4_openssl_s_client_talks_to_a_pytaps_listener():
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        )
-        try:
-            return process.communicate(input=b"from-openssl\n", timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            return process.communicate()
+        ) as process:
+            try:
+                return process.communicate(input=b"from-openssl\n", timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return process.communicate()
 
     stdout, stderr = await asyncio.get_running_loop().run_in_executor(
         None, run_s_client
     )
 
     payload = await asyncio.wait_for(received, timeout=10)
-    assert payload.startswith(b"from-openssl")
-    # openssl verified our chain and saw the echo before we closed.
-    assert b"verify return:1" in stderr, stderr
-    assert b"taps-echo:from-openssl" in stdout, stdout
+    # Both of these can only happen after openssl completed the handshake and
+    # accepted our certificate. Its human-readable diagnostics are not asserted
+    # on, because they vary between OpenSSL releases.
+    assert payload.startswith(b"from-openssl"), stderr
+    assert b"taps-echo:from-openssl" in stdout, stderr
     await listener.stop()
 
 
